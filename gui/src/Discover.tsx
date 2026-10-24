@@ -1,0 +1,75 @@
+import { EN, type GuiStrings } from "./i18n";
+import { memo, useEffect, useRef } from "react";
+import type { Action } from "./bindings/Action";
+import type { DiscoverPayload } from "./bindings/DiscoverPayload";
+import "./Discover.css";
+import type { OpenView } from "./nav";
+import "./Pages.css";
+import { asksDiscover, discoverView } from "./pagesModel";
+import { Card, Shelf } from "./ui";
+
+/** Discover: the shelves of Spotify's Made For You page. */
+export const Discover = memo(function Discover({
+  s = EN,
+  discover,
+  connected,
+  active,
+  open,
+  send,
+}: {
+  s?: GuiStrings;
+  discover: DiscoverPayload | null;
+  connected: boolean;
+  active: boolean;
+  open: OpenView;
+  send: (action: Action) => void;
+}) {
+  // The shell's open skips the fetch before a session is known; ask once it is.
+  const asked = useRef(false);
+  useEffect(() => {
+    // A drop can swallow the ask, so a reconnect may ask once more.
+    if (!connected) asked.current = false;
+    if (!active || asked.current || !asksDiscover(discover, connected)) return;
+    asked.current = true;
+    send({ OpenLibrary: "Discover" });
+  }, [active, connected, discover, send]);
+
+  const available = discover?.available ?? false;
+  const shelves = discover?.shelves ?? [];
+  const notice =
+    shelves.length > 0 ? null : discover?.loading ? s.loading : s.nothing_here;
+  return (
+    <section className="discover" tabIndex={-1} data-focus>
+      <div className="discover-head">
+        <h1>{s.discover}</h1>
+        <span>{s.discover_intro}</span>
+      </div>
+      {!available ? (
+        <p className="empty">{s.discover_needs_spotify}</p>
+      ) : (
+        <>
+          <p className={notice ? "empty" : "sr-only"} role="status">
+            {notice}
+          </p>
+          {shelves.map((shelf, index) => (
+            <Shelf s={s} key={`${index}-${shelf.title}`} title={shelf.title}>
+              {shelf.playlists.map((playlist) => (
+                <Card
+                  s={s}
+                  key={playlist.uri}
+                  image={playlist.image_url}
+                  title={playlist.name}
+                  subtitle={playlist.description ?? s.by_spotify}
+                  onOpen={() => open(discoverView(playlist))}
+                  onPlay={() =>
+                    send({ PlayContext: { uri: playlist.uri, offset: null } })
+                  }
+                />
+              ))}
+            </Shelf>
+          ))}
+        </>
+      )}
+    </section>
+  );
+});

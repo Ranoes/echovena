@@ -1,0 +1,54 @@
+# Local AI Agent & Setup Guides (Never Push to Public Repo)
+AGENTS.md
+AGENT.md
+CLAUDE.md
+**/AGENTS.md
+**/CLAUDE.md
+PRD.md
+PROGRESS.md
+CLEANUP_AND_INSTALL.md
+stashtui_prd.md
+
+# Build & Runtime Artifacts
+target/
+/target
+.DS_Store
+.DS_store
+*.db
+*.db-shm
+*.db-wal
+*.enc
+*.nupkg
+.env
+.env.*
+
+**/*.rs.bk
+.spotify_token_cache.json
+.cached_device_id.txt
+spotify-tui.sketch
+spt*.txt
+*.snap
+.ci/lp-creds
+snapcraft-login
+secrets.tar
+*.swp
+tags
+
+.idea/
+.vscode/
+.cursor/
+.claude
+.cargo/
+
+# build artifacts from the worker-relay subproject
+worker-relay/node_modules/
+/result
+
+# build artifacts from the gui frontend
+gui/node_modules/
+.github/scripts/node_modules/
+gui/src/node_modules/
+gui/dist/
+gui/shots/
+gui/test-results/
+gui/playwright-report/

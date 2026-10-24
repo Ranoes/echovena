@@ -1,0 +1,154 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-binaries:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset_name: echovena-windows-x86_64.zip
+            binary_name: echovena.exe
+          - name: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset_name: echovena-linux-x86_64.tar.gz
+            binary_name: echovena
+          - name: macos-aarch64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            asset_name: echovena-macos-aarch64.tar.gz
+            binary_name: echovena
+          - name: macos-x86_64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            asset_name: echovena-macos-x86_64.tar.gz
+            binary_name: echovena
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y -qq pkg-config libasound2-dev libssl-dev
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package Windows ZIP
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $binPath = "target/${{ matrix.target }}/release/${{ matrix.binary_name }}"
+          Compress-Archive -Path $binPath, README.md, LICENSE -DestinationPath ${{ matrix.asset_name }} -Force
+
+      - name: Package Unix Tarball
+        if: matrix.os != 'windows-latest'
+        run: |
+          staging="staging_${{ matrix.name }}"
+          mkdir -p "$staging"
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" "$staging/"
+          cp README.md LICENSE "$staging/"
+          tar -czvf "${{ matrix.asset_name }}" -C "$staging" "${{ matrix.binary_name }}" README.md LICENSE
+          rm -rf "$staging"
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ${{ matrix.asset_name }}
+          if-no-files-found: error
+
+  publish-github-release:
+    name: Publish GitHub Release
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate Checksums
+        working-directory: artifacts
+        run: |
+          sha256sum echovena-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/echovena-*
+            artifacts/SHA256SUMS.txt
+          generate_release_notes: true
+
+  publish-chocolatey:
+    name: Publish Chocolatey Package
+    needs: publish-github-release
+    runs-on: windows-latest
+    if: ${{ secrets.CHOCOLATEY_API_KEY != '' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Windows Release Asset
+        uses: actions/download-artifact@v4
+        with:
+          name: echovena-windows-x86_64.zip
+          path: .
+
+      - name: Prepare Chocolatey Manifests
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          $hash = (Get-FileHash -Algorithm SHA256 echovena-windows-x86_64.zip).Hash
+
+          Write-Host "Updating Chocolatey manifests for version: $version with hash: $hash"
+
+          $nuspecPath = "packaging/chocolatey/echovena.nuspec"
+          $nuspecContent = Get-Content $nuspecPath -Raw
+          $nuspecContent = $nuspecContent -replace '<version>.*?</version>', "<version>$version</version>"
+          Set-Content -Path $nuspecPath -Value $nuspecContent
+
+          $installPs1Path = "packaging/chocolatey/tools/chocolateyinstall.ps1"
+          $installContent = Get-Content $installPs1Path -Raw
+          $installContent = $installContent -replace '\$version\s*=\s*".*?"', "`$version = `"$version`""
+          $installContent = $installContent -replace '\$checksum\s*=\s*".*?"', "`$checksum = `"$hash`""
+          Set-Content -Path $installPs1Path -Value $installContent
+
+      - name: Pack and Push Chocolatey Package
+        shell: pwsh
+        run: |
+          choco pack packaging/chocolatey/echovena.nuspec --outputdirectory packaging/chocolatey
+          $nupkg = Get-ChildItem -Path packaging/chocolatey/*.nupkg | Select-Object -First 1
+          if ($nupkg) {
+            Write-Host "Pushing $($nupkg.FullName) to Chocolatey Community Repository..."
+            choco push $nupkg.FullName --source https://push.chocolatey.org/ --api-key ${{ secrets.CHOCOLATEY_API_KEY }}
+          } else {
+            throw "No .nupkg file found to publish."
+          }

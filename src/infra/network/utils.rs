@@ -1,0 +1,933 @@
+use super::Network;
+use crate::core::app::{Announcement, AnnouncementLevel, App, LyricsStatus};
+use chrono::{DateTime, Utc};
+#[cfg(feature = "spotify-session")]
+use reqwest::Method;
+use serde::{de::Error as _, Deserialize, Deserializer};
+use std::collections::HashSet;
+use std::env;
+use std::time::{Duration, Instant};
+
+#[derive(Deserialize, Debug)]
+#[allow(non_snake_case)]
+struct LrcResponse {
+  syncedLyrics: Option<String>,
+  plainLyrics: Option<String>,
+  #[serde(default)]
+  duration: Option<f64>,
+}
+
+impl LrcResponse {
+  fn has_lyrics(&self) -> bool {
+    let has_text =
+      |value: &Option<String>| value.as_deref().is_some_and(|text| !text.trim().is_empty());
+    has_text(&self.syncedLyrics) || has_text(&self.plainLyrics)
+  }
+}
+
+#[derive(Deserialize, Debug)]
+#[allow(dead_code)]
+struct GlobalSongCountResponse {
+  #[serde(deserialize_with = "deserialize_global_song_count")]
+  count: u64,
+}
+
+const TELEMETRY_ENDPOINT: &str = "https://echovena-counter.echovena.workers.dev";
+
+fn deserialize_global_song_count<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+  D: Deserializer<'de>,
+{
+  #[derive(Deserialize)]
+  #[serde(untagged)]
+  enum CountValue {
+    Number(u64),
+    String(String),
+  }
+
+  match CountValue::deserialize(deserializer)? {
+    CountValue::Number(value) => Ok(value),
+    CountValue::String(value) => {
+      let sanitized = value.replace(',', "");
+      sanitized
+        .parse::<u64>()
+        .map_err(|_| D::Error::custom("invalid global song count"))
+    }
+  }
+}
+
+#[derive(Deserialize, Debug)]
+struct AnnouncementFeedResponse {
+  #[allow(dead_code)]
+  version: Option<u8>,
+  #[serde(default)]
+  announcements: Vec<AnnouncementRecord>,
+}
+
+#[derive(Deserialize, Debug)]
+struct AnnouncementRecord {
+  id: String,
+  title: Option<String>,
+  body: String,
+  level: Option<String>,
+  url: Option<String>,
+  starts_at: Option<String>,
+  ends_at: Option<String>,
+}
+
+pub trait UtilsNetwork {
+  async fn get_lyrics(
+    &mut self,
+    track: String,
+    artists: Vec<String>,
+    duration: f64,
+    spotify_id: Option<String>,
+  );
+  async fn increment_global_song_count(&mut self);
+  async fn fetch_global_song_count(&mut self);
+  async fn fetch_announcements(&mut self);
+}
+
+/// Publish an LRCLIB answer for the current track: synced lyrics first, then
+/// plain lyrics as static text, else not found.
+fn apply_lyrics_response(app: &mut App, lrc_resp: Option<LrcResponse>, duration: f64) {
+  let found = lrc_resp.and_then(|resp| {
+    let synced = resp
+      .syncedLyrics
+      .as_deref()
+      .map(parse_synced_lyrics)
+      .unwrap_or_default();
+    if !synced.is_empty() {
+      return Some((synced, true));
+    }
+    resp
+      .plainLyrics
+      .as_deref()
+      .filter(|text| !text.trim().is_empty())
+      .map(|plain| (synthesize_plain_lyrics(plain, duration), false))
+  });
+  publish_lyrics(app, found);
+}
+
+/// Publish lyrics lines for the current track, or not found.
+fn publish_lyrics(app: &mut App, found: Option<(Vec<(u128, String)>, bool)>) {
+  match found {
+    Some((lyrics, synced)) => app.set_lyrics(LyricsStatus::Found, Some(lyrics), synced),
+    None => app.set_lyrics(LyricsStatus::NotFound, None, false),
+  }
+  app
+    .plugin_data_generations
+    .bump(crate::core::app::PluginDataKind::Lyrics);
+}
+
+/// Spotify's lyrics for a Spotify track; `None` sends the lookup to LRCLIB.
+async fn spotify_lyrics(
+  spotify_id: Option<&str>,
+  duration: f64,
+) -> Option<(Vec<(u128, String)>, bool)> {
+  #[cfg(feature = "spotify-session")]
+  if let Some(id) = spotify_id {
+    let path = format!("tracks/{id}/lyrics");
+    // The funnel already logs a failed request.
+    let value = super::requests::spotify_api_request_json_for(Method::GET, &path, &[], None).await;
+    match value
+      .ok()
+      .and_then(crate::infra::spotify::lyrics::parse_lyrics)
+    {
+      Some(lyrics) if lyrics.synced => return Some((lyrics.lines, true)),
+      Some(lyrics) => {
+        let text: Vec<String> = lyrics.lines.into_iter().map(|(_, line)| line).collect();
+        return Some((synthesize_plain_lyrics(&text.join("\n"), duration), false));
+      }
+      None => log::debug!("No Spotify lyrics for {id}; trying LRCLIB"),
+    }
+  }
+  #[cfg(not(feature = "spotify-session"))]
+  let _ = (spotify_id, duration);
+  None
+}
+
+impl UtilsNetwork for Network {
+  async fn get_lyrics(
+    &mut self,
+    track: String,
+    artists: Vec<String>,
+    duration: f64,
+    spotify_id: Option<String>,
+  ) {
+    // The identity latch and the plugin-facing `lyrics_state_is_current` gate
+    // both key on the joined display credit (`primary_artist()`), so build the
+    // identity from the same join here.
+    let request_identity = (track.clone(), artists.join(", "));
+    let client = super::requests::shared_http_client();
+
+    // Update state to loading
+    {
+      let mut app = self.app.lock().await;
+      if app.desired_lyrics_identity.as_ref() != Some(&request_identity) {
+        return;
+      }
+      app.set_lyrics(LyricsStatus::Loading, None, false);
+    }
+
+    if let Some(found) = spotify_lyrics(spotify_id.as_deref(), duration).await {
+      let mut app = self.app.lock().await;
+      if app.desired_lyrics_identity.as_ref() == Some(&request_identity) {
+        publish_lyrics(&mut app, Some(found));
+      }
+      return;
+    }
+
+    let lrc_resp = fetch_lrclib_lyrics(client, &track, &artists, duration).await;
+
+    let mut app = self.app.lock().await;
+    if app.desired_lyrics_identity.as_ref() != Some(&request_identity) {
+      return;
+    }
+    apply_lyrics_response(&mut app, lrc_resp, duration);
+  }
+
+  async fn increment_global_song_count(&mut self) {
+    let client = super::requests::shared_http_client();
+    // Fire and forget
+    let _ = client
+      .post(TELEMETRY_ENDPOINT)
+      .header(reqwest::header::ACCEPT, "application/json")
+      .timeout(Duration::from_secs(5))
+      .send()
+      .await;
+  }
+
+  async fn fetch_global_song_count(&mut self) {
+    let client = super::requests::shared_http_client();
+    match client
+      .get(TELEMETRY_ENDPOINT)
+      .header(reqwest::header::ACCEPT, "application/json")
+      .timeout(Duration::from_secs(5))
+      .send()
+      .await
+    {
+      Ok(resp) => {
+        if let Ok(data) = resp.json::<GlobalSongCountResponse>().await {
+          let mut app = self.app.lock().await;
+          app.global_song_count = Some(data.count);
+          app.global_song_count_failed = false;
+        } else {
+          let mut app = self.app.lock().await;
+          app.global_song_count_failed = true;
+        }
+      }
+      Err(_) => {
+        let mut app = self.app.lock().await;
+        app.global_song_count_failed = true;
+      }
+    }
+  }
+
+  async fn fetch_announcements(&mut self) {
+    const MAX_ANNOUNCEMENT_FEED_BYTES: usize = 256 * 1024;
+    const ANNOUNCEMENTS_ENV_KEY: &str = "ECHOVENA_ANNOUNCEMENTS_URL";
+    const DEFAULT_ANNOUNCEMENTS_URL: &str =
+      "https://raw.githubusercontent.com/Ranoes/echovena/main/announcements.json";
+
+    let (announcements_enabled, feed_url) = {
+      let app = self.app.lock().await;
+      (
+        app.user_config.behavior.enable_announcements,
+        app.user_config.behavior.announcement_feed_url.clone(),
+      )
+    };
+
+    if !announcements_enabled {
+      return;
+    }
+
+    let env_feed_url = env::var(ANNOUNCEMENTS_ENV_KEY)
+      .ok()
+      .map(|v| v.trim().to_string())
+      .filter(|v| !v.is_empty());
+
+    let resolved_url = env_feed_url
+      .or(feed_url)
+      .filter(|url| !url.trim().is_empty())
+      .unwrap_or_else(|| DEFAULT_ANNOUNCEMENTS_URL.to_string());
+
+    if !resolved_url.starts_with("https://") {
+      return;
+    }
+
+    let client = super::requests::shared_http_client();
+
+    let response = match client
+      .get(&resolved_url)
+      .header(reqwest::header::ACCEPT, "application/json")
+      .timeout(Duration::from_secs(5))
+      .send()
+      .await
+    {
+      Ok(response) => response,
+      Err(_) => return,
+    };
+
+    if !response.status().is_success() {
+      return;
+    }
+
+    if response
+      .content_length()
+      .is_some_and(|length| length > MAX_ANNOUNCEMENT_FEED_BYTES as u64)
+    {
+      return;
+    }
+
+    let body = match response.bytes().await {
+      Ok(bytes) if bytes.len() <= MAX_ANNOUNCEMENT_FEED_BYTES => bytes,
+      _ => return,
+    };
+
+    let feed: AnnouncementFeedResponse = match serde_json::from_slice(&body) {
+      Ok(feed) => feed,
+      Err(_) => return,
+    };
+
+    let now = Utc::now();
+    let mut feed_ids_seen = HashSet::new();
+    let mut announcements = Vec::new();
+
+    for record in feed.announcements {
+      let id = record.id.trim().to_string();
+      if id.is_empty() || !feed_ids_seen.insert(id.clone()) {
+        continue;
+      }
+
+      let body = record.body.trim().to_string();
+      if body.is_empty() {
+        continue;
+      }
+
+      let starts_at = match record.starts_at.as_deref().map(parse_announcement_datetime) {
+        Some(Some(value)) => Some(value),
+        Some(None) => continue,
+        None => None,
+      };
+
+      let ends_at = match record.ends_at.as_deref().map(parse_announcement_datetime) {
+        Some(Some(value)) => Some(value),
+        Some(None) => continue,
+        None => None,
+      };
+
+      if let Some(start) = starts_at {
+        if now < start {
+          continue;
+        }
+      }
+
+      if let Some(end) = ends_at {
+        if now > end {
+          continue;
+        }
+      }
+
+      let url = record
+        .url
+        .map(|url| url.trim().to_string())
+        .filter(|url| !url.is_empty() && url.starts_with("https://"));
+
+      announcements.push(Announcement {
+        id,
+        title: record
+          .title
+          .map(|title| title.trim().to_string())
+          .filter(|title| !title.is_empty())
+          .unwrap_or_else(|| "Announcement".to_string()),
+        body,
+        level: parse_announcement_level(record.level.as_deref()),
+        url,
+        received_at: Instant::now(),
+      });
+    }
+
+    self
+      .app
+      .lock()
+      .await
+      .receive_announcement_feed(announcements);
+  }
+}
+
+/// Look up lyrics on LRCLIB. `/api/get` is an exact signature match (title +
+/// artist + duration must all agree with LRCLIB's record, duration in whole
+/// seconds), so it 404s on small metadata differences even when LRCLIB has the
+/// song. When it misses, fall back to the fuzzy `/api/search` endpoint and pick
+/// the best-matching result.
+///
+/// Both endpoints are tried across every artist candidate (see
+/// [`artist_query_candidates`]): all `/api/get` candidates first, then all
+/// `/api/search` candidates, so an exact hit on the primary artist always beats
+/// a fuzzy hit on the full multi-artist credit.
+async fn fetch_lrclib_lyrics(
+  client: &reqwest::Client,
+  track: &str,
+  artists: &[String],
+  duration: f64,
+) -> Option<LrcResponse> {
+  let candidates = artist_query_candidates(artists);
+
+  for artist in &candidates {
+    if let Some(lrc_resp) = lrclib_get(client, track, artist, duration).await {
+      return Some(lrc_resp);
+    }
+  }
+
+  for artist in &candidates {
+    if let Some(lrc_resp) = lrclib_search(client, track, artist, duration).await {
+      return Some(lrc_resp);
+    }
+  }
+
+  None
+}
+
+/// The LRCLIB artist strings to try, in order. LRCLIB indexes each track under a
+/// single artist string, almost always the primary (first) credited artist. A
+/// collaboration reaches here as the joined `"A, B"` credit that
+/// `primary_artist()` builds for display, which matches neither `/api/get`
+/// (exact) nor `/api/search`, so those tracks find no lyrics even when LRCLIB
+/// has them (issue #410). Try the full credit first (correct for solo tracks and
+/// acts whose own name contains a comma, e.g. "Earth, Wind & Fire"), then the
+/// first credited artist alone. The first artist is taken from the structured
+/// list, never by splitting the joined string, so a comma inside an artist name
+/// is preserved.
+fn artist_query_candidates(artists: &[String]) -> Vec<String> {
+  let joined = artists.join(", ");
+  let mut candidates = vec![joined.clone()];
+  if let Some(first) = artists.first() {
+    let first = first.trim();
+    if !first.is_empty() && first != joined {
+      candidates.push(first.to_string());
+    }
+  }
+  candidates
+}
+
+/// Exact `/api/get` lookup for one artist string. Returns the record only when
+/// the request succeeds and it actually carries lyrics.
+async fn lrclib_get(
+  client: &reqwest::Client,
+  track: &str,
+  artist: &str,
+  duration: f64,
+) -> Option<LrcResponse> {
+  let query = [
+    ("track_name", track.to_string()),
+    ("artist_name", artist.to_string()),
+    ("duration", (duration.round() as u64).to_string()),
+  ];
+  let resp = client
+    .get("https://lrclib.net/api/get")
+    .query(&query)
+    .send()
+    .await
+    .ok()?;
+  if !resp.status().is_success() {
+    return None;
+  }
+  let lrc_resp = resp.json::<LrcResponse>().await.ok()?;
+  lrc_resp.has_lyrics().then_some(lrc_resp)
+}
+
+/// Fuzzy `/api/search` lookup for one artist string, reduced to the best hit via
+/// [`pick_search_result`].
+async fn lrclib_search(
+  client: &reqwest::Client,
+  track: &str,
+  artist: &str,
+  duration: f64,
+) -> Option<LrcResponse> {
+  let query = [
+    ("track_name", track.to_string()),
+    ("artist_name", artist.to_string()),
+  ];
+  let resp = client
+    .get("https://lrclib.net/api/search")
+    .query(&query)
+    .send()
+    .await
+    .ok()?;
+  if !resp.status().is_success() {
+    return None;
+  }
+  let results = resp.json::<Vec<LrcResponse>>().await.ok()?;
+  pick_search_result(results, duration)
+}
+
+/// Pick the best `/api/search` hit: prefer synced lyrics over plain-only, then
+/// the result whose duration is closest to the playing track's (so synced
+/// timestamps line up). With an unknown duration (e.g. `0.0`), duration is
+/// ignored.
+fn pick_search_result(results: Vec<LrcResponse>, duration: f64) -> Option<LrcResponse> {
+  results
+    .into_iter()
+    .filter(LrcResponse::has_lyrics)
+    .min_by_key(|result| {
+      let synced_rank = if result
+        .syncedLyrics
+        .as_deref()
+        .is_some_and(|text| !text.trim().is_empty())
+      {
+        0u64
+      } else {
+        1
+      };
+      let duration_diff_ms = if duration > 0.0 {
+        result
+          .duration
+          .map(|d| ((d - duration).abs() * 1000.0) as u64)
+          .unwrap_or(u64::MAX)
+      } else {
+        0
+      };
+      (synced_rank, duration_diff_ms)
+    })
+}
+
+/// Parse LRC-format synced lyrics (`[mm:ss.xx] text` lines) into `(ms, line)`
+/// pairs. A line may carry several leading timestamps (`[00:12.00][00:45.30]x`);
+/// it is emitted once per timestamp, and whitespace between (or before) the tags
+/// is ignored. The result is sorted by time. Lines without
+/// a valid leading timestamp are dropped, so a body of plain (unsynced) lyrics
+/// parses to an empty vec.
+fn parse_synced_lyrics(text: &str) -> Vec<(u128, String)> {
+  let mut lines = Vec::new();
+  for line in text.lines() {
+    let mut rest = line;
+    let mut stamps = Vec::new();
+    while let Some(inner) = rest.trim_start().strip_prefix('[') {
+      let Some(end) = inner.find(']') else { break };
+      let Some(ms) = parse_lrc_timestamp(&inner[..end]) else {
+        break;
+      };
+      stamps.push(ms);
+      rest = &inner[end + 1..];
+    }
+    let content = rest.trim();
+    for ms in stamps {
+      lines.push((ms, content.to_string()));
+    }
+  }
+  // Stable, so lines that share a timestamp keep their file order.
+  lines.sort_by_key(|(ms, _)| *ms);
+  lines
+}
+
+/// Turn the inside of an LRC time tag (`mm:ss` or `mm:ss.xx`) into milliseconds.
+/// Returns `None` for anything else, such as `ar:Queen` or `offset:+500`.
+fn parse_lrc_timestamp(tag: &str) -> Option<u128> {
+  let parts: Vec<&str> = tag.split(':').collect();
+  if parts.len() != 2 {
+    return None;
+  }
+  let mins = parts[0].trim().parse::<u64>().ok()?;
+  let secs_parts: Vec<&str> = parts[1].split('.').collect();
+  let secs = secs_parts[0].trim().parse::<u64>().ok()?;
+  let ms = if secs_parts.len() > 1 {
+    let ms_str = secs_parts[1].trim();
+    if ms_str.is_empty() || !ms_str.bytes().all(|b| b.is_ascii_digit()) {
+      return None;
+    }
+    let digits = if ms_str.len() > 3 {
+      &ms_str[..3]
+    } else {
+      ms_str
+    };
+    let ms_val = digits.parse::<u64>().ok()?;
+    match digits.len() {
+      1 => ms_val * 100,
+      2 => ms_val * 10,
+      _ => ms_val,
+    }
+  } else {
+    0
+  };
+
+  let total_ms = (mins * 60 * 1000) + (secs * 1000) + ms;
+  Some(total_ms as u128)
+}
+
+/// Turn plain (unsynced) lyrics into `(ms, line)` pairs with synthetic,
+/// evenly-spaced timestamps across the track duration. This lets the existing
+/// synced-lyrics renderer display them as static text that scrolls approximately
+/// in time. With an unknown duration (e.g. `0.0`), every line gets timestamp `0`
+/// so the text simply renders from the top.
+fn synthesize_plain_lyrics(text: &str, duration_secs: f64) -> Vec<(u128, String)> {
+  let lines: Vec<String> = text.lines().map(|line| line.trim().to_string()).collect();
+  let line_count = lines.len().max(1) as f64;
+  let total_ms = if duration_secs > 0.0 {
+    duration_secs * 1000.0
+  } else {
+    0.0
+  };
+  lines
+    .into_iter()
+    .enumerate()
+    .map(|(idx, line)| {
+      let ts = ((idx as f64 / line_count) * total_ms) as u128;
+      (ts, line)
+    })
+    .collect()
+}
+
+fn parse_announcement_datetime(value: &str) -> Option<DateTime<Utc>> {
+  DateTime::parse_from_rfc3339(value)
+    .ok()
+    .map(|dt| dt.with_timezone(&Utc))
+}
+
+fn parse_announcement_level(level: Option<&str>) -> AnnouncementLevel {
+  match level.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+    Some("critical") => AnnouncementLevel::Critical,
+    Some("warning") => AnnouncementLevel::Warning,
+    _ => AnnouncementLevel::Info,
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{
+    apply_lyrics_response, artist_query_candidates, parse_synced_lyrics, pick_search_result,
+    synthesize_plain_lyrics, LrcResponse,
+  };
+  use crate::core::app::{App, DisplayDomain, LyricsStatus};
+
+  #[test]
+  fn artist_candidates_single_artist_has_no_fallback() {
+    // A solo track queries once; nothing extra to try.
+    assert_eq!(
+      artist_query_candidates(&["Kygo".to_string()]),
+      vec!["Kygo".to_string()]
+    );
+  }
+
+  #[test]
+  fn artist_candidates_add_primary_artist_for_collaborations() {
+    // LRCLIB stores "Take Me Back" under "Kygo" alone, so the joined credit must
+    // fall back to the first artist (issue #410).
+    assert_eq!(
+      artist_query_candidates(&["Kygo".to_string(), "Max McNown".to_string()]),
+      vec!["Kygo, Max McNown".to_string(), "Kygo".to_string()]
+    );
+  }
+
+  #[test]
+  fn artist_candidates_preserve_comma_inside_artist_name() {
+    // Splitting the joined display string on ", " would corrupt an act whose own
+    // name contains a comma; the primary artist must come from the structured
+    // list instead.
+    assert_eq!(
+      artist_query_candidates(&["Earth, Wind & Fire".to_string(), "Guest".to_string()]),
+      vec![
+        "Earth, Wind & Fire, Guest".to_string(),
+        "Earth, Wind & Fire".to_string(),
+      ]
+    );
+  }
+
+  #[test]
+  fn artist_candidates_empty_list_yields_single_empty_query() {
+    assert_eq!(artist_query_candidates(&[]), vec![String::new()]);
+  }
+
+  #[test]
+  fn parses_timestamped_lyric_lines_and_drops_untimed_ones() {
+    let text = "[00:12.34] Hello\n[01:05.00] World\nno timestamp here";
+    let parsed = parse_synced_lyrics(text);
+    assert_eq!(
+      parsed,
+      vec![
+        (12_340u128, "Hello".to_string()),
+        (65_000, "World".to_string())
+      ]
+    );
+  }
+
+  #[test]
+  fn plain_unsynced_lyrics_parse_to_empty_synced() {
+    // A body of plain lyrics (no timestamps) yields no synced lines, which is
+    // what triggers the plain-lyrics fallback in `get_lyrics`.
+    assert!(parse_synced_lyrics("just\nplain\nwords").is_empty());
+  }
+
+  #[test]
+  fn synthesizes_evenly_spaced_timestamps_across_duration() {
+    let parsed = synthesize_plain_lyrics("a\nb\nc\nd", 4.0);
+    assert_eq!(
+      parsed,
+      vec![
+        (0u128, "a".to_string()),
+        (1_000, "b".to_string()),
+        (2_000, "c".to_string()),
+        (3_000, "d".to_string()),
+      ]
+    );
+  }
+
+  #[test]
+  fn synthesizes_zero_timestamps_when_duration_unknown() {
+    let parsed = synthesize_plain_lyrics("a\nb", 0.0);
+    assert_eq!(parsed, vec![(0u128, "a".to_string()), (0, "b".to_string())]);
+  }
+
+  #[allow(non_snake_case)]
+  fn search_result(
+    syncedLyrics: Option<&str>,
+    plainLyrics: Option<&str>,
+    duration: Option<f64>,
+  ) -> LrcResponse {
+    LrcResponse {
+      syncedLyrics: syncedLyrics.map(str::to_string),
+      plainLyrics: plainLyrics.map(str::to_string),
+      duration,
+    }
+  }
+
+  #[test]
+  fn search_prefers_synced_result_with_closest_duration() {
+    let results = vec![
+      search_result(None, Some("plain only"), Some(200.0)),
+      search_result(Some("[00:01.00] far"), None, Some(300.0)),
+      search_result(Some("[00:01.00] close"), None, Some(201.0)),
+    ];
+    let picked = pick_search_result(results, 200.0).unwrap();
+    assert_eq!(picked.syncedLyrics.as_deref(), Some("[00:01.00] close"));
+  }
+
+  #[test]
+  fn search_falls_back_to_plain_when_no_synced_result() {
+    let results = vec![
+      search_result(None, None, Some(200.0)),
+      search_result(None, Some("plain"), Some(200.0)),
+    ];
+    let picked = pick_search_result(results, 200.0).unwrap();
+    assert_eq!(picked.plainLyrics.as_deref(), Some("plain"));
+  }
+
+  #[test]
+  fn search_returns_none_when_no_result_has_lyrics() {
+    let results = vec![search_result(None, Some("   "), Some(200.0))];
+    assert!(pick_search_result(results, 200.0).is_none());
+  }
+
+  #[test]
+  fn a_synced_lrclib_response_publishes_lyrics_under_a_new_revision() {
+    let mut app = App::default();
+    let before = app.display_revisions().get(DisplayDomain::Lyrics);
+
+    apply_lyrics_response(
+      &mut app,
+      Some(search_result(Some("[00:01.00] hi"), None, None)),
+      180.0,
+    );
+
+    assert!(app.display_revisions().get(DisplayDomain::Lyrics) > before);
+    assert_eq!(app.lyrics_status(), LyricsStatus::Found);
+    assert_eq!(app.lyrics(), Some(&[(1_000u128, "hi".to_string())][..]));
+    assert!(app.lyrics_synced());
+  }
+
+  #[test]
+  fn lrc_metadata_tags_are_not_lyric_lines() {
+    let text = "[ar:Queen]\n[ti:Song]\n[by:someone]\n[00:01.00] Hi";
+    assert_eq!(
+      parse_synced_lyrics(text),
+      vec![(1_000u128, "Hi".to_string())]
+    );
+  }
+
+  #[test]
+  fn an_lrc_offset_tag_is_not_a_line_at_eight_minutes() {
+    let text = "[ar:Queen]\n[offset:+500]\n[00:01.00] Hi";
+    assert_eq!(
+      parse_synced_lyrics(text),
+      vec![(1_000u128, "Hi".to_string())]
+    );
+  }
+
+  #[test]
+  fn a_one_digit_lrc_fraction_is_tenths_of_a_second() {
+    assert_eq!(
+      parse_synced_lyrics("[00:12.5] x"),
+      vec![(12_500u128, "x".to_string())]
+    );
+  }
+
+  #[test]
+  fn an_lrc_fraction_past_three_digits_keeps_the_milliseconds() {
+    assert_eq!(
+      parse_synced_lyrics("[00:01.1234] x"),
+      vec![(1_123u128, "x".to_string())]
+    );
+  }
+
+  #[test]
+  fn synced_lyrics_of_only_lrc_tags_fall_back_to_plain_lyrics() {
+    let mut app = App::default();
+    apply_lyrics_response(
+      &mut app,
+      Some(search_result(
+        Some("[ar:X]\n[ti:Y]"),
+        Some("plain words"),
+        Some(180.0),
+      )),
+      180.0,
+    );
+
+    assert_eq!(app.lyrics_status(), LyricsStatus::Found);
+    assert!(!app.lyrics_synced());
+    assert_eq!(
+      app.lyrics(),
+      Some(&[(0u128, "plain words".to_string())][..])
+    );
+  }
+
+  #[test]
+  fn an_lrc_line_with_two_timestamps_appears_at_both() {
+    assert_eq!(
+      parse_synced_lyrics("[00:12.00][00:45.30]Chorus\n[00:20.00]Verse"),
+      vec![
+        (12_000u128, "Chorus".to_string()),
+        (20_000u128, "Verse".to_string()),
+        (45_300u128, "Chorus".to_string()),
+      ]
+    );
+  }
+
+  #[test]
+  fn an_lrc_line_with_three_timestamps_appears_at_each() {
+    assert_eq!(
+      parse_synced_lyrics("[00:03.00][00:02.00][00:01.50] Hey"),
+      vec![
+        (1_500u128, "Hey".to_string()),
+        (2_000u128, "Hey".to_string()),
+        (3_000u128, "Hey".to_string()),
+      ]
+    );
+  }
+
+  #[test]
+  fn out_of_order_lrc_lines_come_back_sorted() {
+    assert_eq!(
+      parse_synced_lyrics("[00:30.00]B\n[00:10.00]A"),
+      vec![(10_000u128, "A".to_string()), (30_000u128, "B".to_string())]
+    );
+  }
+
+  #[test]
+  fn lrc_lines_with_the_same_timestamp_keep_their_file_order() {
+    assert_eq!(
+      parse_synced_lyrics("[00:05.00]first\n[00:05.00]second\n[00:05.00]third"),
+      vec![
+        (5_000u128, "first".to_string()),
+        (5_000u128, "second".to_string()),
+        (5_000u128, "third".to_string()),
+      ]
+    );
+  }
+
+  #[test]
+  fn a_multi_timestamp_lrc_line_with_empty_text_keeps_every_timestamp() {
+    assert_eq!(
+      parse_synced_lyrics("[00:10.00][00:20.00]\n[00:15.00]Hi"),
+      vec![
+        (10_000u128, String::new()),
+        (15_000u128, "Hi".to_string()),
+        (20_000u128, String::new()),
+      ]
+    );
+  }
+
+  #[test]
+  fn an_lrc_tag_group_that_is_not_a_timestamp_stays_in_the_text() {
+    assert_eq!(
+      parse_synced_lyrics("[00:12.00][ar:x]text\n[00:13.00][00:xx]more"),
+      vec![
+        (12_000u128, "[ar:x]text".to_string()),
+        (13_000u128, "[00:xx]more".to_string()),
+      ]
+    );
+  }
+
+  #[test]
+  fn malformed_lrc_tags_are_dropped() {
+    let text = [
+      "[00:12.00 no close",
+      "[]empty",
+      "[1234]x",
+      "[00:01.]x",
+      "[offset:+500][00:02.00]x",
+    ]
+    .join("\n");
+    assert_eq!(parse_synced_lyrics(&text), Vec::<(u128, String)>::new());
+  }
+
+  #[test]
+  fn a_single_timestamp_lrc_line_is_unchanged() {
+    assert_eq!(
+      parse_synced_lyrics("[01:02.03] Hello [there]"),
+      vec![(62_030u128, "Hello [there]".to_string())]
+    );
+  }
+
+  #[test]
+  fn spaces_between_lrc_timestamps_are_ignored() {
+    assert_eq!(
+      parse_synced_lyrics("[00:12.00]   [00:45.30] Chorus"),
+      vec![
+        (12_000u128, "Chorus".to_string()),
+        (45_300u128, "Chorus".to_string()),
+      ]
+    );
+  }
+
+  #[test]
+  fn tabs_between_lrc_timestamps_are_ignored() {
+    assert_eq!(
+      parse_synced_lyrics("[00:12.00]\t[00:45.30]\tChorus"),
+      vec![
+        (12_000u128, "Chorus".to_string()),
+        (45_300u128, "Chorus".to_string()),
+      ]
+    );
+  }
+
+  #[test]
+  fn mixed_whitespace_between_and_before_lrc_timestamps_is_ignored() {
+    assert_eq!(
+      parse_synced_lyrics(" \t[00:12.00]   [00:45.30]\t[01:10.00] Chorus line"),
+      vec![
+        (12_000u128, "Chorus line".to_string()),
+        (45_300u128, "Chorus line".to_string()),
+        (70_000u128, "Chorus line".to_string()),
+      ]
+    );
+  }
+
+  #[test]
+  fn an_indented_single_timestamp_lrc_line_is_parsed() {
+    assert_eq!(
+      parse_synced_lyrics("  [00:03.00] indented"),
+      vec![(3_000u128, "indented".to_string())]
+    );
+  }
+
+  #[test]
+  fn a_spaced_non_timestamp_tag_stays_in_the_text() {
+    assert_eq!(
+      parse_synced_lyrics("[00:12.00] [ar:x] text\n[00:13.00] \t[00:xx] more"),
+      vec![
+        (12_000u128, "[ar:x] text".to_string()),
+        (13_000u128, "[00:xx] more".to_string()),
+      ]
+    );
+  }
+}

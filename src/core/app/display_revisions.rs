@@ -1,0 +1,213 @@
+use super::*;
+
+#[derive(Clone, Copy)]
+pub enum DisplayDomain {
+  Route,
+  Status,
+  Source,
+  Theme,
+  Playback,
+  Party,
+  Devices,
+  Search,
+  Lyrics,
+  Artist,
+  Library,
+  /// The Liked Songs page cache, apart from `Library`: a background chain
+  /// fetches every page, and a frontend must not resend the list per bump.
+  LikedSongs,
+  Queue,
+  Stats,
+  /// The album the app holds for its album page, fetched by id.
+  Album,
+  /// The plays finished since this process started.
+  Session,
+  Discover,
+  /// The playlist-sync links and the run state.
+  PlaylistSync,
+  /// The rows of the shared track table and the list they belong to.
+  TrackTable,
+  /// Spotify's recently played tracks.
+  RecentlyPlayed,
+  /// The liked track ids among the rows a frontend can show.
+  #[cfg_attr(not(feature = "gui"), allow(dead_code))]
+  LikedMarks,
+  /// The settings rows a frontend offers.
+  Settings,
+  /// The desktop shell's updater.
+  #[cfg_attr(not(feature = "gui"), allow(dead_code))]
+  Update,
+  /// The podcast show the app holds for its show page, with its episodes.
+  Show,
+  /// The echovena announcement that is active now.
+  Announcement,
+}
+
+/// Per-domain revisions that move only when that domain's displayed state changed.
+#[derive(Default, Clone, Copy)]
+#[cfg_attr(feature = "gui", derive(serde::Serialize))]
+#[cfg_attr(all(test, feature = "gui"), derive(ts_rs::TS))]
+pub struct DisplayRevisions {
+  route: u64,
+  status: u64,
+  source: u64,
+  theme: u64,
+  playback: u64,
+  party: u64,
+  devices: u64,
+  search: u64,
+  lyrics: u64,
+  artist: u64,
+  library: u64,
+  liked: u64,
+  queue: u64,
+  stats: u64,
+  album: u64,
+  session: u64,
+  discover: u64,
+  playlist_sync: u64,
+  track_table: u64,
+  recently_played: u64,
+  liked_marks: u64,
+  settings: u64,
+  update: u64,
+  show: u64,
+  announcement: u64,
+}
+
+impl DisplayDomain {
+  /// Every domain, in declaration order.
+  pub const ALL: [DisplayDomain; 25] = [
+    DisplayDomain::Route,
+    DisplayDomain::Status,
+    DisplayDomain::Source,
+    DisplayDomain::Theme,
+    DisplayDomain::Playback,
+    DisplayDomain::Party,
+    DisplayDomain::Devices,
+    DisplayDomain::Search,
+    DisplayDomain::Lyrics,
+    DisplayDomain::Artist,
+    DisplayDomain::Library,
+    DisplayDomain::LikedSongs,
+    DisplayDomain::Queue,
+    DisplayDomain::Stats,
+    DisplayDomain::Album,
+    DisplayDomain::Session,
+    DisplayDomain::Discover,
+    DisplayDomain::PlaylistSync,
+    DisplayDomain::TrackTable,
+    DisplayDomain::RecentlyPlayed,
+    DisplayDomain::LikedMarks,
+    DisplayDomain::Settings,
+    DisplayDomain::Update,
+    DisplayDomain::Show,
+    DisplayDomain::Announcement,
+  ];
+}
+
+impl DisplayRevisions {
+  pub(super) fn bump(&mut self, domain: DisplayDomain) {
+    let slot = match domain {
+      DisplayDomain::Route => &mut self.route,
+      DisplayDomain::Status => &mut self.status,
+      DisplayDomain::Source => &mut self.source,
+      DisplayDomain::Theme => &mut self.theme,
+      DisplayDomain::Playback => &mut self.playback,
+      DisplayDomain::Party => &mut self.party,
+      DisplayDomain::Devices => &mut self.devices,
+      DisplayDomain::Search => &mut self.search,
+      DisplayDomain::Lyrics => &mut self.lyrics,
+      DisplayDomain::Artist => &mut self.artist,
+      DisplayDomain::Library => &mut self.library,
+      DisplayDomain::LikedSongs => &mut self.liked,
+      DisplayDomain::Queue => &mut self.queue,
+      DisplayDomain::Stats => &mut self.stats,
+      DisplayDomain::Album => &mut self.album,
+      DisplayDomain::Session => &mut self.session,
+      DisplayDomain::Discover => &mut self.discover,
+      DisplayDomain::PlaylistSync => &mut self.playlist_sync,
+      DisplayDomain::TrackTable => &mut self.track_table,
+      DisplayDomain::RecentlyPlayed => &mut self.recently_played,
+      DisplayDomain::LikedMarks => &mut self.liked_marks,
+      DisplayDomain::Settings => &mut self.settings,
+      DisplayDomain::Update => &mut self.update,
+      DisplayDomain::Show => &mut self.show,
+      DisplayDomain::Announcement => &mut self.announcement,
+    };
+    *slot = slot.wrapping_add(1);
+  }
+
+  #[cfg(any(test, feature = "gui"))]
+  pub fn get(&self, domain: DisplayDomain) -> u64 {
+    match domain {
+      DisplayDomain::Route => self.route,
+      DisplayDomain::Status => self.status,
+      DisplayDomain::Source => self.source,
+      DisplayDomain::Theme => self.theme,
+      DisplayDomain::Playback => self.playback,
+      DisplayDomain::Party => self.party,
+      DisplayDomain::Devices => self.devices,
+      DisplayDomain::Search => self.search,
+      DisplayDomain::Lyrics => self.lyrics,
+      DisplayDomain::Artist => self.artist,
+      DisplayDomain::Library => self.library,
+      DisplayDomain::LikedSongs => self.liked,
+      DisplayDomain::Queue => self.queue,
+      DisplayDomain::Stats => self.stats,
+      DisplayDomain::Album => self.album,
+      DisplayDomain::Session => self.session,
+      DisplayDomain::Discover => self.discover,
+      DisplayDomain::PlaylistSync => self.playlist_sync,
+      DisplayDomain::TrackTable => self.track_table,
+      DisplayDomain::RecentlyPlayed => self.recently_played,
+      DisplayDomain::LikedMarks => self.liked_marks,
+      DisplayDomain::Settings => self.settings,
+      DisplayDomain::Update => self.update,
+      DisplayDomain::Show => self.show,
+      DisplayDomain::Announcement => self.announcement,
+    }
+  }
+}
+
+impl App {
+  /// Bump a display revision from a producer whose fields are not behind a setter yet.
+  pub(crate) fn bump_display(&mut self, domain: DisplayDomain) {
+    self.display_revisions.bump(domain);
+  }
+
+  /// A copy of every display revision, for a frontend to diff against.
+  #[cfg(any(test, feature = "gui"))]
+  pub fn display_revisions(&self) -> DisplayRevisions {
+    self.display_revisions
+  }
+
+  /// The playback view the Playback revision counted.
+  #[cfg(feature = "gui")]
+  pub(crate) fn playback_view(&self) -> &super::PlaybackView {
+    &self.playback_view
+  }
+
+  /// The queue view the Queue revision counted.
+  #[cfg(feature = "gui")]
+  pub(crate) fn queue_view(&self) -> &(Option<QueueState>, Vec<TrackInfo>, Option<TrackInfo>) {
+    &self.queue_view
+  }
+
+  #[cfg(feature = "gui")]
+  pub(crate) fn update_status(&self) -> Option<&crate::core::update::UpdateStatus> {
+    self.update_status.as_ref()
+  }
+
+  #[cfg(feature = "gui")]
+  pub(crate) fn set_update_status(&mut self, status: crate::core::update::UpdateStatus) {
+    if self.update_status.as_ref() != Some(&status) {
+      // The Updates rows show only with an updater.
+      if self.update_status.is_none() {
+        self.display_revisions.bump(DisplayDomain::Settings);
+      }
+      self.update_status = Some(status);
+      self.display_revisions.bump(DisplayDomain::Update);
+    }
+  }
+}

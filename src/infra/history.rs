@@ -1,0 +1,3760 @@
+use crate::core::app::{ActiveBlock, App, RecapPromptState, SessionPlay};
+use crate::infra::media_metadata::{
+  tracking_playback_snapshot, PlaybackItemKind, PlaybackSnapshot, PlaybackSource,
+};
+use anyhow::{anyhow, Result};
+use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone, Timelike, Utc};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, OpenOptions};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Instant;
+use tokio::sync::{oneshot, Mutex};
+use tokio::task::{JoinHandle, JoinSet};
+
+const HISTORY_SUBDIR: &str = "history";
+const LISTENS_FILE_NAME: &str = "listens.jsonl";
+const LAST_RECAP_FILE_NAME: &str = "last_recap_at.txt";
+const LAST_SYNCED_FILE_NAME: &str = "last_synced_at.txt";
+const SYNC_BASE_URL: &str = "https://echovena.com";
+const CLOUD_SYNC_PATH: &str = "/api/sync";
+const NOW_PLAYING_SYNC_PATH: &str = "/api/sync/now-playing";
+/// Heartbeat interval: must be well under the 5-minute online threshold used by the website.
+const NOW_PLAYING_HEARTBEAT_SECS: u64 = 60;
+/// Push immediately when observed progress deviates this far from the progress
+/// expected since the last push (a seek), keeping the widget's bar honest.
+const NOW_PLAYING_SEEK_THRESHOLD_MS: u128 = 5_000;
+const SYNC_BASE_URL_ENV_KEY: &str = "ECHOVENA_SYNC_BASE_URL";
+const MAX_INTERVAL_MS: u64 = 5_000;
+const REPLAY_RESET_THRESHOLD_MS: u128 = 15_000;
+const REPLAY_PREVIOUS_PROGRESS_FLOOR_MS: u128 = 30_000;
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryPlaybackSource {
+  NativeContext,
+  NativeRawList,
+  ExternalDevice,
+  AppleMusic,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryItemKind {
+  Track,
+  Episode,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ListenRecord {
+  pub started_at: DateTime<Utc>,
+  pub ended_at: DateTime<Utc>,
+  pub listened_ms: u64,
+  pub duration_ms: u32,
+  pub qualified: bool,
+  pub title: String,
+  pub artists: Vec<String>,
+  pub album: String,
+  pub item_kind: HistoryItemKind,
+  pub item_id: Option<String>,
+  pub item_uri: Option<String>,
+  pub context_uri: Option<String>,
+  pub source: HistoryPlaybackSource,
+  /// The cover for the Session screen; never written to the listens file.
+  #[serde(skip)]
+  pub image_url: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SessionIdentity {
+  title: String,
+  artists: Vec<String>,
+  album: String,
+  item_id: Option<String>,
+  item_uri: Option<String>,
+  context_uri: Option<String>,
+  source: HistoryPlaybackSource,
+}
+
+#[derive(Clone, Debug)]
+struct ActiveListenSession {
+  started_at: DateTime<Utc>,
+  identity: SessionIdentity,
+  title: String,
+  artists: Vec<String>,
+  album: String,
+  item_kind: HistoryItemKind,
+  item_id: Option<String>,
+  item_uri: Option<String>,
+  context_uri: Option<String>,
+  source: HistoryPlaybackSource,
+  duration_ms: u32,
+  listened_ms: u64,
+  last_progress_ms: u128,
+  last_is_playing: bool,
+  image_url: Option<String>,
+}
+
+#[derive(Default)]
+struct HistoryCollector {
+  current: Option<ActiveListenSession>,
+  last_observed_at: Option<Instant>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct NowPlayingPayload {
+  title: String,
+  artists: Vec<String>,
+  album: String,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  image_url: Option<String>,
+  duration_ms: u32,
+  progress_ms: u64,
+  is_playing: bool,
+  is_live: bool,
+  /// Client Unix millis when `progress_ms` was sampled, so the backend can
+  /// extrapolate the widget's progress bar between heartbeats.
+  progress_at_ms: i64,
+}
+
+impl NowPlayingPayload {
+  fn from_snapshot(snapshot: &PlaybackSnapshot, sampled_at_ms: i64) -> Self {
+    Self {
+      title: snapshot.metadata.title.clone(),
+      artists: snapshot.metadata.artists.clone(),
+      album: snapshot.metadata.album.clone(),
+      image_url: snapshot.metadata.image_url.clone(),
+      duration_ms: snapshot.metadata.duration_ms,
+      progress_ms: snapshot.progress_ms.min(u64::MAX as u128) as u64,
+      is_playing: snapshot.is_playing,
+      is_live: snapshot.is_live,
+      progress_at_ms: sampled_at_ms,
+    }
+  }
+}
+
+#[derive(Debug)]
+enum NowPlayingAction {
+  Push(NowPlayingPayload),
+  Clear,
+}
+
+/// State captured at the last push; `Some` exactly while the cloud holds
+/// now-playing state for this session.
+struct PushedState {
+  title: String,
+  artists: Vec<String>,
+  is_playing: bool,
+  progress_ms: u128,
+  at: Instant,
+}
+
+/// Decides when the cloud now-playing state needs an update. Pushes on track
+/// change, play/pause flip, seek discontinuity, and a heartbeat (also while
+/// paused, so the public widget can show "paused" instead of decaying to
+/// offline); clears once when track playback stops mid-session.
+#[derive(Default)]
+struct NowPlayingTracker {
+  pushed: Option<PushedState>,
+}
+
+impl NowPlayingTracker {
+  fn observe(
+    &mut self,
+    snapshot: Option<&PlaybackSnapshot>,
+    now: Instant,
+  ) -> Option<NowPlayingAction> {
+    let snap = snapshot.filter(|s| s.item_kind == PlaybackItemKind::Track);
+    let Some(snap) = snap else {
+      return self.pushed.take().map(|_| NowPlayingAction::Clear);
+    };
+
+    let should_push = match &self.pushed {
+      None => true,
+      Some(pushed) => {
+        let identity_changed =
+          pushed.title != snap.metadata.title || pushed.artists != snap.metadata.artists;
+        let play_state_changed = pushed.is_playing != snap.is_playing;
+        let heartbeat_due = now.duration_since(pushed.at).as_secs() >= NOW_PLAYING_HEARTBEAT_SECS;
+        let expected_progress = if pushed.is_playing {
+          pushed.progress_ms + now.duration_since(pushed.at).as_millis()
+        } else {
+          pushed.progress_ms
+        };
+        let seek_detected =
+          snap.progress_ms.abs_diff(expected_progress) > NOW_PLAYING_SEEK_THRESHOLD_MS;
+        identity_changed || play_state_changed || heartbeat_due || seek_detected
+      }
+    };
+
+    if should_push {
+      self.pushed = Some(PushedState {
+        title: snap.metadata.title.clone(),
+        artists: snap.metadata.artists.clone(),
+        is_playing: snap.is_playing,
+        progress_ms: snap.progress_ms,
+        at: now,
+      });
+      return Some(NowPlayingAction::Push(NowPlayingPayload::from_snapshot(
+        snap,
+        Utc::now().timestamp_millis(),
+      )));
+    }
+    None
+  }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecapPeriod {
+  SevenDays,
+  ThirtyDays,
+  Month,
+  Year,
+  All,
+}
+
+impl RecapPeriod {
+  pub const ALL_PERIODS: [RecapPeriod; 5] = [
+    RecapPeriod::SevenDays,
+    RecapPeriod::ThirtyDays,
+    RecapPeriod::Month,
+    RecapPeriod::Year,
+    RecapPeriod::All,
+  ];
+
+  pub fn next(self) -> Self {
+    self.cycle(1)
+  }
+
+  pub fn prev(self) -> Self {
+    self.cycle(Self::ALL_PERIODS.len() - 1)
+  }
+
+  fn cycle(self, offset: usize) -> Self {
+    let index = Self::ALL_PERIODS
+      .iter()
+      .position(|period| *period == self)
+      .unwrap_or(0);
+    Self::ALL_PERIODS[(index + offset) % Self::ALL_PERIODS.len()]
+  }
+
+  /// The inverse of [`parse_recap_period`].
+  #[cfg_attr(not(feature = "gui"), allow(dead_code))]
+  pub fn key(self) -> &'static str {
+    match self {
+      RecapPeriod::SevenDays => "7d",
+      RecapPeriod::ThirtyDays => "30d",
+      RecapPeriod::Month => "month",
+      RecapPeriod::Year => "year",
+      RecapPeriod::All => "all",
+    }
+  }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StreakSummary {
+  pub current_days: u32,
+  pub longest_days: u32,
+  pub today_ms: u64,
+}
+
+/// Aggregated listening stats backing the in-app Stats screen.
+#[derive(Clone, Debug)]
+pub struct StatsData {
+  pub total_plays: usize,
+  pub total_time_ms: u64,
+  pub top_tracks: Vec<RankedEntry>,
+  pub top_artists: Vec<RankedEntry>,
+  pub top_albums: Vec<RankedEntry>,
+  pub days: Vec<RankedEntry>,
+  /// Qualified plays in each of [`RecapPeriod::ALL_PERIODS`], whatever the selected period.
+  #[cfg_attr(not(feature = "gui"), allow(dead_code))]
+  pub period_plays: Vec<(RecapPeriod, usize)>,
+  /// The top five tracks of the last 7 days, whatever the selected period.
+  #[cfg_attr(not(feature = "gui"), allow(dead_code))]
+  pub week_tracks: Vec<RankedEntry>,
+  /// One per `top_artists` entry, in the same order.
+  #[cfg_attr(not(feature = "gui"), allow(dead_code))]
+  pub artist_ranks: Vec<ArtistRank>,
+  /// Empty for [`RecapPeriod::All`].
+  #[cfg_attr(not(feature = "gui"), allow(dead_code))]
+  pub movements: Vec<ArtistMovement>,
+}
+
+/// An artist's rank over all time next to the selected period.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
+pub struct ArtistRank {
+  /// 1-based, by listened time.
+  pub all_time: Option<u32>,
+  /// The artist's first qualified listen falls inside the period.
+  pub new: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
+pub enum MovementKind {
+  Climb,
+  Fall,
+  New,
+}
+
+/// One artist whose rank in the period differs from its all-time rank.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
+pub struct ArtistMovement {
+  pub name: String,
+  pub kind: MovementKind,
+  /// The all-time rank.
+  pub from: Option<u32>,
+  /// The rank in the period; `None` for an artist the period never played.
+  pub to: Option<u32>,
+}
+
+const STATS_LIST_LIMIT: usize = 20;
+const MOVEMENT_TOP: u32 = 10;
+const WEEK_TRACKS: usize = 5;
+
+/// `filtered` is the selected period's qualified listens and `listens` every recorded one.
+/// Build frontend details from counts and durations in the selected language.
+pub fn build_stats_data_with(
+  filtered: &[ListenRecord],
+  listens: &[ListenRecord],
+  period: RecapPeriod,
+  strings: &crate::core::i18n::Strings,
+) -> StatsData {
+  let now = Local::now();
+  let qualified: Vec<ListenRecord> = listens
+    .iter()
+    .filter(|record| record.qualified)
+    .cloned()
+    .collect();
+  let week: Vec<ListenRecord> = qualified
+    .iter()
+    .filter(|record| in_period(record, RecapPeriod::SevenDays, &now))
+    .cloned()
+    .collect();
+  let top_artists = aggregate_top_artists_with(filtered, STATS_LIST_LIMIT, strings);
+  let all_time = aggregate_top_artists_with(&qualified, usize::MAX, strings);
+  let in_period_ranks = aggregate_top_artists_with(filtered, usize::MAX, strings);
+  StatsData {
+    total_plays: filtered.len(),
+    total_time_ms: filtered.iter().map(|record| record.listened_ms).sum(),
+    top_tracks: aggregate_top_tracks_with(filtered, STATS_LIST_LIMIT, strings),
+    artist_ranks: artist_ranks(&top_artists, &all_time),
+    movements: if period == RecapPeriod::All {
+      Vec::new()
+    } else {
+      artist_movements(&in_period_ranks, &all_time)
+    },
+    top_artists,
+    top_albums: aggregate_top_albums_with(filtered, STATS_LIST_LIMIT, strings),
+    days: aggregate_days_with(filtered, strings),
+    period_plays: RecapPeriod::ALL_PERIODS
+      .iter()
+      .map(|&each| {
+        let plays = qualified
+          .iter()
+          .filter(|record| in_period(record, each, &now))
+          .count();
+        (each, plays)
+      })
+      .collect(),
+    week_tracks: aggregate_top_tracks_with(&week, WEEK_TRACKS, strings),
+  }
+}
+
+fn rank_of(ranking: &[RankedEntry], name: &str) -> Option<u32> {
+  ranking
+    .iter()
+    .position(|entry| entry.display == name)
+    .map(|index| index as u32 + 1)
+}
+
+fn artist_ranks(top: &[RankedEntry], all_time: &[RankedEntry]) -> Vec<ArtistRank> {
+  top
+    .iter()
+    .map(|entry| {
+      let lifetime = all_time.iter().find(|other| other.display == entry.display);
+      ArtistRank {
+        all_time: rank_of(all_time, &entry.display),
+        new: lifetime.is_some_and(|other| other.value == entry.value),
+      }
+    })
+    .collect()
+}
+
+/// The biggest climber into the period's top ten, the biggest faller out of the
+/// all-time top ten, and the first artist new to the period's top ten.
+fn artist_movements(period: &[RankedEntry], all_time: &[RankedEntry]) -> Vec<ArtistMovement> {
+  let top = |ranking: &[RankedEntry]| -> Vec<(String, u32)> {
+    ranking
+      .iter()
+      .take(MOVEMENT_TOP as usize)
+      .enumerate()
+      .map(|(index, entry)| (entry.display.clone(), index as u32 + 1))
+      .collect()
+  };
+  // Only the top ten are compared; ranking the whole period would cost P times A lookups.
+  let ranks = artist_ranks(&period[..period.len().min(MOVEMENT_TOP as usize)], all_time);
+  let mut movements = Vec::new();
+
+  let climber = top(period)
+    .into_iter()
+    .zip(&ranks)
+    .filter(|(_, rank)| !rank.new)
+    .filter_map(|((name, to), rank)| {
+      let from = rank.all_time?;
+      (from > to).then(|| (from - to, name, from, to))
+    })
+    // On a tie, the higher place in the period wins.
+    .max_by(|a, b| a.0.cmp(&b.0).then(b.3.cmp(&a.3)));
+  if let Some((_, name, from, to)) = climber {
+    movements.push(ArtistMovement {
+      name,
+      kind: MovementKind::Climb,
+      from: Some(from),
+      to: Some(to),
+    });
+  }
+
+  let faller = top(all_time)
+    .into_iter()
+    .filter_map(|(name, from)| {
+      let to = rank_of(period, &name);
+      let drop = to.map_or(u32::MAX, |to| to.saturating_sub(from));
+      (drop > 0).then_some((drop, name, from, to))
+    })
+    // Dropping out is the biggest fall; on a tie, the higher all-time place wins.
+    .max_by(|a, b| a.0.cmp(&b.0).then(b.2.cmp(&a.2)));
+  if let Some((_, name, from, to)) = faller {
+    movements.push(ArtistMovement {
+      name,
+      kind: MovementKind::Fall,
+      from: Some(from),
+      to,
+    });
+  }
+
+  if let Some(((name, to), _)) = top(period)
+    .into_iter()
+    .zip(&ranks)
+    .find(|(_, rank)| rank.new)
+  {
+    movements.push(ArtistMovement {
+      name,
+      kind: MovementKind::New,
+      from: None,
+      to: Some(to),
+    });
+  }
+  movements
+}
+
+pub fn compute_streaks(listens: &[ListenRecord]) -> StreakSummary {
+  streaks_from_day_totals(&qualified_day_totals(listens))
+}
+
+/// Listened milliseconds per local day, qualified records only. The history
+/// collector keeps one of these updated incrementally so streaks don't require
+/// re-reading the listens file after every track.
+fn qualified_day_totals(listens: &[ListenRecord]) -> BTreeMap<NaiveDate, u64> {
+  let mut totals: BTreeMap<NaiveDate, u64> = BTreeMap::new();
+  for record in listens.iter().filter(|record| record.qualified) {
+    let date = record.ended_at.with_timezone(&Local).date_naive();
+    *totals.entry(date).or_default() += record.listened_ms;
+  }
+  totals
+}
+
+fn streaks_from_day_totals(day_totals: &BTreeMap<NaiveDate, u64>) -> StreakSummary {
+  let today = Local::now().date_naive();
+  let days: BTreeSet<NaiveDate> = day_totals.keys().copied().collect();
+  streaks_from_days(
+    &days,
+    today,
+    day_totals.get(&today).copied().unwrap_or_default(),
+  )
+}
+
+fn streaks_from_days(days: &BTreeSet<NaiveDate>, today: NaiveDate, today_ms: u64) -> StreakSummary {
+  let mut longest_days = 0u32;
+  let mut run = 0u32;
+  let mut prev: Option<NaiveDate> = None;
+  let mut last_run = 0u32;
+  for &day in days {
+    run = match prev {
+      Some(prev_day) if day == prev_day + Duration::days(1) => run + 1,
+      _ => 1,
+    };
+    longest_days = longest_days.max(run);
+    last_run = run;
+    prev = Some(day);
+  }
+
+  // A streak stays alive until midnight: count the trailing run if it ends
+  // today or yesterday.
+  let current_days = match prev {
+    Some(last_day) if last_day == today || last_day + Duration::days(1) == today => last_run,
+    _ => 0,
+  };
+
+  StreakSummary {
+    current_days,
+    longest_days,
+    today_ms,
+  }
+}
+
+/// Spawn a cloud history sync unless one is already in flight. Overlapping
+/// syncs would race on the append cursor and double-send records; a skipped
+/// sync is harmless because the next trigger (next song or exit) resumes from
+/// the same cursor.
+fn spawn_cloud_history_sync(
+  client: &reqwest::Client,
+  sync_token: &str,
+  in_flight: &Arc<std::sync::atomic::AtomicBool>,
+  network_tasks: &mut JoinSet<()>,
+) {
+  use std::sync::atomic::Ordering;
+
+  if in_flight.swap(true, Ordering::AcqRel) {
+    return;
+  }
+  let client = client.clone();
+  let token = sync_token.to_string();
+  let in_flight = Arc::clone(in_flight);
+  network_tasks.spawn(async move {
+    if let Err(e) = sync_history_to_cloud_with_client(&client, &token).await {
+      log::warn!("failed to sync listening history to cloud: {}", e);
+    }
+    in_flight.store(false, Ordering::Release);
+  });
+}
+
+pub struct HistoryCollectorHandle {
+  shutdown_tx: Option<oneshot::Sender<()>>,
+  task: JoinHandle<()>,
+}
+
+impl HistoryCollectorHandle {
+  /// Stop the collector and wait briefly for its network work to finish. If a
+  /// request is stuck, aborting the collector also aborts its owned `JoinSet`,
+  /// ensuring no now-playing upload can race the final exit clear.
+  pub async fn shutdown(mut self) {
+    if let Some(shutdown_tx) = self.shutdown_tx.take() {
+      let _ = shutdown_tx.send(());
+    }
+
+    if tokio::time::timeout(std::time::Duration::from_secs(1), &mut self.task)
+      .await
+      .is_err()
+    {
+      log::warn!("history collector shutdown timed out; aborting outstanding sync work");
+      self.task.abort();
+      let _ = self.task.await;
+    }
+  }
+}
+
+pub fn spawn_history_collector(app: Arc<Mutex<App>>) -> HistoryCollectorHandle {
+  let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+  let task = tokio::spawn(async move {
+    let mut collector = HistoryCollector::default();
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
+    let mut last_auto_check = Instant::now();
+    let http_client = crate::infra::network::requests::shared_http_client().clone();
+    let mut network_tasks = JoinSet::new();
+
+    // Check on startup
+    perform_auto_recap_check(&app).await;
+
+    // Streak cache: load the full history once, then keep per-day totals
+    // updated incrementally from the records this collector appends (avoids
+    // re-reading the ever-growing listens file after every track).
+    let mut day_totals: Option<BTreeMap<NaiveDate, u64>> =
+      match tokio::task::spawn_blocking(load_listens).await {
+        Ok(Ok(listens)) => Some(qualified_day_totals(&listens)),
+        Ok(Err(error)) => {
+          log::warn!("failed to load listens for streak cache: {}", error);
+          None
+        }
+        Err(error) => {
+          log::warn!("streak cache task failed: {}", error);
+          None
+        }
+      };
+    if let Some(totals) = &day_totals {
+      app.lock().await.listening_streaks = Some(streaks_from_day_totals(totals));
+    }
+
+    // Sync history to cloud on startup. This takes the lock properly rather
+    // than `try_lock`: the startup work above ends by acquiring (and releasing)
+    // the app mutex, and tokio's fair mutex hands the freed permit straight to
+    // any queued waiter, so a `try_lock` here intermittently loses to the
+    // render loop. Losing it silently pinned the token to `None` for the whole
+    // process, disabling per-song and now-playing sync and dumping the entire
+    // session onto the exit sync.
+    let mut sync_token_opt: Option<String> =
+      app.lock().await.user_config.behavior.sync_token.clone();
+    log::info!(
+      "cloud sync {} at history collector startup",
+      if sync_token_opt.is_some() {
+        "enabled"
+      } else {
+        "disabled (no sync token configured)"
+      }
+    );
+
+    let history_sync_in_flight = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    if let Some(ref token) = sync_token_opt {
+      spawn_cloud_history_sync(
+        &http_client,
+        token,
+        &history_sync_in_flight,
+        &mut network_tasks,
+      );
+    }
+
+    // Now-playing tracking state
+    let mut now_playing_tracker = NowPlayingTracker::default();
+
+    loop {
+      tokio::select! {
+        _ = interval.tick() => {}
+        _ = &mut shutdown_rx => break,
+      }
+      while let Some(result) = network_tasks.try_join_next() {
+        if let Err(error) = result {
+          log::warn!("history collector network task failed: {}", error);
+        }
+      }
+
+      if last_auto_check.elapsed().as_secs() >= 3600 {
+        last_auto_check = Instant::now();
+        perform_auto_recap_check(&app).await;
+      }
+
+      // Re-read the token from the guard we already hold: it can be pasted or
+      // cleared in Settings mid-session, and the collector is only spawned once.
+      let (snapshot, latest_token) = if let Ok(app_guard) = app.try_lock() {
+        (
+          tracking_playback_snapshot(&app_guard),
+          app_guard.user_config.behavior.sync_token.clone(),
+        )
+      } else {
+        continue;
+      };
+
+      if latest_token != sync_token_opt {
+        log::info!(
+          "cloud sync token {}",
+          if latest_token.is_some() {
+            "configured"
+          } else {
+            "cleared"
+          }
+        );
+        sync_token_opt = latest_token;
+      }
+
+      // Now-playing sync: push on track change, play/pause flip, seek, or
+      // heartbeat; clear once when track playback stops.
+      if let Some(ref token) = sync_token_opt {
+        let action = now_playing_tracker.observe(snapshot.as_ref(), Instant::now());
+        match action {
+          Some(NowPlayingAction::Push(payload)) => {
+            let token_clone = token.clone();
+            let client = http_client.clone();
+            network_tasks.spawn(async move {
+              if let Err(e) = sync_now_playing_to_cloud(&client, &token_clone, &payload).await {
+                log::warn!("failed to sync now-playing: {}", e);
+              }
+            });
+          }
+          Some(NowPlayingAction::Clear) => {
+            let token_clone = token.clone();
+            let client = http_client.clone();
+            network_tasks.spawn(async move {
+              if let Err(e) = clear_now_playing_with_client(&client, &token_clone).await {
+                log::warn!("failed to clear now-playing: {}", e);
+              }
+            });
+          }
+          None => {}
+        }
+      }
+
+      match collector.observe(snapshot) {
+        Ok(Some(record)) => {
+          app.lock().await.record_session_play(session_play(&record));
+          if record.qualified {
+            if let Some(totals) = &mut day_totals {
+              let date = record.ended_at.with_timezone(&Local).date_naive();
+              *totals.entry(date).or_default() += record.listened_ms;
+              app.lock().await.listening_streaks = Some(streaks_from_day_totals(totals));
+            }
+          }
+          // Push the finished listen to the cloud right away instead of only
+          // at startup/exit; long sessions otherwise pile up records that
+          // stall the exit sync.
+          if let Some(ref token) = sync_token_opt {
+            spawn_cloud_history_sync(
+              &http_client,
+              token,
+              &history_sync_in_flight,
+              &mut network_tasks,
+            );
+          }
+        }
+        Ok(None) => {}
+        Err(error) => {
+          log::warn!("listening history collector failed: {}", error);
+        }
+      }
+    }
+    while let Some(result) = network_tasks.join_next().await {
+      if let Err(error) = result {
+        log::warn!("history collector network task failed: {}", error);
+      }
+    }
+  });
+
+  HistoryCollectorHandle {
+    shutdown_tx: Some(shutdown_tx),
+    task,
+  }
+}
+
+/// Default output path for the shareable recap page, used by the automatic
+/// monthly check and the in-app `generate_recap` key.
+pub fn recap_output_path() -> Result<PathBuf> {
+  crate::core::paths::app_state_dir()
+    .map(|dir| dir.join("echovena-recap.html"))
+    .ok_or_else(|| anyhow!("cannot resolve the echovena state directory"))
+}
+
+fn last_recap_file_path() -> Result<PathBuf> {
+  history_state_file_path(LAST_RECAP_FILE_NAME)
+}
+
+fn auto_recap_is_due(last_recap_contents: Option<&str>, now_ts: i64) -> bool {
+  match last_recap_contents {
+    Some(content) => match content.trim().parse::<i64>() {
+      Ok(ts) => now_ts - ts >= 30 * 24 * 3600,
+      Err(_) => true,
+    },
+    None => true,
+  }
+}
+
+async fn perform_auto_recap_check(app: &Arc<Mutex<App>>) {
+  if !app
+    .lock()
+    .await
+    .user_config
+    .behavior
+    .enable_monthly_recap_prompt
+  {
+    return;
+  }
+
+  let path = match last_recap_file_path() {
+    Ok(p) => p,
+    Err(e) => {
+      log::warn!("failed to get last recap file path: {}", e);
+      return;
+    }
+  };
+
+  let now = Utc::now();
+  if !auto_recap_is_due(fs::read_to_string(&path).ok().as_deref(), now.timestamp()) {
+    return;
+  }
+
+  let output_path = match recap_output_path() {
+    Ok(p) => p,
+    Err(_) => return,
+  };
+
+  perform_auto_recap_check_with(app, path, output_path, now, export_history_recap_with).await;
+}
+
+async fn perform_auto_recap_check_with(
+  app: &Arc<Mutex<App>>,
+  path: PathBuf,
+  output_path: PathBuf,
+  now: DateTime<Utc>,
+  export: impl FnOnce(RecapPeriod, &Path, &crate::core::i18n::Strings) -> Result<usize> + Send + 'static,
+) {
+  let strings = app.lock().await.strings();
+  // The export reads and renders the whole history file; keep it off the
+  // runtime worker threads.
+  let export_path = output_path.clone();
+  let result =
+    tokio::task::spawn_blocking(move || export(RecapPeriod::ThirtyDays, &export_path, strings))
+      .await
+      .map_err(anyhow::Error::from)
+      .and_then(|result| result);
+
+  match result {
+    Ok(count) => {
+      if count > 0 {
+        if let Err(e) = fs::write(&path, now.timestamp().to_string()) {
+          log::warn!("failed to write last recap timestamp: {}", e);
+        }
+
+        let mut app_guard = app.lock().await;
+        if app_guard.get_current_route().active_block == ActiveBlock::Input {
+          // Never steal keystrokes from an input field; fall back to a status
+          // message instead of the popup.
+          let strings = app_guard.strings();
+          app_guard.set_status_message(
+            strings
+              .status
+              .infra
+              .monthly_recap_ready(&output_path.display().to_string(), count),
+            10,
+          );
+        } else {
+          app_guard.show_recap_prompt(RecapPromptState {
+            path: output_path,
+            listens: count,
+          });
+        }
+      }
+    }
+    Err(e) => {
+      log::warn!("failed to automatically generate recap: {}", e);
+    }
+  }
+}
+
+/// CLI exports deliberately retain English regardless of the interface language.
+pub fn export_history_recap(period: RecapPeriod, output_path: &Path) -> Result<usize> {
+  export_history_recap_with(period, output_path, &crate::core::i18n::EN)
+}
+
+pub fn export_history_recap_with(
+  period: RecapPeriod,
+  output_path: &Path,
+  strings: &crate::core::i18n::Strings,
+) -> Result<usize> {
+  let listens = load_listens()?;
+  let filtered = filter_listens_for_period(&listens, period);
+  // The share card is toggleable between the requested period and All Time
+  // (or Last 30 Days when All Time itself was requested).
+  let alt_period = if period == RecapPeriod::All {
+    RecapPeriod::ThirtyDays
+  } else {
+    RecapPeriod::All
+  };
+  let alt_filtered = filter_listens_for_period(&listens, alt_period);
+  let html = render_history_recap_html_with(period, &filtered, alt_period, &alt_filtered, strings);
+
+  if let Some(parent) = output_path.parent() {
+    fs::create_dir_all(parent)?;
+  }
+  fs::write(output_path, html)?;
+
+  Ok(filtered.len())
+}
+
+pub fn parse_recap_period(value: &str) -> Result<RecapPeriod> {
+  match value {
+    "7d" => Ok(RecapPeriod::SevenDays),
+    "30d" => Ok(RecapPeriod::ThirtyDays),
+    "month" => Ok(RecapPeriod::Month),
+    "year" => Ok(RecapPeriod::Year),
+    "all" => Ok(RecapPeriod::All),
+    _ => Err(anyhow!("unsupported recap period '{}'", value)),
+  }
+}
+
+pub fn load_listens() -> Result<Vec<ListenRecord>> {
+  let path = listens_file_path()?;
+  if !path.exists() {
+    return Ok(Vec::new());
+  }
+
+  let file = fs::File::open(path)?;
+  let reader = BufReader::new(file);
+  let mut listens = Vec::new();
+  for line in reader.lines() {
+    let line = line?;
+    if line.trim().is_empty() {
+      continue;
+    }
+
+    match serde_json::from_str::<ListenRecord>(&line) {
+      Ok(record) => listens.push(record),
+      Err(error) => {
+        log::warn!("skipping malformed history line: {}", error);
+      }
+    }
+  }
+
+  Ok(listens)
+}
+
+impl HistoryCollector {
+  /// Returns the listen record appended to the history file, if any.
+  fn observe(&mut self, snapshot: Option<PlaybackSnapshot>) -> Result<Option<ListenRecord>> {
+    let mut appended = None;
+    let now_utc = Utc::now();
+    let now_instant = Instant::now();
+
+    if let Some(current) = &mut self.current {
+      if let Some(last_observed_at) = self.last_observed_at {
+        let elapsed_ms = now_instant
+          .saturating_duration_since(last_observed_at)
+          .as_millis()
+          .min(MAX_INTERVAL_MS as u128) as u64;
+        if current.last_is_playing {
+          current.listened_ms = current.listened_ms.saturating_add(elapsed_ms);
+        }
+      }
+    }
+    self.last_observed_at = Some(now_instant);
+
+    let snapshot = snapshot.filter(|snapshot| snapshot.item_kind == PlaybackItemKind::Track);
+    match snapshot {
+      Some(snapshot) => {
+        let identity = SessionIdentity::from_snapshot(&snapshot);
+        if let Some(current) = &mut self.current {
+          if current.identity.resolves_to(&identity) {
+            current.adopt_resolved_metadata(&snapshot, identity.clone());
+          }
+        }
+        let should_roll = self.current.as_ref().is_some_and(|current| {
+          current.identity != identity
+            || (current.last_progress_ms > REPLAY_PREVIOUS_PROGRESS_FLOOR_MS
+              && snapshot.progress_ms + REPLAY_RESET_THRESHOLD_MS < current.last_progress_ms)
+        });
+
+        if should_roll {
+          appended = self.finalize_current(now_utc)?;
+        }
+
+        if self.current.is_none() {
+          self.current = Some(ActiveListenSession::from_snapshot(snapshot, now_utc));
+          return Ok(appended);
+        }
+
+        if let Some(current) = &mut self.current {
+          current.duration_ms = snapshot.metadata.duration_ms;
+          current.last_progress_ms = snapshot.progress_ms;
+          current.last_is_playing = snapshot.is_playing;
+        }
+      }
+      None => {
+        appended = self.finalize_current(now_utc)?;
+      }
+    }
+
+    Ok(appended)
+  }
+
+  fn finalize_current(&mut self, ended_at: DateTime<Utc>) -> Result<Option<ListenRecord>> {
+    let Some(current) = self.current.take() else {
+      return Ok(None);
+    };
+
+    if current.listened_ms == 0 {
+      return Ok(None);
+    }
+
+    let record = ListenRecord::from_active_session(current, ended_at);
+    append_listen_record(&record)?;
+    Ok(Some(record))
+  }
+}
+
+impl SessionIdentity {
+  fn from_snapshot(snapshot: &PlaybackSnapshot) -> Self {
+    Self {
+      title: snapshot.metadata.title.clone(),
+      artists: snapshot.metadata.artists.clone(),
+      album: snapshot.metadata.album.clone(),
+      item_id: snapshot.item_id.clone(),
+      item_uri: snapshot.item_uri.clone(),
+      context_uri: snapshot.context_uri.clone(),
+      source: history_source_from_snapshot(snapshot),
+    }
+  }
+
+  /// A track started from a bare URI (#716) shows the URI as its title until
+  /// its source looks the real metadata up, mid-track. That swap is the same
+  /// listen, not a new one: same item, context and source, and this identity
+  /// is the placeholder (no artists, the URI as the title).
+  fn resolves_to(&self, next: &SessionIdentity) -> bool {
+    let is_placeholder = self.artists.is_empty()
+      && self.item_uri.is_some()
+      && self.item_uri.as_deref() == Some(self.title.as_str());
+    is_placeholder
+      && self.title != next.title
+      && self.item_id == next.item_id
+      && self.item_uri == next.item_uri
+      && self.context_uri == next.context_uri
+      && self.source == next.source
+  }
+}
+
+impl ActiveListenSession {
+  /// Take the looked-up metadata into the open session instead of rolling it,
+  /// so the listen keeps its start time and the time already heard.
+  fn adopt_resolved_metadata(&mut self, snapshot: &PlaybackSnapshot, identity: SessionIdentity) {
+    self.identity = identity;
+    self.title = snapshot.metadata.title.clone();
+    self.artists = snapshot.metadata.artists.clone();
+    self.album = snapshot.metadata.album.clone();
+    self.image_url = snapshot.metadata.image_url.clone();
+  }
+
+  fn from_snapshot(snapshot: PlaybackSnapshot, started_at: DateTime<Utc>) -> Self {
+    let source = history_source_from_snapshot(&snapshot);
+    let identity = SessionIdentity::from_snapshot(&snapshot);
+    let PlaybackSnapshot {
+      metadata,
+      item_id,
+      item_uri,
+      context_uri,
+      source: _,
+      progress_ms,
+      is_playing,
+      ..
+    } = snapshot;
+    let title = metadata.title;
+    let artists = metadata.artists;
+    let album = metadata.album;
+    let duration_ms = metadata.duration_ms;
+    let image_url = metadata.image_url;
+    Self {
+      started_at,
+      identity,
+      title,
+      artists,
+      album,
+      item_kind: HistoryItemKind::Track,
+      item_id,
+      item_uri,
+      context_uri,
+      source,
+      duration_ms,
+      listened_ms: 0,
+      last_progress_ms: progress_ms,
+      last_is_playing: is_playing,
+      image_url,
+    }
+  }
+}
+
+fn session_play(record: &ListenRecord) -> SessionPlay {
+  SessionPlay {
+    started_at_ms: record.started_at.timestamp_millis().max(0) as u64,
+    ended_at_ms: record.ended_at.timestamp_millis().max(0) as u64,
+    listened_ms: record.listened_ms,
+    duration_ms: record.duration_ms,
+    title: record.title.clone(),
+    artists: record.artists.clone(),
+    album: record.album.clone(),
+    uri: record.item_uri.clone(),
+    image_url: record.image_url.clone(),
+  }
+}
+
+impl ListenRecord {
+  fn from_active_session(session: ActiveListenSession, ended_at: DateTime<Utc>) -> Self {
+    let qualified = qualifies_listen(session.duration_ms, session.listened_ms);
+    Self {
+      started_at: session.started_at,
+      ended_at,
+      listened_ms: session.listened_ms,
+      duration_ms: session.duration_ms,
+      qualified,
+      title: session.title,
+      artists: session.artists,
+      album: session.album,
+      item_kind: session.item_kind,
+      item_id: session.item_id,
+      item_uri: session.item_uri,
+      context_uri: session.context_uri,
+      source: session.source,
+      image_url: session.image_url,
+    }
+  }
+}
+
+fn listens_file_path() -> Result<PathBuf> {
+  history_state_file_path(LISTENS_FILE_NAME)
+}
+
+fn history_state_file_path(file_name: &str) -> Result<PathBuf> {
+  crate::core::paths::app_state_dir()
+    .map(|dir| dir.join(HISTORY_SUBDIR).join(file_name))
+    .ok_or_else(|| anyhow!("cannot resolve the echovena state directory"))
+}
+
+fn append_listen_record(record: &ListenRecord) -> Result<()> {
+  let path = listens_file_path()?;
+  if let Some(parent) = path.parent() {
+    fs::create_dir_all(parent)?;
+  }
+
+  let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+  serde_json::to_writer(&mut file, record)?;
+  writeln!(file)?;
+  Ok(())
+}
+
+fn qualifies_listen(duration_ms: u32, listened_ms: u64) -> bool {
+  if duration_ms <= 30_000 {
+    return false;
+  }
+
+  let threshold_ms = u64::from(duration_ms / 2).min(240_000);
+  listened_ms >= threshold_ms
+}
+
+fn history_source_from_snapshot(snapshot: &PlaybackSnapshot) -> HistoryPlaybackSource {
+  match snapshot.source {
+    PlaybackSource::NativeContext => HistoryPlaybackSource::NativeContext,
+    PlaybackSource::NativeRawList => HistoryPlaybackSource::NativeRawList,
+    PlaybackSource::ExternalDevice => HistoryPlaybackSource::ExternalDevice,
+    PlaybackSource::AppleMusic => HistoryPlaybackSource::AppleMusic,
+  }
+}
+
+pub fn filter_listens_for_period(
+  listens: &[ListenRecord],
+  period: RecapPeriod,
+) -> Vec<ListenRecord> {
+  filter_listens_for_period_at(listens, period, Local::now())
+}
+
+fn filter_listens_for_period_at<Tz: TimeZone>(
+  listens: &[ListenRecord],
+  period: RecapPeriod,
+  now: DateTime<Tz>,
+) -> Vec<ListenRecord> {
+  listens
+    .iter()
+    .filter(|record| record.qualified)
+    .filter(|record| in_period(record, period, &now))
+    .cloned()
+    .collect()
+}
+
+fn in_period<Tz: TimeZone>(record: &ListenRecord, period: RecapPeriod, now: &DateTime<Tz>) -> bool {
+  let tz = now.timezone();
+  let now_utc = now.with_timezone(&Utc);
+  match period {
+    RecapPeriod::SevenDays => record.ended_at >= now_utc - Duration::days(7),
+    RecapPeriod::ThirtyDays => record.ended_at >= now_utc - Duration::days(30),
+    RecapPeriod::Month => {
+      let local = record.ended_at.with_timezone(&tz);
+      local.year() == now.year() && local.month() == now.month()
+    }
+    RecapPeriod::Year => record.ended_at.with_timezone(&tz).year() == now.year(),
+    RecapPeriod::All => true,
+  }
+}
+
+/// The raw (unescaped) values the share card shows for one period.
+struct CardData {
+  period: RecapPeriod,
+  track_title: String,
+  track_artist: String,
+  top_artist: String,
+  top_album: String,
+  plays: usize,
+  time: String,
+}
+
+impl CardData {
+  fn from_listens(
+    period: RecapPeriod,
+    listens: &[ListenRecord],
+    strings: &crate::core::i18n::Strings,
+  ) -> Self {
+    Self::from_tops(
+      period,
+      aggregate_top_tracks_with(listens, 1, strings).first(),
+      aggregate_top_artists_with(listens, 1, strings).first(),
+      aggregate_top_albums_with(listens, 1, strings).first(),
+      listens.len(),
+      listens.iter().map(|record| record.listened_ms).sum(),
+      strings,
+    )
+  }
+
+  /// Build from already-aggregated ranked lists; the first entry of each wins.
+  fn from_tops(
+    period: RecapPeriod,
+    top_track: Option<&RankedEntry>,
+    top_artist: Option<&RankedEntry>,
+    top_album: Option<&RankedEntry>,
+    plays: usize,
+    total_ms: u64,
+    strings: &crate::core::i18n::Strings,
+  ) -> Self {
+    let top_track_raw = top_track
+      .map(|entry| entry.display.as_str())
+      .unwrap_or(strings.recap.no_data);
+    let (track_title, track_artist) = if top_track.is_none() {
+      (
+        strings.recap.no_data.to_string(),
+        strings.recap.no_data.to_string(),
+      )
+    } else {
+      let (title, artist) = split_track_display(top_track_raw);
+      (title.to_string(), artist.to_string())
+    };
+
+    Self {
+      period,
+      track_title,
+      track_artist,
+      top_artist: top_artist
+        .map(|entry| entry.display.as_str())
+        .unwrap_or(strings.recap.no_data)
+        .to_string(),
+      top_album: top_album
+        .map(|entry| entry.display.as_str())
+        .unwrap_or(strings.recap.no_data)
+        .to_string(),
+      plays,
+      time: format_duration_with(total_ms, strings),
+    }
+  }
+
+  /// Render as a JS object literal for the recap page's inline script.
+  fn to_js_object(&self, strings: &crate::core::i18n::Strings) -> String {
+    format!(
+      "{{ period: {}, track: {}, artist: {}, topArtist: {}, topAlbum: {}, plays: {}, time: {} }}",
+      js_string(period_label_with(self.period, strings)),
+      js_string(&self.track_title),
+      js_string(&self.track_artist),
+      js_string(&self.top_artist),
+      js_string(&self.top_album),
+      self.plays,
+      js_string(&self.time),
+    )
+  }
+}
+
+#[cfg(test)]
+fn render_history_recap_html(
+  period: RecapPeriod,
+  listens: &[ListenRecord],
+  alt_period: RecapPeriod,
+  alt_listens: &[ListenRecord],
+) -> String {
+  render_history_recap_html_with(
+    period,
+    listens,
+    alt_period,
+    alt_listens,
+    &crate::core::i18n::EN,
+  )
+}
+
+fn render_history_recap_html_with(
+  period: RecapPeriod,
+  listens: &[ListenRecord],
+  alt_period: RecapPeriod,
+  alt_listens: &[ListenRecord],
+  strings: &crate::core::i18n::Strings,
+) -> String {
+  let top_tracks = aggregate_top_tracks_with(listens, 5, strings);
+  let top_artists = aggregate_top_artists_with(listens, 5, strings);
+  let top_albums = aggregate_top_albums_with(listens, 5, strings);
+  let listening_days = aggregate_days_with(listens, strings);
+  let listening_hours = aggregate_hours_with(listens, strings);
+
+  // The primary card's No. 1 entries fall out of the limit-5 lists above; only
+  // the alternative period needs its own aggregation.
+  let card = CardData::from_tops(
+    period,
+    top_tracks.first(),
+    top_artists.first(),
+    top_albums.first(),
+    listens.len(),
+    listens.iter().map(|record| record.listened_ms).sum(),
+    strings,
+  );
+  let alt_card = CardData::from_listens(alt_period, alt_listens, strings);
+
+  format!(
+    r#"<!DOCTYPE html>
+<html lang="{language}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{page_title}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    :root {{
+      --bg: #05080c;
+      --accent: #1db954;
+      --accent-glow: rgba(29, 185, 84, 0.15);
+      --card-gradient: linear-gradient(135deg, #0b1a11 0%, #050a0f 100%);
+      --text: #f1f5f9;
+      --text-muted: #94a3b8;
+      --border: rgba(255, 255, 255, 0.05);
+      --font-sans: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-mono: "JetBrains Mono", monospace;
+    }}
+    * {{
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }}
+    body {{
+      min-height: 100vh;
+      background: radial-gradient(circle at 50% 0%, #0e2417 0%, #05080c 70%);
+      color: var(--text);
+      font-family: var(--font-sans);
+      padding: 40px 20px 60px;
+    }}
+    .app-container {{
+      max-width: 1200px;
+      margin: 0 auto;
+      width: 100%;
+    }}
+    .app-header {{
+      text-align: center;
+      margin-bottom: 40px;
+    }}
+    .app-header h1 {{
+      font-size: 2.2rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      font-family: var(--font-sans);
+      margin-bottom: 6px;
+    }}
+    .brand-logo {{
+      color: var(--text);
+    }}
+    .brand-accent {{
+      color: var(--accent);
+      text-shadow: 0 0 10px rgba(29, 185, 84, 0.4);
+    }}
+    .app-header p {{
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      font-weight: 600;
+    }}
+    .app-desc {{
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      max-width: 580px;
+      margin: 12px auto 0;
+      line-height: 1.5;
+      text-transform: none !important;
+      letter-spacing: normal !important;
+      font-weight: 400 !important;
+    }}
+    .dashboard-grid {{
+      display: grid;
+      grid-template-columns: 440px 1fr;
+      gap: 40px;
+      align-items: start;
+    }}
+    @media (max-width: 1024px) {{
+      .dashboard-grid {{
+        grid-template-columns: 1fr;
+        gap: 32px;
+      }}
+      .share-column {{
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }}
+    }}
+    .share-column {{
+      position: sticky;
+      top: 40px;
+    }}
+    .card-wrapper {{
+      width: 440px;
+      height: 660px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      border-radius: 28px;
+    }}
+    @media (max-width: 480px) {{
+      .card-wrapper {{
+        transform: scale(0.8);
+        height: 528px;
+        margin-bottom: -40px;
+      }}
+    }}
+    @media (max-width: 380px) {{
+      .card-wrapper {{
+        transform: scale(0.68);
+        height: 448px;
+        margin-bottom: -80px;
+      }}
+    }}
+    .share-card {{
+      width: 440px;
+      height: 660px;
+      background: var(--card-gradient);
+      border: 1px solid rgba(29, 185, 84, 0.22);
+      border-radius: 28px;
+      padding: 32px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 25px 50px -12px rgba(0,0,0,0.8), 0 0 40px rgba(29, 185, 84, 0.12);
+      box-sizing: border-box;
+    }}
+    .card-glow {{
+      position: absolute;
+      top: -150px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 300px;
+      height: 300px;
+      background: radial-gradient(circle, rgba(29, 185, 84, 0.18) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }}
+    .card-header {{
+      position: relative;
+      height: 32px;
+      z-index: 1;
+      width: 100%;
+      margin-bottom: 10px;
+    }}
+    .card-brand {{
+      position: absolute;
+      left: 0;
+      top: 0;
+      font-family: var(--font-sans);
+      font-weight: 800;
+      font-size: 1.25rem;
+      letter-spacing: -0.02em;
+    }}
+    .period-badge {{
+      position: absolute;
+      right: 0;
+      top: 0;
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: var(--accent);
+      background: rgba(29, 185, 84, 0.12);
+      border: 1px solid rgba(29, 185, 84, 0.3);
+      padding: 5px 12px;
+      border-radius: 99px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }}
+    .cover-container {{
+      position: relative;
+      width: 174px;
+      height: 174px;
+      margin: 0 auto;
+      border-radius: 20px;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      box-shadow: 0 15px 35px rgba(0, 0, 0, 0.5), 0 0 30px rgba(29, 185, 84, 0.15);
+      z-index: 1;
+    }}
+    .cover-placeholder {{
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: linear-gradient(135deg, #1b2820 0%, #05080c 100%);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 1;
+    }}
+    .cover-img {{
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      z-index: 2;
+      display: none;
+    }}
+    .top-track-card {{
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      border-radius: 18px;
+      padding: 16px 20px;
+      text-align: center;
+      backdrop-filter: blur(10px);
+      z-index: 1;
+      width: 100%;
+    }}
+    .rank-badge {{
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      color: var(--accent);
+      background: rgba(29, 185, 84, 0.1);
+      padding: 3px 8px;
+      border-radius: 6px;
+      letter-spacing: 0.08em;
+      font-weight: 700;
+      display: inline-block;
+      margin-bottom: 8px;
+      border: 1px solid rgba(29, 185, 84, 0.18);
+    }}
+    .track-title {{
+      font-size: 1.15rem;
+      font-weight: 800;
+      color: #ffffff;
+      margin-bottom: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }}
+    .track-artist {{
+      font-size: 0.88rem;
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }}
+    .card-stats-grid {{
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      z-index: 1;
+      width: 100%;
+    }}
+    .stats-row {{
+      display: flex;
+      gap: 12px;
+      width: 100%;
+    }}
+    .stat-pill {{
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid rgba(255, 255, 255, 0.03);
+      border-radius: 14px;
+      padding: 10px 14px;
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-width: 0;
+      box-sizing: border-box;
+    }}
+    .stat-pill.full-width {{
+      flex: none;
+      width: 100%;
+    }}
+    .stat-label {{
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 3px;
+      font-weight: 500;
+    }}
+    .stat-value {{
+      font-size: 0.92rem;
+      font-weight: 700;
+      color: #ffffff;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }}
+    .card-footer {{
+      border-top: 1px solid rgba(255, 255, 255, 0.04);
+      padding-top: 14px;
+      position: relative;
+      height: 30px;
+      z-index: 1;
+      width: 100%;
+    }}
+    .card-footer-left {{
+      position: absolute;
+      left: 0;
+      top: 14px;
+      font-size: 0.72rem;
+      color: var(--text-muted);
+    }}
+    .card-footer-right {{
+      position: absolute;
+      right: 0;
+      top: 14px;
+      font-size: 0.72rem;
+      font-family: var(--font-mono);
+      color: var(--accent);
+    }}
+    .card-toggle {{
+      display: flex;
+      gap: 8px;
+      width: 100%;
+      max-width: 440px;
+      margin-bottom: 16px;
+    }}
+    .toggle-btn {{
+      flex: 1;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 99px;
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      font-weight: 700;
+      font-family: var(--font-sans);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 9px 16px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }}
+    .toggle-btn:hover {{
+      color: var(--text);
+      border-color: rgba(29, 185, 84, 0.3);
+    }}
+    .toggle-btn.active {{
+      background: rgba(29, 185, 84, 0.12);
+      border-color: rgba(29, 185, 84, 0.4);
+      color: var(--accent);
+    }}
+    .download-container {{
+      margin-top: 20px;
+      width: 100%;
+      max-width: 440px;
+      display: flex;
+      justify-content: center;
+    }}
+    .download-btn {{
+      background: linear-gradient(90deg, var(--accent) 0%, #10b981 100%);
+      border: none;
+      border-radius: 14px;
+      color: #ffffff;
+      font-size: 0.95rem;
+      font-weight: 700;
+      padding: 14px 28px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      box-shadow: 0 10px 20px rgba(29, 185, 84, 0.25);
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      width: 100%;
+      justify-content: center;
+      font-family: var(--font-sans);
+    }}
+    .download-btn:hover {{
+      transform: translateY(-2px);
+      box-shadow: 0 15px 30px rgba(29, 185, 84, 0.35);
+    }}
+    .download-btn:active {{
+      transform: translateY(0);
+    }}
+    .animate-spin {{
+      animation: spin 1s linear infinite;
+    }}
+    .details-column {{
+      min-width: 0;
+    }}
+    .details-section-title {{
+      font-size: 1.25rem;
+      font-weight: 800;
+      margin-bottom: 20px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: #38bdf8;
+      border-left: 3px solid var(--accent);
+      padding-left: 12px;
+      line-height: 1;
+    }}
+    .grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 20px;
+      margin-bottom: 24px;
+    }}
+    .panel {{
+      background: rgba(10, 18, 30, 0.5);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 24px;
+      backdrop-filter: blur(20px);
+    }}
+    .panel h2 {{
+      margin: 0 0 16px 0;
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: #f8fafc;
+    }}
+    .ranked-list {{
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }}
+    .ranked-list li {{
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 10px 14px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.01);
+      border: 1px solid rgba(255, 255, 255, 0.02);
+      margin-bottom: 8px;
+      transition: all 0.2s ease;
+    }}
+    .ranked-list li:hover {{
+      background: rgba(29, 185, 84, 0.04);
+      border-color: rgba(29, 185, 84, 0.15);
+      transform: translateX(4px);
+    }}
+    .rank {{
+      font-family: var(--font-mono);
+      font-size: 0.9rem;
+      font-weight: 800;
+      color: var(--accent);
+      width: 20px;
+    }}
+    .recent-icon {{
+      color: var(--accent);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+    }}
+    .entry-details {{
+      flex: 1;
+      min-width: 0;
+    }}
+    .entry-details strong {{
+      display: block;
+      font-size: 0.92rem;
+      font-weight: 600;
+      color: #f1f5f9;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }}
+    .entry-artist {{
+      font-size: 0.82rem;
+      color: var(--accent);
+      margin-top: 2px;
+      font-weight: 500;
+    }}
+    .subtle {{
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }}
+    .bars {{
+      display: grid;
+      gap: 12px;
+    }}
+    .bar-row {{
+      display: grid;
+      gap: 6px;
+    }}
+    .bar-label {{
+      display: flex;
+      justify-content: space-between;
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--text-muted);
+    }}
+    .bar {{
+      height: 8px;
+      border-radius: 99px;
+      background: rgba(255, 255, 255, 0.03);
+      overflow: hidden;
+      position: relative;
+    }}
+    .bar > span {{
+      display: block;
+      height: 100%;
+      border-radius: 99px;
+      background: linear-gradient(90deg, var(--accent) 0%, #10b981 100%);
+      box-shadow: 0 0 10px rgba(29, 185, 84, 0.3);
+    }}
+    footer {{
+      margin-top: 48px;
+      text-align: center;
+      font-size: 0.8rem;
+      color: #64748b;
+      line-height: 1.6;
+      max-width: 600px;
+      margin-left: auto;
+      margin-right: auto;
+      border-top: 1px solid var(--border);
+      padding-top: 24px;
+    }}
+  </style>
+</head>
+<body>
+  <div class="app-container">
+    <header class="app-header">
+      <h1><span class="brand-logo">spota</span><span class="brand-accent">tui</span></h1>
+      <p>{recap_title}</p>
+      <p class="app-desc">{summary}</p>
+    </header>
+
+    <div class="dashboard-grid">
+      <!-- Left Column: The Share Card Area -->
+      <div class="share-column">
+        <div class="card-toggle">
+          <button id="card-toggle-0" class="toggle-btn active" onclick="setActiveCard(0)">{title}</button>
+          <button id="card-toggle-1" class="toggle-btn" onclick="setActiveCard(1)">{alt_title}</button>
+        </div>
+        <div class="card-wrapper">
+          <div id="share-card" class="share-card">
+            <!-- Ambient glowing node inside the card -->
+            <div class="card-glow"></div>
+
+            <div class="card-header">
+              <span class="card-brand">spota<span style="color:var(--accent)">tui</span></span>
+              <span id="card-period" class="period-badge">{title}</span>
+            </div>
+            
+            <div class="cover-container">
+              <div id="cover-art-placeholder" class="cover-placeholder">
+                <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
+              </div>
+              <img id="cover-art-img" class="cover-img" alt="{cover_art}" crossorigin="anonymous">
+            </div>
+            
+            <div class="top-track-card">
+              <span class="rank-badge">{first_track}</span>
+              <div id="card-track-title" class="track-title">{top_track_title}</div>
+              <div id="card-track-artist" class="track-artist">{top_track_artist}</div>
+            </div>
+
+            <div class="card-stats-grid">
+              <div class="stats-row">
+                <div class="stat-pill">
+                  <span class="stat-label">{qualified_plays}</span>
+                  <span id="card-plays" class="stat-value">{total_plays}</span>
+                </div>
+                <div class="stat-pill">
+                  <span class="stat-label">{listening_time}</span>
+                  <span id="card-time" class="stat-value">{total_time}</span>
+                </div>
+              </div>
+              <div class="stat-pill full-width">
+                <span class="stat-label">{top_artist}</span>
+                <span id="card-top-artist" class="stat-value">{top_artist_name}</span>
+              </div>
+              <div class="stat-pill full-width">
+                <span class="stat-label">{top_album}</span>
+                <span id="card-top-album" class="stat-value">{top_album_title}</span>
+              </div>
+            </div>
+            
+            <div class="card-footer">
+              <span class="card-footer-left">{generated_by}<strong>echovena</strong></span>
+              <span class="card-footer-right">github.com/Ranoes/echovena</span>
+            </div>
+          </div>
+        </div>
+        
+        <div class="download-container">
+          <button class="download-btn" onclick="downloadCard()">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+            {download}
+          </button>
+        </div>
+      </div>
+      
+      <!-- Right Column: Detailed Insights Dashboard -->
+      <div class="details-column">
+        <div class="details-section-title">{analytics}</div>
+        
+        <div class="grid">
+          <article class="panel">
+            <h2>{top_tracks}</h2>
+            {top_tracks_html}
+          </article>
+          <article class="panel">
+            <h2>{top_artists}</h2>
+            {top_artists_html}
+          </article>
+          <article class="panel">
+            <h2>{top_albums}</h2>
+            {top_albums_html}
+          </article>
+          <article class="panel">
+            <h2>{recent_plays}</h2>
+            {recent_html}
+          </article>
+        </div>
+        
+        <div class="grid">
+          <article class="panel">
+            <h2>{by_day}</h2>
+            {days_html}
+          </article>
+          <article class="panel">
+            <h2>{by_hour}</h2>
+            {hours_html}
+          </article>
+        </div>
+      </div>
+    </div>
+
+    <footer>
+      {footer}
+    </footer>
+  </div>
+
+  <script>
+    // Raw (JS-escaped, not HTML-escaped) card data emitted by echovena: the
+    // requested period first, the toggle alternative second.
+    const CARDS = [{card_js}, {alt_card_js}];
+    let activeCard = 0;
+    // Cover-art URL per card: undefined = not fetched yet, null = none found.
+    const coverUrls = [undefined, undefined];
+
+    function showCoverPlaceholder() {{
+      document.getElementById('cover-art-img').style.display = 'none';
+      document.getElementById('cover-art-placeholder').style.display = 'flex';
+    }}
+
+    function applyCover(index) {{
+      const img = document.getElementById('cover-art-img');
+      const url = coverUrls[index];
+      if (!url) {{
+        showCoverPlaceholder();
+        return;
+      }}
+      showCoverPlaceholder();
+      img.onload = () => {{
+        // Only reveal if this card is still the active one.
+        if (activeCard === index) {{
+          img.style.display = 'block';
+          document.getElementById('cover-art-placeholder').style.display = 'none';
+        }}
+      }};
+      if (img.src === url && img.complete && img.naturalWidth > 0) {{
+        img.onload();
+      }} else {{
+        img.src = url;
+      }}
+    }}
+
+    function loadCoverFor(index) {{
+      if (coverUrls[index] !== undefined) {{
+        applyCover(index);
+        return;
+      }}
+      const card = CARDS[index];
+      if (!card.track || card.track === {no_data_js}) {{
+        coverUrls[index] = null;
+        applyCover(index);
+        return;
+      }}
+      // Clean parentheses or bracket noise for high search precision
+      const cleanTitle = card.track.replace(/\([^)]*\)/g, '').replace(/\[[^\]]*\]/g, '').trim();
+      const query = encodeURIComponent(`${{cleanTitle}} ${{card.artist}}`);
+      const url = `https://itunes.apple.com/search?term=${{query}}&limit=1&entity=song`;
+
+      fetch(url)
+        .then(res => res.json())
+        .then(data => {{
+          coverUrls[index] = (data.results && data.results.length > 0)
+            ? data.results[0].artworkUrl100.replace('100x100bb', '600x600bb')
+            : null;
+          if (activeCard === index) applyCover(index);
+        }})
+        .catch(err => {{
+          console.error('Error fetching cover art:', err);
+          coverUrls[index] = null;
+          if (activeCard === index) applyCover(index);
+        }});
+    }}
+
+    function setActiveCard(index) {{
+      activeCard = index;
+      const card = CARDS[index];
+      document.getElementById('card-toggle-0').classList.toggle('active', index === 0);
+      document.getElementById('card-toggle-1').classList.toggle('active', index === 1);
+      document.getElementById('card-period').textContent = card.period;
+      document.getElementById('card-track-title').textContent = card.track;
+      document.getElementById('card-track-artist').textContent = card.artist;
+      document.getElementById('card-plays').textContent = String(card.plays);
+      document.getElementById('card-time').textContent = card.time;
+      document.getElementById('card-top-artist').textContent = card.topArtist;
+      document.getElementById('card-top-album').textContent = card.topAlbum;
+      loadCoverFor(index);
+    }}
+
+    document.addEventListener('DOMContentLoaded', () => {{
+      loadCoverFor(0);
+    }});
+
+    // ── Share-card renderer ────────────────────────────────────────────────
+    // Draws the card directly with the canvas 2D API: no external libraries,
+    // deterministic output, works offline.
+    const CANVAS_SCALE = 3;
+    const CARD_W = 440;
+    const CARD_H = 660;
+    const ACCENT = '#1db954';
+    const TEXT = '#f1f5f9';
+    const MUTED = '#94a3b8';
+
+    function roundRectPath(ctx, x, y, w, h, r) {{
+      r = Math.min(r, w / 2, h / 2);
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }}
+
+    function fitText(ctx, text, maxWidth) {{
+      if (ctx.measureText(text).width <= maxWidth) return text;
+      let t = text;
+      while (t.length > 1 && ctx.measureText(t + '…').width > maxWidth) {{
+        t = t.slice(0, -1);
+      }}
+      return t + '…';
+    }}
+
+    function drawStatPill(ctx, x, y, w, h, label, value) {{
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.02)';
+      roundRectPath(ctx, x, y, w, h, 14);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.textAlign = 'left';
+      ctx.fillStyle = MUTED;
+      ctx.font = '500 11px "Plus Jakarta Sans", sans-serif';
+      ctx.fillText(label.toUpperCase(), x + 14, y + 21);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '700 15px "Plus Jakarta Sans", sans-serif';
+      ctx.fillText(fitText(ctx, value, w - 28), x + 14, y + 41);
+    }}
+
+    function drawCardToCanvas() {{
+      const card = CARDS[activeCard];
+      const canvas = document.createElement('canvas');
+      canvas.width = CARD_W * CANVAS_SCALE;
+      canvas.height = CARD_H * CANVAS_SCALE;
+      const ctx = canvas.getContext('2d');
+      ctx.scale(CANVAS_SCALE, CANVAS_SCALE);
+
+      // Card background: gradient fill inside rounded border
+      const bg = ctx.createLinearGradient(0, 0, CARD_W, CARD_H);
+      bg.addColorStop(0, '#0b1a11');
+      bg.addColorStop(1, '#050a0f');
+      ctx.fillStyle = bg;
+      roundRectPath(ctx, 0, 0, CARD_W, CARD_H, 28);
+      ctx.fill();
+      ctx.save();
+      ctx.clip();
+
+      // Ambient glow at the top
+      const glow = ctx.createRadialGradient(CARD_W / 2, 0, 0, CARD_W / 2, 0, 220);
+      glow.addColorStop(0, 'rgba(29, 185, 84, 0.18)');
+      glow.addColorStop(1, 'rgba(29, 185, 84, 0)');
+      ctx.fillStyle = glow;
+      ctx.fillRect(0, 0, CARD_W, 240);
+
+      // Header: brand left, period badge right
+      ctx.textAlign = 'left';
+      ctx.font = '800 20px "Plus Jakarta Sans", sans-serif';
+      ctx.fillStyle = TEXT;
+      ctx.fillText('spota', 32, 52);
+      ctx.fillStyle = ACCENT;
+      ctx.fillText('tui', 32 + ctx.measureText('spota').width, 52);
+
+      ctx.font = '700 11px "Plus Jakarta Sans", sans-serif';
+      const badgeText = card.period.toUpperCase();
+      const badgeW = ctx.measureText(badgeText).width + 24;
+      ctx.fillStyle = 'rgba(29, 185, 84, 0.12)';
+      roundRectPath(ctx, CARD_W - 32 - badgeW, 34, badgeW, 24, 12);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(29, 185, 84, 0.3)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = ACCENT;
+      ctx.fillText(badgeText, CARD_W - 32 - badgeW + 12, 50);
+
+      // Cover art (or placeholder) centered
+      const coverSize = 174;
+      const coverX = (CARD_W - coverSize) / 2;
+      const coverY = 96;
+      ctx.save();
+      roundRectPath(ctx, coverX, coverY, coverSize, coverSize, 20);
+      ctx.clip();
+      const coverGrad = ctx.createLinearGradient(coverX, coverY, coverX + coverSize, coverY + coverSize);
+      coverGrad.addColorStop(0, '#1b2820');
+      coverGrad.addColorStop(1, '#05080c');
+      ctx.fillStyle = coverGrad;
+      ctx.fillRect(coverX, coverY, coverSize, coverSize);
+      const img = document.getElementById('cover-art-img');
+      if (img && img.style.display === 'block' && img.complete && img.naturalWidth > 0) {{
+        try {{
+          ctx.drawImage(img, coverX, coverY, coverSize, coverSize);
+        }} catch (e) {{
+          console.warn('cover art could not be drawn, keeping placeholder:', e);
+        }}
+      }} else {{
+        // Placeholder music note
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+        ctx.font = '48px "Plus Jakarta Sans", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('♪', coverX + coverSize / 2, coverY + coverSize / 2 + 16);
+      }}
+      ctx.restore();
+      roundRectPath(ctx, coverX, coverY, coverSize, coverSize, 20);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // Top-track panel
+      const panelY = 300;
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.02)';
+      roundRectPath(ctx, 32, panelY, CARD_W - 64, 104, 18);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)';
+      ctx.stroke();
+
+      ctx.textAlign = 'center';
+      ctx.font = '700 10px "JetBrains Mono", monospace';
+      const rankText = {first_track_js};
+      const rankW = ctx.measureText(rankText).width + 16;
+      ctx.fillStyle = 'rgba(29, 185, 84, 0.1)';
+      roundRectPath(ctx, (CARD_W - rankW) / 2, panelY + 14, rankW, 20, 6);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(29, 185, 84, 0.18)';
+      ctx.stroke();
+      ctx.fillStyle = ACCENT;
+      ctx.fillText(rankText, CARD_W / 2, panelY + 28);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '800 18px "Plus Jakarta Sans", sans-serif';
+      ctx.fillText(fitText(ctx, card.track, CARD_W - 104), CARD_W / 2, panelY + 60);
+      ctx.fillStyle = MUTED;
+      ctx.font = '400 14px "Plus Jakarta Sans", sans-serif';
+      ctx.fillText(fitText(ctx, card.artist, CARD_W - 104), CARD_W / 2, panelY + 84);
+
+      // Stat pills
+      const pillW = (CARD_W - 64 - 12) / 2;
+      drawStatPill(ctx, 32, 424, pillW, 54, {qualified_plays_js}, String(card.plays));
+      drawStatPill(ctx, 32 + pillW + 12, 424, pillW, 54, {listening_time_js}, card.time);
+      drawStatPill(ctx, 32, 490, CARD_W - 64, 54, {top_artist_js}, card.topArtist);
+      drawStatPill(ctx, 32, 556, CARD_W - 64, 54, {top_album_js}, card.topAlbum);
+
+      // Footer
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)';
+      ctx.beginPath();
+      ctx.moveTo(32, 622);
+      ctx.lineTo(CARD_W - 32, 622);
+      ctx.stroke();
+      ctx.textAlign = 'left';
+      ctx.fillStyle = MUTED;
+      ctx.font = '400 11px "Plus Jakarta Sans", sans-serif';
+      ctx.fillText({generated_by_product_js}, 32, 642);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = ACCENT;
+      ctx.font = '400 11px "JetBrains Mono", monospace';
+      ctx.fillText('github.com/Ranoes/echovena', CARD_W - 32, 642);
+      ctx.restore();
+
+      // Card border on top of everything
+      roundRectPath(ctx, 0.5, 0.5, CARD_W - 1, CARD_H - 1, 28);
+      ctx.strokeStyle = 'rgba(29, 185, 84, 0.22)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      return canvas;
+    }}
+
+    function downloadCard() {{
+      const btn = document.querySelector('.download-btn');
+      const originalText = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = `
+        <svg class="animate-spin" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 1 1 21.2 8H18" /></svg>
+        {generating}
+      `;
+      btn.style.opacity = '0.7';
+
+      const restore = () => {{
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+        btn.style.opacity = '1';
+      }};
+
+      document.fonts.ready.then(() => {{
+        try {{
+          const canvas = drawCardToCanvas();
+          const link = document.createElement('a');
+          const dateStr = new Date().toISOString().slice(0, 10);
+          const periodSlug = CARDS[activeCard].period.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+          link.download = `echovena-recap-${{periodSlug}}-${{dateStr}}.png`;
+          link.href = canvas.toDataURL('image/png');
+          link.click();
+        }} catch (err) {{
+          console.error(err);
+          alert({render_failed_js});
+        }}
+        restore();
+      }}).catch(restore);
+    }}
+  </script>
+</body>
+</html>
+"#,
+    footer = escape_html(strings.recap.footer),
+    recap_title = escape_html(strings.recap.title),
+    download = escape_html(strings.recap.download),
+    analytics = escape_html(strings.recap.analytics),
+    by_hour = escape_html(strings.recap.by_hour),
+    by_day = escape_html(strings.recap.by_day),
+    qualified_plays = escape_html(strings.recap.qualified_plays),
+    page_title = escape_html(strings.recap.page_title),
+    listening_time = escape_html(strings.recap.listening_time),
+    generated_by = escape_html(strings.recap.generated_by),
+    generating = escape_html(strings.recap.generating),
+    recent_plays = escape_html(strings.recap.recent_plays),
+    first_track = escape_html(strings.recap.first_track),
+    top_artists = escape_html(strings.recap.top_artists),
+    top_artist = escape_html(strings.recap.top_artist),
+    top_tracks = escape_html(strings.recap.top_tracks),
+    top_albums = escape_html(strings.recap.top_albums),
+    cover_art = escape_html(strings.recap.cover_art),
+    top_album = escape_html(strings.recap.top_album),
+    first_track_js = js_single_string(strings.recap.first_track),
+    qualified_plays_js = js_single_string(strings.recap.qualified_plays),
+    listening_time_js = js_single_string(strings.recap.listening_time),
+    top_artist_js = js_single_string(strings.recap.top_artist),
+    top_album_js = js_single_string(strings.recap.top_album),
+    generated_by_product_js = js_single_string(strings.recap.generated_by_product),
+    render_failed_js = js_single_string(strings.recap.render_failed),
+    no_data_js = js_single_string(strings.recap.no_data),
+    language = escape_html(strings.recap.language),
+    title = escape_html(period_label_with(period, strings)),
+    summary = escape_html(if listens.is_empty() {
+      strings.recap.empty_summary
+    } else {
+      strings.recap.summary
+    }),
+    alt_title = escape_html(period_label_with(alt_period, strings)),
+    total_plays = card.plays,
+    total_time = escape_html(&card.time),
+    top_track_title = escape_html(&card.track_title),
+    top_track_artist = escape_html(&card.track_artist),
+    top_artist_name = escape_html(&card.top_artist),
+    top_album_title = escape_html(&card.top_album),
+    card_js = card.to_js_object(strings),
+    alt_card_js = alt_card.to_js_object(strings),
+    top_tracks_html = render_ranked_entries(&top_tracks, strings.recap.no_tracks, true),
+    top_artists_html = render_ranked_entries(&top_artists, strings.recap.no_artists, false),
+    top_albums_html = render_ranked_entries(&top_albums, strings.recap.no_albums, false),
+    recent_html = render_recent_entries(listens, strings),
+    days_html = render_bar_entries(&listening_days, strings),
+    hours_html = render_bar_entries(&listening_hours, strings),
+  )
+}
+
+#[derive(Clone, Debug)]
+pub struct RankedEntry {
+  pub display: String,
+  pub detail: String,
+  pub value: u64,
+  pub uri: Option<String>,
+  /// A track's title and artists apart; `None` for other entries.
+  #[cfg_attr(not(feature = "gui"), allow(dead_code))]
+  pub parts: Option<(String, String)>,
+}
+
+#[cfg(any(test, feature = "dj-core"))]
+pub fn aggregate_top_tracks(listens: &[ListenRecord], limit: usize) -> Vec<RankedEntry> {
+  aggregate_top_tracks_with(listens, limit, &crate::core::i18n::EN)
+}
+
+pub fn aggregate_top_tracks_with(
+  listens: &[ListenRecord],
+  limit: usize,
+  strings: &crate::core::i18n::Strings,
+) -> Vec<RankedEntry> {
+  let mut totals: BTreeMap<String, (String, String, u64, u64, Option<String>)> = BTreeMap::new();
+  for record in listens {
+    let key = record
+      .item_id
+      .clone()
+      .or_else(|| record.item_uri.clone())
+      .unwrap_or_else(|| format!("{}::{}", record.title, record.artists.join(", ")));
+    let entry = totals.entry(key).or_insert_with(|| {
+      (
+        record.title.clone(),
+        record.artists.join(", "),
+        0,
+        0,
+        record.item_uri.clone(),
+      )
+    });
+    entry.2 += record.listened_ms;
+    entry.3 += 1;
+  }
+
+  sort_ranked_entries(
+    totals
+      .into_values()
+      .map(|(title, artists, listened_ms, plays, uri)| RankedEntry {
+        display: format!("{title} - {artists}"),
+        detail: strings
+          .status
+          .infra
+          .history_plays(plays, &format_duration_with(listened_ms, strings)),
+        value: listened_ms,
+        uri,
+        parts: Some((title, artists)),
+      })
+      .collect(),
+    limit,
+  )
+}
+
+fn split_artists(combo: &str) -> Vec<String> {
+  let normalized = combo.replace(" and ", ", ").replace(" & ", ", ");
+  normalized
+    .split(',')
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty())
+    .collect()
+}
+
+#[cfg(any(test, feature = "dj-core"))]
+pub fn aggregate_top_artists(listens: &[ListenRecord], limit: usize) -> Vec<RankedEntry> {
+  aggregate_top_artists_with(listens, limit, &crate::core::i18n::EN)
+}
+
+pub fn aggregate_top_artists_with(
+  listens: &[ListenRecord],
+  limit: usize,
+  strings: &crate::core::i18n::Strings,
+) -> Vec<RankedEntry> {
+  let mut totals: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+  for record in listens {
+    // Spotify credits one artist per entry, so a name such as "Mumford & Sons"
+    // stays whole. Other sources arrive as one joined string and are split.
+    let credited_separately = record
+      .item_uri
+      .as_deref()
+      .is_some_and(|uri| uri.starts_with("spotify:"));
+    for artist_combo in &record.artists {
+      let individual_artists = if credited_separately {
+        let name = artist_combo.trim();
+        if name.is_empty() {
+          Vec::new()
+        } else {
+          vec![name.to_string()]
+        }
+      } else {
+        split_artists(artist_combo)
+      };
+      for artist in individual_artists {
+        let entry = totals.entry(artist).or_insert((0, 0));
+        entry.0 += record.listened_ms;
+        entry.1 += 1;
+      }
+    }
+  }
+
+  sort_ranked_entries(
+    totals
+      .into_iter()
+      .map(|(artist, (listened_ms, plays))| RankedEntry {
+        display: artist,
+        detail: strings
+          .status
+          .infra
+          .history_track_hits(plays, &format_duration_with(listened_ms, strings)),
+        value: listened_ms,
+        uri: None,
+        parts: None,
+      })
+      .collect(),
+    limit,
+  )
+}
+
+#[cfg(any(test, feature = "dj-core"))]
+pub fn aggregate_top_albums(listens: &[ListenRecord], limit: usize) -> Vec<RankedEntry> {
+  aggregate_top_albums_with(listens, limit, &crate::core::i18n::EN)
+}
+
+pub fn aggregate_top_albums_with(
+  listens: &[ListenRecord],
+  limit: usize,
+  strings: &crate::core::i18n::Strings,
+) -> Vec<RankedEntry> {
+  let mut totals: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+  for record in listens {
+    if record.album.trim().is_empty() {
+      continue;
+    }
+    let entry = totals.entry(record.album.clone()).or_insert((0, 0));
+    entry.0 += record.listened_ms;
+    entry.1 += 1;
+  }
+
+  sort_ranked_entries(
+    totals
+      .into_iter()
+      .map(|(album, (listened_ms, plays))| RankedEntry {
+        display: album,
+        detail: strings
+          .status
+          .infra
+          .history_plays(plays, &format_duration_with(listened_ms, strings)),
+        value: listened_ms,
+        uri: None,
+        parts: None,
+      })
+      .collect(),
+    limit,
+  )
+}
+
+pub fn aggregate_days_with(
+  listens: &[ListenRecord],
+  strings: &crate::core::i18n::Strings,
+) -> Vec<RankedEntry> {
+  aggregate_days_in_with(listens, &Local, strings)
+}
+
+#[cfg(test)]
+fn aggregate_days_in<Tz: TimeZone>(listens: &[ListenRecord], tz: &Tz) -> Vec<RankedEntry> {
+  aggregate_days_in_with(listens, tz, &crate::core::i18n::EN)
+}
+
+fn aggregate_days_in_with<Tz: TimeZone>(
+  listens: &[ListenRecord],
+  tz: &Tz,
+  strings: &crate::core::i18n::Strings,
+) -> Vec<RankedEntry> {
+  let mut totals: BTreeMap<NaiveDate, u64> = BTreeMap::new();
+  for record in listens {
+    let label = record.ended_at.with_timezone(tz).date_naive();
+    *totals.entry(label).or_default() += record.listened_ms;
+  }
+
+  totals
+    .into_iter()
+    .rev()
+    .take(10)
+    .map(|(label, listened_ms)| RankedEntry {
+      display: label.format("%Y-%m-%d").to_string(),
+      detail: format_duration_with(listened_ms, strings),
+      value: listened_ms,
+      uri: None,
+      parts: None,
+    })
+    .collect::<Vec<_>>()
+    .into_iter()
+    .rev()
+    .collect()
+}
+
+fn aggregate_hours_with(
+  listens: &[ListenRecord],
+  strings: &crate::core::i18n::Strings,
+) -> Vec<RankedEntry> {
+  let mut totals: BTreeMap<u32, u64> = BTreeMap::new();
+  for record in listens {
+    let local_hour = record.ended_at.with_timezone(&chrono::Local).hour();
+    *totals.entry(local_hour).or_default() += record.listened_ms;
+  }
+
+  (0..24)
+    .map(|hour| RankedEntry {
+      display: format!("{hour:02}:00"),
+      detail: format_duration_with(*totals.get(&hour).unwrap_or(&0), strings),
+      value: *totals.get(&hour).unwrap_or(&0),
+      uri: None,
+      parts: None,
+    })
+    .collect()
+}
+
+fn sort_ranked_entries(mut entries: Vec<RankedEntry>, limit: usize) -> Vec<RankedEntry> {
+  entries.sort_by(|left, right| {
+    right
+      .value
+      .cmp(&left.value)
+      .then_with(|| left.display.cmp(&right.display))
+  });
+  entries.truncate(limit);
+  entries
+}
+
+/// Split a ranked display back into its title and artist halves on the last
+/// ` - `: `aggregate_top_tracks` always appends the artists at the end, so the
+/// last separator is the one it added, and a ` - ` inside a title survives.
+fn split_track_display(display: &str) -> (&str, &str) {
+  display.rsplit_once(" - ").unwrap_or((display, ""))
+}
+
+fn render_ranked_entries(entries: &[RankedEntry], empty_label: &str, split_artist: bool) -> String {
+  if entries.is_empty() {
+    return format!(r#"<p class="subtle">{}</p>"#, escape_html(empty_label));
+  }
+
+  let items = entries
+    .iter()
+    .enumerate()
+    .map(|(i, entry)| {
+      let (title, subtitle) = if split_artist {
+        let (title, artist) = split_track_display(&entry.display);
+        (
+          title,
+          format!("<div class=\"entry-artist\">{}</div>", escape_html(artist)),
+        )
+      } else {
+        (entry.display.as_str(), "".to_string())
+      };
+
+      let detail_html = format!(r#"<div class="subtle">{}</div>"#, escape_html(&entry.detail));
+      format!(
+        "<li><span class=\"rank\">#{}</span><div class=\"entry-details\"><strong>{}</strong>{}{}</div></li>",
+        i + 1,
+        escape_html(title),
+        subtitle,
+        detail_html
+      )
+    })
+    .collect::<Vec<_>>()
+    .join("");
+  format!("<ul class=\"ranked-list\">{items}</ul>")
+}
+
+fn render_recent_entries(listens: &[ListenRecord], strings: &crate::core::i18n::Strings) -> String {
+  let recent_records = listens.iter().rev().take(5).collect::<Vec<_>>();
+
+  if recent_records.is_empty() {
+    return format!(
+      r#"<p class="subtle">{}</p>"#,
+      escape_html(strings.recap.no_recent)
+    );
+  }
+
+  let items = recent_records
+    .iter()
+    .map(|record| {
+      let local_time = record.ended_at.with_timezone(&chrono::Local);
+      let time_str = local_time.format(strings.recap.recent_date_format).to_string();
+      format!(
+        "<li><span class=\"recent-icon\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"10\"></circle><polyline points=\"12 6 12 12 16 14\"></polyline></svg></span><div class=\"entry-details\"><strong>{}</strong><div class=\"entry-artist\">{}</div><div class=\"subtle\">{}</div></div></li>",
+        escape_html(&record.title),
+        escape_html(&record.artists.join(", ")),
+        escape_html(&strings.recap.listened_at(&time_str))
+      )
+    })
+    .collect::<Vec<_>>()
+    .join("");
+  format!("<ul class=\"ranked-list\">{items}</ul>")
+}
+
+fn render_bar_entries(entries: &[RankedEntry], strings: &crate::core::i18n::Strings) -> String {
+  if entries.is_empty() {
+    return format!(
+      r#"<p class="subtle">{}</p>"#,
+      escape_html(strings.recap.no_data_yet)
+    );
+  }
+
+  let max_value = entries
+    .iter()
+    .map(|entry| entry.value)
+    .max()
+    .unwrap_or(1)
+    .max(1);
+  let rows = entries
+    .iter()
+    .map(|entry| {
+      let width = (entry.value as f64 / max_value as f64) * 100.0;
+      format!(
+        r#"<div class="bar-row">
+  <div class="bar-label"><span>{}</span><span>{}</span></div>
+  <div class="bar"><span style="width:{:.2}%"></span></div>
+</div>"#,
+        escape_html(&entry.display),
+        escape_html(&entry.detail),
+        width
+      )
+    })
+    .collect::<Vec<_>>()
+    .join("");
+  format!(r#"<div class="bars">{rows}</div>"#)
+}
+
+#[cfg(test)]
+pub fn period_label(period: RecapPeriod) -> &'static str {
+  period_label_with(period, &crate::core::i18n::EN)
+}
+
+pub fn period_label_with(
+  period: RecapPeriod,
+  strings: &crate::core::i18n::Strings,
+) -> &'static str {
+  match period {
+    RecapPeriod::SevenDays => strings.status.infra.history_week,
+    RecapPeriod::ThirtyDays => strings.status.infra.history_month,
+    RecapPeriod::Month => strings.status.infra.history_this_month,
+    RecapPeriod::Year => strings.status.infra.history_this_year,
+    RecapPeriod::All => strings.status.infra.history_all,
+  }
+}
+
+/// "1 play", "2 plays", "0 plays": the singular only for a count of one.
+#[cfg(test)]
+pub(crate) fn count_label(n: u64, one: &str, many: &str) -> String {
+  if n == 1 {
+    format!("1 {one}")
+  } else {
+    format!("{n} {many}")
+  }
+}
+
+pub fn format_duration_with(total_ms: u64, strings: &crate::core::i18n::Strings) -> String {
+  let total_minutes = total_ms / 1000 / 60;
+  let hours = total_minutes / 60;
+  let minutes = total_minutes % 60;
+  if hours == 0 {
+    strings.status.infra.history_minutes(minutes)
+  } else {
+    strings.status.infra.history_hours_minutes(hours, minutes)
+  }
+}
+
+fn escape_html(input: &str) -> String {
+  input
+    .replace('&', "&amp;")
+    .replace('<', "&lt;")
+    .replace('>', "&gt;")
+    .replace('"', "&quot;")
+    .replace('\'', "&#39;")
+}
+
+/// Encode a string as a JS string literal (quotes included). Unlike
+/// `escape_html`, the value round-trips exactly; needed for the recap page's
+/// inline `<script>` data. `</` is escaped so a value can never close the
+/// script tag early.
+/// Preserve the recap's original single-quoted JS literals while escaping table text.
+fn js_single_string(input: &str) -> String {
+  let escaped = input
+    .replace('\\', "\\\\")
+    .replace('\'', "\\'")
+    .replace('<', "\\u003c")
+    .replace('\n', "\\n")
+    .replace('\r', "\\r")
+    .replace('\u{2028}', "\\u2028")
+    .replace('\u{2029}', "\\u2029");
+  format!("'{escaped}'")
+}
+
+fn js_string(input: &str) -> String {
+  serde_json::to_string(input)
+    .unwrap_or_else(|_| "\"\"".to_string())
+    .replace("</", "<\\/")
+}
+
+fn last_synced_file_path() -> Result<PathBuf> {
+  history_state_file_path(LAST_SYNCED_FILE_NAME)
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SyncCursor {
+  LegacyTimestamp(DateTime<Utc>),
+  Offset(u64),
+}
+
+fn read_sync_cursor(path: &Path) -> Result<SyncCursor> {
+  let epoch = Utc
+    .timestamp_opt(0, 0)
+    .single()
+    .ok_or_else(|| anyhow!("failed to construct Unix epoch timestamp"))?;
+
+  let Ok(content) = fs::read_to_string(path) else {
+    return Ok(SyncCursor::LegacyTimestamp(epoch));
+  };
+  let content = content.trim();
+
+  if let Some(offset) = content
+    .strip_prefix("offset:")
+    .and_then(|offset| offset.parse::<u64>().ok())
+  {
+    return Ok(SyncCursor::Offset(offset));
+  }
+
+  Ok(SyncCursor::LegacyTimestamp(
+    DateTime::parse_from_rfc3339(content)
+      .map(|timestamp| timestamp.with_timezone(&Utc))
+      .unwrap_or(epoch),
+  ))
+}
+
+/// Load complete JSONL records after the append offset. A legacy timestamp
+/// cursor reads the whole file once, then migrates to the returned offset.
+///
+/// The returned offset stops at the last newline observed. This matters when a
+/// concurrent append has written part, but not all, of its JSON record.
+fn load_sync_batch(path: &Path, cursor: SyncCursor) -> Result<(Vec<ListenRecord>, u64)> {
+  let mut file = match fs::File::open(path) {
+    Ok(file) => file,
+    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), 0)),
+    Err(error) => return Err(error.into()),
+  };
+  let file_len = file.metadata()?.len();
+  let start_offset = match cursor {
+    SyncCursor::Offset(offset) if offset <= file_len => offset,
+    SyncCursor::Offset(_) | SyncCursor::LegacyTimestamp(_) => 0,
+  };
+  file.seek(SeekFrom::Start(start_offset))?;
+
+  let mut bytes = Vec::new();
+  file.read_to_end(&mut bytes)?;
+  let complete_len = bytes
+    .iter()
+    .rposition(|byte| *byte == b'\n')
+    .map_or(0, |index| index + 1);
+  let next_offset = start_offset + complete_len as u64;
+
+  let mut listens = Vec::new();
+  for line in BufReader::new(&bytes[..complete_len]).lines() {
+    let line = line?;
+    if line.trim().is_empty() {
+      continue;
+    }
+
+    match serde_json::from_str::<ListenRecord>(&line) {
+      Ok(record) => listens.push(record),
+      Err(error) => log::warn!("skipping malformed history line: {}", error),
+    }
+  }
+
+  if let SyncCursor::LegacyTimestamp(last_synced_at) = cursor {
+    listens.retain(|record| record.ended_at > last_synced_at);
+  }
+
+  Ok((listens, next_offset))
+}
+
+fn write_sync_offset(path: &Path, offset: u64) -> Result<()> {
+  if let Some(parent) = path.parent() {
+    fs::create_dir_all(parent)?;
+  }
+  fs::write(path, format!("offset:{offset}"))?;
+  Ok(())
+}
+
+/// Resolve a sync endpoint, honoring the `ECHOVENA_SYNC_BASE_URL` override
+/// (useful for pointing the client at a local backend during development).
+fn resolve_sync_url(path: &str) -> String {
+  let base = match std::env::var(SYNC_BASE_URL_ENV_KEY) {
+    Ok(base) if !base.trim().is_empty() => base.trim().trim_end_matches('/').to_string(),
+    _ => SYNC_BASE_URL.to_string(),
+  };
+  format!("{}{}", base, path)
+}
+
+/// Post the current now-playing state to the cloud dashboard / public widget.
+/// Uses a shared HTTP client to reuse the connection pool across frequent calls.
+async fn sync_now_playing_to_cloud(
+  client: &reqwest::Client,
+  sync_token: &str,
+  payload: &NowPlayingPayload,
+) -> Result<()> {
+  let response = client
+    .post(resolve_sync_url(NOW_PLAYING_SYNC_PATH))
+    .header("Authorization", format!("Bearer {}", sync_token))
+    .json(payload)
+    .send()
+    .await?;
+
+  if !response.status().is_success() {
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    return Err(anyhow!("now-playing sync failed ({}): {}", status, body));
+  }
+  Ok(())
+}
+
+/// Clear the now-playing status (playback stopped or the TUI is exiting).
+async fn clear_now_playing_with_client(client: &reqwest::Client, sync_token: &str) -> Result<()> {
+  let response = client
+    .delete(resolve_sync_url(NOW_PLAYING_SYNC_PATH))
+    .header("Authorization", format!("Bearer {}", sync_token))
+    .send()
+    .await?;
+
+  if !response.status().is_success() {
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    return Err(anyhow!("clear now-playing failed ({}): {}", status, body));
+  }
+  Ok(())
+}
+
+/// Clear the now-playing status when the TUI exits.
+pub async fn clear_now_playing_from_cloud(sync_token: &str) -> Result<()> {
+  clear_now_playing_with_client(
+    crate::infra::network::requests::shared_http_client(),
+    sync_token,
+  )
+  .await
+}
+
+/// Sync new listen records to the cloud using the given HTTP client.
+async fn sync_history_to_cloud_with_client(
+  client: &reqwest::Client,
+  sync_token: &str,
+) -> Result<()> {
+  let path = last_synced_file_path()?;
+
+  // Reading the cursor and parsing the whole listens file is blocking IO on an
+  // ever-growing file; keep it off the runtime worker (matches the streak-cache
+  // load in `spawn_history_collector`).
+  let cursor_path = path.clone();
+  let listens_path = listens_file_path()?;
+  let (new_listens, next_offset) = tokio::task::spawn_blocking(move || {
+    let cursor = read_sync_cursor(&cursor_path)?;
+    load_sync_batch(&listens_path, cursor)
+  })
+  .await??;
+
+  if new_listens.is_empty() {
+    tokio::task::spawn_blocking(move || write_sync_offset(&path, next_offset)).await??;
+    log::info!("no new listening history records to sync");
+    return Ok(());
+  }
+
+  let response = client
+    .post(resolve_sync_url(CLOUD_SYNC_PATH))
+    .header("Authorization", format!("Bearer {}", sync_token))
+    .json(&new_listens)
+    .send()
+    .await?;
+
+  if response.status().is_success() {
+    // Advance by append position rather than timestamp. Any record appended
+    // during this request remains beyond `next_offset` and is picked up by the
+    // next sync even if its clock timestamp is older than this batch.
+    tokio::task::spawn_blocking(move || write_sync_offset(&path, next_offset)).await??;
+    log::info!(
+      "successfully synchronized listening history to cloud ({} tracks)",
+      new_listens.len()
+    );
+  } else {
+    let status = response.status();
+    let err_body = response.text().await.unwrap_or_default();
+    log::warn!(
+      "failed to synchronize history: {} (status {})",
+      err_body,
+      status
+    );
+    return Err(anyhow!("Sync failed: {}", err_body));
+  }
+
+  Ok(())
+}
+
+pub async fn sync_history_to_cloud(sync_token: &str) -> Result<()> {
+  sync_history_to_cloud_with_client(
+    crate::infra::network::requests::shared_http_client(),
+    sync_token,
+  )
+  .await
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use chrono::{FixedOffset, TimeZone};
+
+  fn record_at(day: u32, listened_ms: u64, qualified: bool) -> ListenRecord {
+    let timestamp = Utc.with_ymd_and_hms(2026, 5, day, 12, 0, 0).unwrap();
+    ListenRecord {
+      started_at: timestamp,
+      ended_at: timestamp,
+      listened_ms,
+      duration_ms: 180_000,
+      qualified,
+      title: format!("Track {day}"),
+      artists: vec!["Artist".to_string()],
+      album: "Album".to_string(),
+      item_kind: HistoryItemKind::Track,
+      item_id: Some(format!("id-{day}")),
+      item_uri: Some(format!("spotify:track:id-{day}")),
+      context_uri: None,
+      source: HistoryPlaybackSource::NativeContext,
+      image_url: None,
+    }
+  }
+
+  #[test]
+  fn count_label_uses_the_singular_only_for_one() {
+    assert_eq!(count_label(0, "play", "plays"), "0 plays");
+    assert_eq!(count_label(1, "play", "plays"), "1 play");
+    assert_eq!(count_label(2, "play", "plays"), "2 plays");
+  }
+
+  #[test]
+  fn top_tracks_detail_says_play_for_a_single_play() {
+    let once = aggregate_top_tracks(&[record_at(20, 60_000, true)], 10);
+    assert!(once[0].detail.starts_with("1 play ·"), "{}", once[0].detail);
+
+    let twice = aggregate_top_tracks(
+      &[record_at(20, 60_000, true), record_at(20, 60_000, true)],
+      10,
+    );
+    assert!(
+      twice[0].detail.starts_with("2 plays ·"),
+      "{}",
+      twice[0].detail
+    );
+  }
+
+  #[test]
+  fn top_artists_detail_says_track_hit_for_a_single_play() {
+    let once = aggregate_top_artists(&[record_at(20, 60_000, true)], 10);
+    assert!(
+      once[0].detail.starts_with("1 track hit ·"),
+      "{}",
+      once[0].detail
+    );
+
+    let twice = aggregate_top_artists(
+      &[record_at(20, 60_000, true), record_at(21, 60_000, true)],
+      10,
+    );
+    assert!(
+      twice[0].detail.starts_with("2 track hits ·"),
+      "{}",
+      twice[0].detail
+    );
+  }
+
+  #[test]
+  fn top_albums_detail_says_play_for_a_single_play() {
+    let once = aggregate_top_albums(&[record_at(20, 60_000, true)], 10);
+    assert!(once[0].detail.starts_with("1 play ·"), "{}", once[0].detail);
+
+    let twice = aggregate_top_albums(
+      &[record_at(20, 60_000, true), record_at(21, 60_000, true)],
+      10,
+    );
+    assert!(
+      twice[0].detail.starts_with("2 plays ·"),
+      "{}",
+      twice[0].detail
+    );
+  }
+
+  fn top_artist_names(record: ListenRecord) -> Vec<String> {
+    aggregate_top_artists(&[record], 10)
+      .into_iter()
+      .map(|entry| entry.display)
+      .collect()
+  }
+
+  #[test]
+  fn top_artists_keeps_a_spotify_band_name_with_an_ampersand_whole() {
+    let mut r = record_at(20, 100_000, true);
+    r.artists = vec!["Mumford & Sons".into()];
+    assert_eq!(top_artist_names(r), ["Mumford & Sons"]);
+  }
+
+  #[test]
+  fn top_artists_keeps_a_spotify_artist_name_with_a_comma_whole() {
+    let mut r = record_at(20, 100_000, true);
+    r.artists = vec!["Tyler, The Creator".into()];
+    assert_eq!(top_artist_names(r), ["Tyler, The Creator"]);
+  }
+
+  #[test]
+  fn top_artists_counts_each_credited_spotify_artist_separately() {
+    let mut r = record_at(20, 100_000, true);
+    r.artists = vec!["Kygo".into(), "Max McNown".into()];
+    let top = aggregate_top_artists(&[r], 10);
+    assert_eq!(
+      top
+        .iter()
+        .map(|entry| (entry.display.as_str(), entry.value))
+        .collect::<Vec<_>>(),
+      [("Kygo", 100_000), ("Max McNown", 100_000)]
+    );
+  }
+
+  #[test]
+  fn top_artists_still_splits_a_joined_local_file_artist_string() {
+    let mut r = record_at(20, 100_000, true);
+    r.artists = vec!["Alice, Bob".into()];
+    r.item_uri = Some("file:///m/a.flac".into());
+    assert_eq!(top_artist_names(r), ["Alice", "Bob"]);
+  }
+
+  #[test]
+  fn top_artists_splits_a_record_with_no_item_uri() {
+    let mut r = record_at(20, 100_000, true);
+    r.artists = vec!["Alice & Bob".into()];
+    r.item_uri = None;
+    assert_eq!(top_artist_names(r), ["Alice", "Bob"]);
+  }
+
+  #[test]
+  fn days_use_the_local_date_west_of_utc() {
+    let mut record = record_at(20, 60_000, true);
+    record.ended_at = Utc.with_ymd_and_hms(2026, 5, 20, 2, 0, 0).unwrap();
+    let days = aggregate_days_in(&[record], &FixedOffset::west_opt(5 * 3600).unwrap());
+    assert_eq!(days.len(), 1);
+    assert_eq!(days[0].display, "2026-05-19");
+  }
+
+  #[test]
+  fn days_use_the_local_date_east_of_utc() {
+    let mut record = record_at(19, 60_000, true);
+    record.ended_at = Utc.with_ymd_and_hms(2026, 5, 19, 23, 0, 0).unwrap();
+    let days = aggregate_days_in(&[record], &FixedOffset::east_opt(2 * 3600).unwrap());
+    assert_eq!(days.len(), 1);
+    assert_eq!(days[0].display, "2026-05-20");
+  }
+
+  #[test]
+  fn days_merge_plays_that_share_a_local_date() {
+    let mut first = record_at(20, 60_000, true);
+    first.ended_at = Utc.with_ymd_and_hms(2026, 5, 20, 2, 0, 0).unwrap();
+    let mut second = record_at(19, 30_000, true);
+    second.ended_at = Utc.with_ymd_and_hms(2026, 5, 19, 20, 0, 0).unwrap();
+    let records = [first, second];
+    let days = aggregate_days_in(&records, &FixedOffset::west_opt(5 * 3600).unwrap());
+    assert_eq!(days.len(), 1);
+    assert_eq!(
+      (days[0].display.as_str(), days[0].value),
+      ("2026-05-19", 90_000)
+    );
+    let utc_days = aggregate_days_in(&records, &Utc);
+    assert_eq!(
+      utc_days
+        .iter()
+        .map(|day| day.display.as_str())
+        .collect::<Vec<_>>(),
+      ["2026-05-19", "2026-05-20"]
+    );
+  }
+
+  #[test]
+  fn qualification_requires_minimum_duration_and_progress() {
+    assert!(!qualifies_listen(30_000, 15_000));
+    assert!(!qualifies_listen(180_000, 80_000));
+    assert!(qualifies_listen(180_000, 90_000));
+    assert!(qualifies_listen(800_000, 240_000));
+  }
+
+  #[test]
+  fn all_time_filter_keeps_only_qualified_records() {
+    let records = vec![record_at(20, 100_000, false), record_at(21, 120_000, true)];
+    let filtered = filter_listens_for_period(&records, RecapPeriod::All);
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].title, "Track 21");
+  }
+
+  fn titles(records: &[ListenRecord]) -> Vec<&str> {
+    records.iter().map(|record| record.title.as_str()).collect()
+  }
+
+  #[test]
+  fn month_period_uses_the_local_month_east_of_utc() {
+    let mut kept = record_at(1, 60_000, true);
+    kept.ended_at = Utc.with_ymd_and_hms(2026, 9, 30, 22, 30, 0).unwrap();
+    let mut dropped = record_at(2, 60_000, true);
+    dropped.ended_at = Utc.with_ymd_and_hms(2026, 9, 30, 21, 30, 0).unwrap();
+    let now = FixedOffset::east_opt(2 * 3600)
+      .unwrap()
+      .with_ymd_and_hms(2026, 10, 1, 1, 0, 0)
+      .unwrap();
+    let filtered = filter_listens_for_period_at(&[kept, dropped], RecapPeriod::Month, now);
+    assert_eq!(titles(&filtered), ["Track 1"]);
+  }
+
+  #[test]
+  fn month_period_uses_the_local_month_west_of_utc() {
+    let mut afternoon = record_at(1, 60_000, true);
+    afternoon.ended_at = Utc.with_ymd_and_hms(2026, 9, 30, 15, 0, 0).unwrap();
+    let mut evening = record_at(2, 60_000, true);
+    evening.ended_at = Utc.with_ymd_and_hms(2026, 10, 1, 0, 30, 0).unwrap();
+    let mut last_month = record_at(3, 60_000, true);
+    last_month.ended_at = Utc.with_ymd_and_hms(2026, 9, 1, 2, 0, 0).unwrap();
+    let now = FixedOffset::west_opt(5 * 3600)
+      .unwrap()
+      .with_ymd_and_hms(2026, 9, 30, 20, 0, 0)
+      .unwrap();
+    let filtered =
+      filter_listens_for_period_at(&[afternoon, evening, last_month], RecapPeriod::Month, now);
+    assert_eq!(titles(&filtered), ["Track 1", "Track 2"]);
+  }
+
+  #[test]
+  fn year_period_uses_the_local_year_across_new_year() {
+    let mut kept = record_at(1, 60_000, true);
+    kept.ended_at = Utc.with_ymd_and_hms(2026, 12, 31, 23, 10, 0).unwrap();
+    let mut dropped = record_at(2, 60_000, true);
+    dropped.ended_at = Utc.with_ymd_and_hms(2026, 12, 31, 22, 0, 0).unwrap();
+    let now = FixedOffset::east_opt(3600)
+      .unwrap()
+      .with_ymd_and_hms(2027, 1, 1, 0, 30, 0)
+      .unwrap();
+    let filtered = filter_listens_for_period_at(&[kept, dropped], RecapPeriod::Year, now);
+    assert_eq!(titles(&filtered), ["Track 1"]);
+  }
+
+  #[test]
+  fn cloud_sync_uses_public_echovena_domain() {
+    assert_eq!(
+      resolve_sync_url(CLOUD_SYNC_PATH),
+      "https://echovena.com/api/sync"
+    );
+  }
+
+  #[test]
+  fn now_playing_uses_public_echovena_domain() {
+    assert_eq!(
+      resolve_sync_url(NOW_PLAYING_SYNC_PATH),
+      "https://echovena.com/api/sync/now-playing"
+    );
+  }
+
+  fn snapshot(title: &str, is_playing: bool) -> PlaybackSnapshot {
+    PlaybackSnapshot {
+      metadata: crate::infra::media_metadata::PlaybackMetadata {
+        title: title.to_string(),
+        artists: vec!["Artist".to_string()],
+        album: "Album".to_string(),
+        image_url: Some("https://i.scdn.co/image/abc".to_string()),
+        duration_ms: 200_000,
+      },
+      item_kind: PlaybackItemKind::Track,
+      item_id: None,
+      item_uri: None,
+      context_uri: None,
+      source: PlaybackSource::ExternalDevice,
+      progress_ms: 10_000,
+      is_playing,
+      is_live: false,
+      shuffle: false,
+      repeat: None,
+    }
+  }
+
+  /// A paused snapshot of a Subsonic `uri`: paused, so the collector never
+  /// counts listening time and never appends to the real listens file.
+  fn subsonic_snapshot(uri: &str, title: &str, artists: &[&str]) -> PlaybackSnapshot {
+    let mut snap = snapshot(title, false);
+    snap.metadata.artists = artists.iter().map(|a| a.to_string()).collect();
+    snap.item_uri = Some(uri.to_string());
+    snap
+  }
+
+  #[test]
+  fn a_placeholder_title_resolved_mid_track_keeps_the_same_listen() {
+    let uri = "subsonic:track:42";
+    let mut collector = HistoryCollector::default();
+    assert!(collector
+      .observe(Some(subsonic_snapshot(uri, uri, &[])))
+      .unwrap()
+      .is_none());
+    let started_at = collector.current.as_ref().unwrap().started_at;
+
+    let resolved = subsonic_snapshot(uri, "Real Title", &["Real Artist"]);
+    assert!(collector.observe(Some(resolved)).unwrap().is_none());
+
+    let current = collector.current.as_ref().unwrap();
+    assert_eq!(current.started_at, started_at, "the listen was rolled");
+    assert_eq!(current.title, "Real Title");
+    assert_eq!(current.artists, ["Real Artist"]);
+  }
+
+  #[test]
+  fn only_a_placeholder_for_the_same_item_takes_new_metadata() {
+    let uri = "subsonic:track:42";
+    let placeholder = SessionIdentity::from_snapshot(&subsonic_snapshot(uri, uri, &[]));
+    let resolved = SessionIdentity::from_snapshot(&subsonic_snapshot(uri, "Real", &["A"]));
+    assert!(placeholder.resolves_to(&resolved));
+
+    // A real title changing is a new track, not a lookup.
+    assert!(!resolved.resolves_to(&placeholder));
+    // Another item behind the placeholder is a new track too.
+    let other =
+      SessionIdentity::from_snapshot(&subsonic_snapshot("subsonic:track:7", "Real", &["A"]));
+    assert!(!placeholder.resolves_to(&other));
+  }
+
+  #[test]
+  fn now_playing_payload_serializes_contract_fields() {
+    let payload = NowPlayingPayload::from_snapshot(&snapshot("Song", true), 1_700_000_000_000);
+    let value = serde_json::to_value(&payload).unwrap();
+    let object = value.as_object().unwrap();
+    let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+      keys,
+      [
+        "album",
+        "artists",
+        "duration_ms",
+        "image_url",
+        "is_live",
+        "is_playing",
+        "progress_at_ms",
+        "progress_ms",
+        "title",
+      ]
+    );
+    assert_eq!(object["title"], "Song");
+    assert_eq!(object["artists"], serde_json::json!(["Artist"]));
+    assert_eq!(object["progress_at_ms"], 1_700_000_000_000_i64);
+  }
+
+  #[test]
+  fn now_playing_payload_omits_missing_image_url() {
+    let mut snap = snapshot("Song", true);
+    snap.metadata.image_url = None;
+    let value = serde_json::to_value(NowPlayingPayload::from_snapshot(&snap, 0)).unwrap();
+    assert!(value.as_object().unwrap().get("image_url").is_none());
+  }
+
+  #[test]
+  fn now_playing_payload_maps_live_radio_snapshot() {
+    let mut snap = snapshot("SomaFM Groove Salad", true);
+    snap.is_live = true;
+    snap.metadata.duration_ms = 0;
+    snap.metadata.image_url = None;
+    let payload = NowPlayingPayload::from_snapshot(&snap, 5);
+    assert!(payload.is_live);
+    assert_eq!(payload.duration_ms, 0);
+    assert!(payload.image_url.is_none());
+  }
+
+  #[test]
+  fn append_cursor_keeps_out_of_order_record_added_during_sync() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join(LISTENS_FILE_NAME);
+    let first = record_at(21, 120_000, true);
+    append_records_for_test(&path, std::slice::from_ref(&first));
+
+    // This snapshot represents the request body already in flight.
+    let epoch = Utc.timestamp_opt(0, 0).single().unwrap();
+    let (in_flight_batch, synced_offset) =
+      load_sync_batch(&path, SyncCursor::LegacyTimestamp(epoch)).unwrap();
+    assert_eq!(in_flight_batch, vec![first]);
+
+    // A second instance appends an older timestamp before that request
+    // succeeds and persists `synced_offset`.
+    let out_of_order = record_at(20, 90_000, true);
+    append_records_for_test(&path, std::slice::from_ref(&out_of_order));
+
+    let (next_batch, _) = load_sync_batch(&path, SyncCursor::Offset(synced_offset)).unwrap();
+    assert_eq!(next_batch, vec![out_of_order]);
+  }
+
+  fn append_records_for_test(path: &Path, records: &[ListenRecord]) {
+    let mut file = OpenOptions::new()
+      .create(true)
+      .append(true)
+      .open(path)
+      .unwrap();
+    for record in records {
+      serde_json::to_writer(&mut file, record).unwrap();
+      writeln!(file).unwrap();
+    }
+  }
+
+  #[test]
+  fn tracker_pushes_on_track_change_and_not_within_heartbeat() {
+    let mut tracker = NowPlayingTracker::default();
+    let t0 = Instant::now();
+    assert!(matches!(
+      tracker.observe(Some(&snapshot("One", true)), t0),
+      Some(NowPlayingAction::Push(_))
+    ));
+    // Same track one second later, progress advancing in step: no push.
+    let mut later = snapshot("One", true);
+    later.progress_ms = 11_000;
+    assert!(tracker
+      .observe(Some(&later), t0 + std::time::Duration::from_secs(1))
+      .is_none());
+    assert!(matches!(
+      tracker.observe(
+        Some(&snapshot("Two", true)),
+        t0 + std::time::Duration::from_secs(2)
+      ),
+      Some(NowPlayingAction::Push(_))
+    ));
+  }
+
+  #[test]
+  fn tracker_pushes_on_play_pause_flip() {
+    let mut tracker = NowPlayingTracker::default();
+    let t0 = Instant::now();
+    tracker.observe(Some(&snapshot("One", true)), t0);
+    let action = tracker.observe(
+      Some(&snapshot("One", false)),
+      t0 + std::time::Duration::from_secs(1),
+    );
+    assert!(matches!(
+      action,
+      Some(NowPlayingAction::Push(ref payload)) if !payload.is_playing
+    ));
+  }
+
+  #[test]
+  fn tracker_heartbeats_even_when_paused() {
+    let mut tracker = NowPlayingTracker::default();
+    let t0 = Instant::now();
+    tracker.observe(Some(&snapshot("One", false)), t0);
+    let action = tracker.observe(
+      Some(&snapshot("One", false)),
+      t0 + std::time::Duration::from_secs(NOW_PLAYING_HEARTBEAT_SECS + 1),
+    );
+    assert!(matches!(action, Some(NowPlayingAction::Push(_))));
+  }
+
+  #[test]
+  fn tracker_pushes_on_seek_discontinuity() {
+    let mut tracker = NowPlayingTracker::default();
+    let t0 = Instant::now();
+    tracker.observe(Some(&snapshot("One", true)), t0);
+    let mut seeked = snapshot("One", true);
+    seeked.progress_ms = 120_000;
+    let action = tracker.observe(Some(&seeked), t0 + std::time::Duration::from_secs(2));
+    assert!(matches!(action, Some(NowPlayingAction::Push(_))));
+  }
+
+  #[test]
+  fn tracker_clears_once_when_playback_stops() {
+    let mut tracker = NowPlayingTracker::default();
+    let t0 = Instant::now();
+    tracker.observe(Some(&snapshot("One", true)), t0);
+    assert!(matches!(
+      tracker.observe(None, t0 + std::time::Duration::from_secs(1)),
+      Some(NowPlayingAction::Clear)
+    ));
+    assert!(tracker
+      .observe(None, t0 + std::time::Duration::from_secs(2))
+      .is_none());
+  }
+
+  fn day(year: i32, month: u32, day: u32) -> NaiveDate {
+    NaiveDate::from_ymd_opt(year, month, day).unwrap()
+  }
+
+  #[test]
+  fn streak_counts_consecutive_run_ending_today() {
+    let today = day(2026, 5, 21);
+    let days: BTreeSet<NaiveDate> = [day(2026, 5, 19), day(2026, 5, 20), today]
+      .into_iter()
+      .collect();
+    let summary = streaks_from_days(&days, today, 90_000);
+    assert_eq!(summary.current_days, 3);
+    assert_eq!(summary.longest_days, 3);
+    assert_eq!(summary.today_ms, 90_000);
+  }
+
+  #[test]
+  fn streak_survives_until_midnight_when_today_has_no_listen() {
+    let today = day(2026, 5, 21);
+    let days: BTreeSet<NaiveDate> = [day(2026, 5, 19), day(2026, 5, 20)].into_iter().collect();
+    let summary = streaks_from_days(&days, today, 0);
+    assert_eq!(summary.current_days, 2);
+    assert_eq!(summary.today_ms, 0);
+  }
+
+  #[test]
+  fn streak_resets_after_a_gap() {
+    let today = day(2026, 5, 21);
+    let days: BTreeSet<NaiveDate> = [day(2026, 5, 15), day(2026, 5, 16), day(2026, 5, 17)]
+      .into_iter()
+      .collect();
+    let summary = streaks_from_days(&days, today, 0);
+    assert_eq!(summary.current_days, 0);
+    assert_eq!(summary.longest_days, 3);
+  }
+
+  #[test]
+  fn longest_streak_can_exceed_current() {
+    let today = day(2026, 5, 21);
+    let days: BTreeSet<NaiveDate> = [
+      day(2026, 5, 10),
+      day(2026, 5, 11),
+      day(2026, 5, 12),
+      day(2026, 5, 13),
+      day(2026, 5, 20),
+      today,
+    ]
+    .into_iter()
+    .collect();
+    let summary = streaks_from_days(&days, today, 0);
+    assert_eq!(summary.current_days, 2);
+    assert_eq!(summary.longest_days, 4);
+  }
+
+  #[test]
+  fn streak_is_zero_with_no_listens() {
+    let summary = streaks_from_days(&BTreeSet::new(), day(2026, 5, 21), 0);
+    assert_eq!(summary, StreakSummary::default());
+  }
+
+  #[test]
+  fn compute_streaks_ignores_unqualified_records() {
+    let records = vec![record_at(19, 60_000, false), record_at(20, 60_000, true)];
+    let summary = compute_streaks(&records);
+    assert_eq!(summary.longest_days, 1);
+  }
+
+  #[test]
+  fn top_tracks_respect_limit_and_carry_uri() {
+    let records: Vec<ListenRecord> = (1..=8)
+      .map(|d| record_at(d, 60_000 * d as u64, true))
+      .collect();
+    let entries = aggregate_top_tracks(&records, 3);
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0].display, "Track 8 - Artist");
+    assert_eq!(entries[0].uri.as_deref(), Some("spotify:track:id-8"));
+  }
+
+  #[test]
+  fn stats_data_totals_only_reflect_given_records() {
+    let records = vec![record_at(20, 100_000, true), record_at(21, 50_000, true)];
+    let stats = build_stats_data_with(&records, &records, RecapPeriod::All, &crate::core::i18n::EN);
+    assert_eq!(stats.total_plays, 2);
+    assert_eq!(stats.total_time_ms, 150_000);
+    assert_eq!(stats.top_tracks.len(), 2);
+  }
+
+  fn ranked(names: &[(&str, u64)]) -> Vec<RankedEntry> {
+    names
+      .iter()
+      .map(|(name, value)| RankedEntry {
+        display: name.to_string(),
+        detail: String::new(),
+        value: *value,
+        uri: None,
+        parts: None,
+      })
+      .collect()
+  }
+
+  fn listen_days_ago(days: i64, title: &str, qualified: bool) -> ListenRecord {
+    let mut record = record_at(1, 60_000, qualified);
+    record.ended_at = Utc::now() - Duration::days(days);
+    record.title = title.to_string();
+    record.item_id = Some(title.to_string());
+    record
+  }
+
+  #[test]
+  fn the_biggest_climber_into_the_period_top_ten_names_its_all_time_rank() {
+    let all_time = ranked(&[("A", 90), ("B", 80), ("C", 70), ("D", 60)]);
+    let period = ranked(&[("D", 30), ("A", 20), ("B", 10), ("C", 5)]);
+
+    let movements = artist_movements(&period, &all_time);
+
+    assert_eq!(
+      movements[0],
+      ArtistMovement {
+        name: "D".to_string(),
+        kind: MovementKind::Climb,
+        from: Some(4),
+        to: Some(1),
+      }
+    );
+  }
+
+  #[test]
+  fn an_all_time_artist_the_period_never_played_is_the_faller() {
+    let all_time = ranked(&[("A", 90), ("B", 80), ("C", 70)]);
+    let period = ranked(&[("A", 20), ("C", 10)]);
+
+    let fall = artist_movements(&period, &all_time)
+      .into_iter()
+      .find(|movement| movement.kind == MovementKind::Fall)
+      .unwrap();
+
+    assert_eq!(
+      (fall.name.as_str(), fall.from, fall.to),
+      ("B", Some(2), None)
+    );
+  }
+
+  #[test]
+  fn an_artist_whose_listens_all_fall_in_the_period_is_new() {
+    let all_time = ranked(&[("A", 90), ("N", 30)]);
+    let period = ranked(&[("N", 30), ("A", 10)]);
+
+    assert_eq!(
+      artist_ranks(&period, &all_time),
+      [
+        ArtistRank {
+          all_time: Some(2),
+          new: true
+        },
+        ArtistRank {
+          all_time: Some(1),
+          new: false
+        },
+      ]
+    );
+    assert!(artist_movements(&period, &all_time)
+      .iter()
+      .any(|movement| movement.kind == MovementKind::New && movement.name == "N"));
+  }
+
+  #[test]
+  fn period_plays_and_the_week_count_only_qualified_listens() {
+    let listens = vec![
+      listen_days_ago(1, "Fresh", true),
+      listen_days_ago(1, "Skipped", false),
+      listen_days_ago(20, "Older", true),
+      listen_days_ago(400, "Ancient", true),
+    ];
+    let filtered = filter_listens_for_period(&listens, RecapPeriod::All);
+
+    let stats = build_stats_data_with(
+      &filtered,
+      &listens,
+      RecapPeriod::All,
+      &crate::core::i18n::EN,
+    );
+
+    let plays: Vec<_> = stats.period_plays.iter().map(|(_, plays)| *plays).collect();
+    assert_eq!(plays[0], 1);
+    assert_eq!(plays[1], 2);
+    assert_eq!(plays[4], 3);
+    assert_eq!(stats.week_tracks.len(), 1);
+    assert!(stats.movements.is_empty());
+  }
+
+  #[test]
+  fn the_cover_url_stays_out_of_the_listens_file() {
+    let mut record = record_at(3, 60_000, true);
+    record.image_url = Some("https://i.scdn.co/image/abc".to_string());
+
+    let line = serde_json::to_string(&record).unwrap();
+
+    assert!(!line.contains("image_url"));
+    assert_eq!(session_play(&record).image_url, record.image_url);
+  }
+
+  #[test]
+  fn top_tracks_carry_the_title_and_the_artists_apart() {
+    let tracks = aggregate_top_tracks(&[record_at(3, 60_000, true)], 5);
+
+    assert_eq!(
+      tracks[0].parts,
+      Some(("Track 3".to_string(), "Artist".to_string()))
+    );
+    assert_eq!(tracks[0].display, "Track 3 - Artist");
+  }
+
+  #[test]
+  fn english_recap_html_keeps_the_original_bytes() {
+    let html = render_history_recap_html(RecapPeriod::All, &[], RecapPeriod::ThirtyDays, &[]);
+    // FNV-1a of the complete pre-localization empty export, including JS and CSS.
+    let hash = html.bytes().fold(0xcbf29ce484222325u64, |hash, byte| {
+      (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    });
+    assert_eq!(hash, 0x1b2a30a5f7841662);
+  }
+
+  #[test]
+  fn recap_uses_the_supplied_table_in_dom_canvas_and_empty_states() {
+    let strings = crate::core::i18n::Strings {
+      recap: crate::core::i18n::recap::RecapStrings {
+        title: "回顾",
+        first_track: "最常听",
+        qualified_plays: "次数",
+        no_data: "无数据",
+        no_recent: "无记录",
+        no_tracks: "无歌曲",
+        ..crate::core::i18n::recap::EN
+      },
+      ..crate::core::i18n::EN
+    };
+    let html = render_history_recap_html_with(
+      RecapPeriod::All,
+      &[],
+      RecapPeriod::ThirtyDays,
+      &[],
+      &strings,
+    );
+    assert!(html.contains("<p>回顾</p>"));
+    assert!(html.contains("const rankText = '最常听';"));
+    assert!(html.contains("54, '次数', String(card.plays)"));
+    for label in ["无数据", "无记录", "无歌曲"] {
+      assert!(html.contains(label));
+    }
+    assert!(!html.contains("Listening History Recap"));
+    assert_eq!(
+      js_single_string("a'</script>\n"),
+      "'a\\'\\u003c/script>\\n'"
+    );
+  }
+
+  #[test]
+  fn recap_html_uses_canvas_renderer_not_html2canvas() {
+    let records = vec![record_at(20, 120_000, true)];
+    let html = render_history_recap_html(RecapPeriod::All, &records, RecapPeriod::ThirtyDays, &[]);
+    assert!(!html.contains("html2canvas"));
+    assert!(html.contains("getContext('2d')"));
+  }
+
+  #[test]
+  fn recap_card_keeps_a_dash_in_the_top_track_title() {
+    let mut record = record_at(20, 120_000, true);
+    record.title = "Song - Remastered 2011".to_string();
+    let records = [record];
+    let html = render_history_recap_html(RecapPeriod::All, &records, RecapPeriod::ThirtyDays, &[]);
+    assert!(html.contains(r#"track: "Song - Remastered 2011", artist: "Artist""#));
+    assert!(html.contains(r#"<div id="card-track-artist" class="track-artist">Artist</div>"#));
+  }
+
+  #[test]
+  fn recap_track_list_keeps_a_dash_in_the_title() {
+    let mut record = record_at(20, 120_000, true);
+    record.title = "Song - Remastered 2011".to_string();
+    let records = [record];
+    let html = render_history_recap_html(RecapPeriod::All, &records, RecapPeriod::ThirtyDays, &[]);
+    assert!(html.contains(
+      r#"<span class="rank">#1</span><div class="entry-details"><strong>Song - Remastered 2011</strong><div class="entry-artist">Artist</div>"#
+    ));
+  }
+
+  #[test]
+  fn recap_album_list_keeps_a_dash_in_an_album_name() {
+    let mut record = record_at(20, 120_000, true);
+    record.album = "Live - 1985".to_string();
+    let records = [record];
+    let html = render_history_recap_html(RecapPeriod::All, &records, RecapPeriod::ThirtyDays, &[]);
+    assert!(html.contains(r#"<strong>Live - 1985</strong><div class="subtle">"#));
+    assert!(!html.contains(r#"<div class="entry-artist">1985</div>"#));
+  }
+
+  #[test]
+  fn recap_html_escapes_titles_for_both_dom_and_js() {
+    let mut record = record_at(20, 120_000, true);
+    record.title = r#"Mr. Brightside "Live" & Loud </script>"#.to_string();
+    let records = [record];
+    let html = render_history_recap_html(RecapPeriod::All, &records, RecapPeriod::ThirtyDays, &[]);
+    // DOM side stays HTML-escaped
+    assert!(html.contains("&quot;Live&quot; &amp; Loud"));
+    // JS side round-trips the raw value as a valid string literal, with the
+    // script-closing sequence neutralized
+    assert!(html.contains(r#"\"Live\" & Loud"#));
+    assert!(html.contains(r#"<\/script>"#));
+    assert!(!html.contains(r#"& Loud </script>"#));
+  }
+
+  #[test]
+  fn recap_html_embeds_both_card_periods_with_toggle() {
+    let this_month = record_at(20, 120_000, true);
+    let html = render_history_recap_html(
+      RecapPeriod::ThirtyDays,
+      std::slice::from_ref(&this_month),
+      RecapPeriod::All,
+      &[this_month.clone(), record_at(21, 60_000, true)],
+    );
+    // Toggle buttons for both periods
+    assert!(html.contains(r#"onclick="setActiveCard(0)">Last 30 Days<"#));
+    assert!(html.contains(r#"onclick="setActiveCard(1)">All Time<"#));
+    // Both card datasets are embedded with their own play counts
+    assert!(html.contains(r#"period: "Last 30 Days", track:"#));
+    assert!(html.contains(r#"period: "All Time", track:"#));
+    assert!(html.contains("plays: 1,"));
+    assert!(html.contains("plays: 2,"));
+  }
+
+  #[test]
+  fn js_string_round_trips_special_characters() {
+    assert_eq!(js_string("plain"), r#""plain""#);
+    assert_eq!(js_string(r#"a "b" & c"#), r#""a \"b\" & c""#);
+    assert_eq!(js_string("</script>"), r#""<\/script>""#);
+  }
+
+  #[tokio::test]
+  async fn automatic_recap_exports_with_the_current_language_before_offering_the_file() {
+    use crate::core::i18n::Language;
+    for language in [Language::En, Language::ZhHans, Language::ZhHant] {
+      let dir = tempfile::tempdir().unwrap();
+      let output = dir.path().join("recap.html");
+      let stamp = dir.path().join("last-recap");
+      let mut state = App::default();
+      state.user_config.behavior.language = language;
+      state.refresh_language();
+      let strings = state.strings();
+      let app = Arc::new(Mutex::new(state));
+      perform_auto_recap_check_with(
+        &app,
+        stamp.clone(),
+        output.clone(),
+        Utc::now(),
+        move |period, path, active| {
+          assert!(std::ptr::eq(active, strings));
+          assert_eq!(period, RecapPeriod::ThirtyDays);
+          fs::write(
+            path,
+            render_history_recap_html_with(period, &[], RecapPeriod::All, &[], active),
+          )?;
+          Ok(1)
+        },
+      )
+      .await;
+      let html = fs::read_to_string(&output).unwrap();
+      assert!(html.contains(&format!("<p>{}</p>", strings.recap.title)));
+      assert!(stamp.exists());
+      assert!(app.lock().await.recap_prompt().is_some());
+    }
+  }
+
+  #[test]
+  fn auto_recap_due_on_missing_invalid_or_old_timestamp() {
+    let now = 1_800_000_000_i64;
+    assert!(auto_recap_is_due(None, now));
+    assert!(auto_recap_is_due(Some("not a number"), now));
+    assert!(auto_recap_is_due(
+      Some(&(now - 31 * 24 * 3600).to_string()),
+      now
+    ));
+    assert!(!auto_recap_is_due(
+      Some(&(now - 24 * 3600).to_string()),
+      now
+    ));
+  }
+
+  #[test]
+  fn ranked_details_localize_counts_without_rewriting_titles_or_cli_output() {
+    use crate::core::i18n::{ZH_HANS, ZH_HANT};
+    let mut record = record_at(7, 1_860_000, true);
+    record.title = "{count}".into();
+    let records = [record.clone(), record];
+    let english = aggregate_top_tracks(&records, 10);
+    assert_eq!(english[0].detail, "2 plays · 1h 2m");
+    for strings in [&ZH_HANS, &ZH_HANT] {
+      let tracks = aggregate_top_tracks_with(&records, 10, strings);
+      assert_eq!(tracks[0].display, "{count} - Artist");
+      assert_eq!(tracks[0].uri, english[0].uri);
+      assert_eq!(tracks[0].value, 3_720_000);
+    }
+
+    assert_eq!(period_label(RecapPeriod::Year), "This Year");
+  }
+}

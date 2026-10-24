@@ -1,0 +1,33 @@
+import "@fontsource/hanken-grotesk/400.css";
+import "@fontsource/hanken-grotesk/600.css";
+import "@fontsource/hanken-grotesk/700.css";
+import "@fontsource/hanken-grotesk/800.css";
+import "@fontsource/jetbrains-mono/400.css";
+import "@fontsource/jetbrains-mono/700.css";
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import { App } from "./App";
+import { Connection, takeLaunchCode } from "./connection";
+import "./style.css";
+
+const connection = new Connection(
+  takeLaunchCode(window.location, window.history),
+  (protocol, handlers) => {
+    const socket = new WebSocket(`ws://${window.location.host}/ws`, protocol);
+    socket.onmessage = (event) => handlers.message(String(event.data));
+    socket.onclose = () => handlers.close();
+    return socket;
+  },
+  // localStorage, so a reopened tab still finds the token of this spotatui run.
+  window.localStorage,
+  (retry, ms) => {
+    window.setTimeout(retry, ms);
+  },
+);
+connection.start();
+
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
+    <App connection={connection} />
+  </StrictMode>,
+);

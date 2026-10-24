@@ -1,0 +1,388 @@
+/* The full-screen Room: the cover left, the album and its sides or lyrics right. */
+.room {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(240px, 520px) minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-content: start;
+  gap: 32px 56px;
+  min-height: 0;
+  padding: 48px 64px 32px;
+  overflow-y: auto;
+  background: linear-gradient(180deg, #2b2b2b 0%, var(--frame) 70%);
+  color: var(--text);
+  outline: none;
+}
+
+.room figure {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 0;
+}
+
+.room-cover {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: var(--radius);
+  object-fit: cover;
+  background: var(--raised);
+  box-shadow: 0 16px 48px rgb(0 0 0 / 60%);
+}
+
+.room figcaption {
+  color: var(--sub);
+  font-size: 14px;
+}
+
+.room-album {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.room-state {
+  color: var(--sub);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.room-title {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 8px;
+}
+
+.room h1 {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: clamp(40px, 6vw, 96px);
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+}
+
+.room-title > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.room-artist {
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.room-title em {
+  color: var(--sub);
+  font-size: 18px;
+  font-style: normal;
+}
+
+.segments {
+  display: flex;
+  gap: 3px;
+  height: 4px;
+  margin-top: 24px;
+}
+
+.segments > div {
+  flex-basis: 0;
+  border-radius: 2px;
+  background: rgb(255 255 255 / 25%);
+  overflow: hidden;
+}
+
+.segments > div > div {
+  height: 100%;
+  background: var(--text);
+}
+
+.album-clock {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  color: var(--sub);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.room-transport {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.room-transport button {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--sub);
+}
+
+.room-transport button:not(:disabled):hover {
+  color: var(--text);
+}
+
+.room-transport .play {
+  width: 56px;
+  height: 56px;
+  background: var(--text);
+  color: var(--frame);
+}
+
+.room-transport .play:not(:disabled):hover {
+  color: var(--frame);
+  transform: scale(1.04);
+}
+
+.room-time {
+  color: var(--sub);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.room-keys {
+  margin-left: auto;
+  color: var(--quiet);
+  font-size: 12px;
+}
+
+.sides {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 24px;
+  margin-top: 24px;
+}
+
+.sides ol,
+.room .lyrics ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.side-label {
+  padding: 0 12px 8px;
+  color: var(--sub);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.sides button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 40px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  font-size: 15px;
+  text-align: left;
+}
+
+.sides button:not(:disabled):hover {
+  background: rgb(255 255 255 / 10%);
+}
+
+.sides button.done {
+  color: var(--sub);
+}
+
+.sides button.now {
+  color: var(--accent);
+}
+
+.sides .n {
+  width: 20px;
+  display: grid;
+  place-items: center end;
+  color: var(--sub);
+  font-variant-numeric: tabular-nums;
+}
+
+.sides .now .n {
+  color: var(--accent);
+}
+
+.sides .name {
+  flex-grow: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sides .time {
+  color: var(--sub);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.room-note {
+  margin: 24px 0 0;
+  color: var(--sub);
+  font-size: 18px;
+}
+
+.room .lyrics {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.room .lyrics .label {
+  color: var(--sub);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.room .lyrics ol {
+  max-height: 46vh;
+  overflow-y: auto;
+  color: rgb(255 255 255 / 35%);
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.room .lyrics li.sung {
+  color: rgb(255 255 255 / 70%);
+}
+
+.room .lyrics li[aria-current="true"] {
+  color: var(--text);
+}
+
+.room-platter {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.room-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding-bottom: 12px;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.room-head kbd {
+  font: 13px var(--sans);
+  color: var(--sub);
+}
+
+.platter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.platter > div {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 240px;
+  padding: 8px;
+  border-radius: var(--radius);
+  background: rgb(255 255 255 / 7%);
+}
+
+.platter img,
+.platter .tile {
+  width: 56px;
+  height: 56px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--raised);
+}
+
+.platter > div > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.platter b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.platter span span {
+  color: var(--sub);
+}
+
+.platter .from {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+
+@media (max-width: 1100px) {
+  .room {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 24px 24px 16px;
+  }
+
+  .room figure {
+    flex-direction: row;
+    align-items: flex-end;
+    gap: 24px;
+  }
+
+  .room-cover {
+    width: 160px;
+    flex-shrink: 0;
+  }
+}
+
+@media (max-width: 900px) {
+  .sides {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .room-keys {
+    display: none;
+  }
+}
+
+.room-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgb(0 0 0 / 50%);
+  color: var(--text);
+}
+
+.room-close:hover {
+  background: rgb(0 0 0 / 70%);
+}

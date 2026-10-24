@@ -1,0 +1,546 @@
+use clap::{builder::ArgPredicate, Arg, ArgAction, ArgGroup, Command};
+
+fn device_arg() -> Arg {
+  Arg::new("device")
+    .short('d')
+    .long("device")
+    .value_name("DEVICE")
+    .help("Specifies the Spotify device to use")
+}
+
+fn format_arg() -> Arg {
+  Arg::new("format")
+    .short('f')
+    .long("format")
+    .value_name("FORMAT")
+    .help("Specifies the output format")
+    .long_help(
+      "There are multiple format specifiers you can use: %a: artist, %b: album, %p: playlist, \
+%t: track, %h: show, %f: flags (shuffle, repeat, like), %s: playback status, %v: volume, %d: current device, \
+%u: URI, %r: progress. \
+Example: echovena pb -s -f 'playing on %d at %v%'",
+    )
+}
+
+/// Refuses a URI `play --uri` cannot start, so it fails before boot.
+fn parse_spotify_uri(uri: &str) -> Result<String, String> {
+  const OTHER_SOURCES: [&str; 6] = [
+    "file",
+    "subsonic",
+    "youtube",
+    "qobuz",
+    "radio",
+    "applemusic",
+  ];
+  const PLAYABLE: [&str; 5] = [
+    "spotify:track:",
+    "spotify:album:",
+    "spotify:artist:",
+    "spotify:playlist:",
+    "spotify:show:",
+  ];
+  if PLAYABLE.iter().any(|kind| uri.starts_with(kind)) {
+    return Ok(uri.to_string());
+  }
+  let expected = "expected a spotify:track:, spotify:album:, spotify:artist:, \
+spotify:playlist: or spotify:show: URI";
+  match uri.split_once(':') {
+    Some((scheme, _)) if OTHER_SOURCES.contains(&scheme) => Err(format!(
+      "{scheme}: URIs play only in the running echovena; {expected}"
+    )),
+    _ => Err(expected.to_string()),
+  }
+}
+
+/// Refuses a `--queue` or `--random` that the kind of `--uri` cannot honor.
+///
+/// Clap sees the kind of a `--name` search through its category flags, but the
+/// kind of a URI is only in the string.
+pub(super) fn check_play_uri_flags(uri: &str, queue: bool, random: bool) -> Result<(), String> {
+  if queue && !uri.starts_with("spotify:track:") {
+    return Err("--queue works only with a spotify:track: URI".to_string());
+  }
+  if random && !uri.starts_with("spotify:playlist:") {
+    return Err("--random works only with a spotify:playlist: URI".to_string());
+  }
+  Ok(())
+}
+
+pub fn playback_subcommand() -> Command {
+  Command::new("playback")
+    .version(env!("CARGO_PKG_VERSION"))
+    .author(env!("CARGO_PKG_AUTHORS"))
+    .about("Interacts with the playback of a device")
+    .long_about(
+      "Use `playback` to interact with the playback of the current or any other device. \
+You can specify another device with `--device`. If no options were provided, echovena \
+will default to just displaying the current playback. Actually, after every action \
+echovena will display the updated playback. The output format is configurable with the \
+`--format` flag. Some options can be used together, other options have to be alone.
+
+Here's a list:
+
+* `--next` and `--previous` cannot be used with other options
+* `--status`, `--toggle`, `--transfer`, `--volume`, `--like`, `--repeat` and `--shuffle` \
+can be used together
+* `--share-track` and `--share-album` cannot be used with other options",
+    )
+    .visible_alias("pb")
+    .arg(device_arg())
+    .arg(
+      format_arg()
+        .default_value("%f %s %t - %a")
+        .default_value_if("seek", ArgPredicate::IsPresent, "%f %s %t - %a %r")
+        .default_value_if("volume", ArgPredicate::IsPresent, "%v% %f %s %t - %a")
+        .default_value_if("transfer", ArgPredicate::IsPresent, "%f %s %t - %a on %d"),
+    )
+    .arg(
+      Arg::new("toggle")
+        .short('t')
+        .long("toggle")
+        .action(ArgAction::SetTrue)
+        .help("Pauses/resumes the playback of a device"),
+    )
+    .arg(
+      Arg::new("status")
+        .short('s')
+        .long("status")
+        .action(ArgAction::SetTrue)
+        .help("Prints out the current status of a device (default)"),
+    )
+    .arg(
+      Arg::new("share-track")
+        .long("share-track")
+        .action(ArgAction::SetTrue)
+        .help("Returns the URL to the current track"),
+    )
+    .arg(
+      Arg::new("share-album")
+        .long("share-album")
+        .action(ArgAction::SetTrue)
+        .help("Returns the URL to the album of the current track"),
+    )
+    .arg(
+      Arg::new("transfer")
+        .long("transfer")
+        .value_name("DEVICE")
+        .help("Transfers the playback to new DEVICE"),
+    )
+    .arg(
+      Arg::new("like")
+        .long("like")
+        .action(ArgAction::SetTrue)
+        .help("Likes the current song if possible"),
+    )
+    .arg(
+      Arg::new("dislike")
+        .long("dislike")
+        .action(ArgAction::SetTrue)
+        .help("Dislikes the current song if possible"),
+    )
+    .arg(
+      Arg::new("shuffle")
+        .long("shuffle")
+        .action(ArgAction::SetTrue)
+        .help("Toggles shuffle mode"),
+    )
+    .arg(
+      Arg::new("repeat")
+        .long("repeat")
+        .action(ArgAction::SetTrue)
+        .help("Switches between repeat modes"),
+    )
+    .arg(
+      Arg::new("next")
+        .short('n')
+        .long("next")
+        .action(ArgAction::Count)
+        .help("Jumps to the next song")
+        .long_help(
+          "This jumps to the next song if specified once. If you want to jump, let's say 3 songs \
+forward, you can use `--next` 3 times: `echovena pb -nnn`.",
+        ),
+    )
+    .arg(
+      Arg::new("previous")
+        .short('p')
+        .long("previous")
+        .action(ArgAction::Count)
+        .help("Jumps to the previous song")
+        .long_help(
+          "This jumps to the beginning of the current song if specified once. You probably want to \
+jump to the previous song though, so you can use the previous flag twice: `echovena pb -pp`. To jump \
+two songs back, you can use `echovena pb -ppp` and so on.",
+        ),
+    )
+    .arg(
+      Arg::new("seek")
+        .long("seek")
+        .value_name("±SECONDS")
+        .allow_hyphen_values(true)
+        .help("Jumps SECONDS forwards (+) or backwards (-)")
+        .long_help(
+          "For example: `echovena pb --seek +10` jumps ten seconds forwards, `echovena pb --seek -10` ten \
+seconds backwards and `echovena pb --seek 10` to the tenth second of the track.",
+        ),
+    )
+    .arg(
+      Arg::new("volume")
+        .short('v')
+        .long("volume")
+        .value_name("VOLUME")
+        .help("Sets the volume of a device to VOLUME (0 - 100)"),
+    )
+    .group(
+      ArgGroup::new("jumps")
+        .args(["next", "previous"])
+        .multiple(false)
+        .conflicts_with_all(["single", "flags", "actions"]),
+    )
+    .group(
+      ArgGroup::new("likes")
+        .args(["like", "dislike"])
+        .multiple(false),
+    )
+    .group(
+      ArgGroup::new("flags")
+        .args(["like", "dislike", "shuffle", "repeat"])
+        .multiple(true)
+        .conflicts_with_all(["single", "jumps"]),
+    )
+    .group(
+      ArgGroup::new("actions")
+        .args(["toggle", "status", "transfer", "volume"])
+        .multiple(true)
+        .conflicts_with_all(["single", "jumps"]),
+    )
+    .group(
+      ArgGroup::new("single")
+        .args(["share-track", "share-album"])
+        .multiple(false)
+        .conflicts_with_all(["actions", "flags", "jumps"]),
+    )
+}
+
+pub fn play_subcommand() -> Command {
+  Command::new("play")
+    .version(env!("CARGO_PKG_VERSION"))
+    .author(env!("CARGO_PKG_AUTHORS"))
+    .about("Plays a URI or another Spotify item by name")
+    .long_about(
+      "If you specify a Spotify URI, the type can be inferred. URIs of other sources \
+play only in the running echovena. If you want to play something by \
+name, you have to specify the type: `--track`, `--album`, `--artist`, `--playlist` \
+or `--show`. The first item which was found will be played without confirmation. \
+To add a track to the queue, use `--queue`. To play a random song from a playlist, \
+use `--random`. Again, with `--format` you can specify how the output will look. \
+The same function as found in `playback` will be called.",
+    )
+    .visible_alias("p")
+    .arg(device_arg())
+    .arg(format_arg().default_value("%f %s %t - %a"))
+    .arg(
+      Arg::new("uri")
+        .short('u')
+        .long("uri")
+        .value_name("URI")
+        .value_parser(parse_spotify_uri)
+        .help("Plays a Spotify track, album, artist, playlist or show URI"),
+    )
+    .arg(
+      Arg::new("name")
+        .short('n')
+        .long("name")
+        .value_name("NAME")
+        .requires("contexts")
+        .help("Plays the first match with NAME from the specified category"),
+    )
+    .arg(
+      Arg::new("queue")
+        .short('q')
+        .long("queue")
+        .action(ArgAction::SetTrue)
+        // Only works with tracks
+        .conflicts_with_all(["album", "artist", "playlist", "show"])
+        .help("Adds track to queue instead of playing it directly"),
+    )
+    .arg(
+      Arg::new("random")
+        .short('r')
+        .long("random")
+        .action(ArgAction::SetTrue)
+        // Only works with playlists
+        .conflicts_with_all(["track", "album", "artist", "show"])
+        .help("Plays a random track (only works with playlists)"),
+    )
+    .arg(
+      Arg::new("album")
+        .short('b')
+        .long("album")
+        .action(ArgAction::SetTrue)
+        .help("Looks for an album"),
+    )
+    .arg(
+      Arg::new("artist")
+        .short('a')
+        .long("artist")
+        .action(ArgAction::SetTrue)
+        .help("Looks for an artist"),
+    )
+    .arg(
+      Arg::new("track")
+        .short('t')
+        .long("track")
+        .action(ArgAction::SetTrue)
+        .help("Looks for a track"),
+    )
+    .arg(
+      Arg::new("show")
+        .short('w')
+        .long("show")
+        .action(ArgAction::SetTrue)
+        .help("Looks for a show"),
+    )
+    .arg(
+      Arg::new("playlist")
+        .short('p')
+        .long("playlist")
+        .action(ArgAction::SetTrue)
+        .help("Looks for a playlist"),
+    )
+    .group(
+      ArgGroup::new("contexts")
+        .args(["track", "artist", "playlist", "album", "show"])
+        .multiple(false),
+    )
+    .group(
+      ArgGroup::new("actions")
+        .args(["uri", "name"])
+        .multiple(false)
+        .required(true),
+    )
+}
+
+pub fn list_subcommand() -> Command {
+  Command::new("list")
+    .version(env!("CARGO_PKG_VERSION"))
+    .author(env!("CARGO_PKG_AUTHORS"))
+    .about("Lists devices, liked songs and playlists")
+    .long_about(
+      "This will list devices, liked songs or playlists. With the `--limit` flag you are \
+able to specify the amount of results (between 1 and 50). Here, the `--format` is \
+even more awesome, get your output exactly the way you want. The format option will \
+be applied to every item found.",
+    )
+    .visible_alias("l")
+    .arg(
+      format_arg()
+        .default_value_if("devices", ArgPredicate::IsPresent, "%v% %d")
+        .default_value_if("liked", ArgPredicate::IsPresent, "%t - %a (%u)")
+        .default_value_if("playlists", ArgPredicate::IsPresent, "%p (%u)"),
+    )
+    .arg(
+      Arg::new("devices")
+        .short('d')
+        .long("devices")
+        .action(ArgAction::SetTrue)
+        .help("Lists devices"),
+    )
+    .arg(
+      Arg::new("playlists")
+        .short('p')
+        .long("playlists")
+        .action(ArgAction::SetTrue)
+        .help("Lists playlists"),
+    )
+    .arg(
+      Arg::new("liked")
+        .long("liked")
+        .action(ArgAction::SetTrue)
+        .help("Lists liked songs"),
+    )
+    .arg(
+      Arg::new("limit")
+        .long("limit")
+        .help("Specifies the maximum number of results (1 - 50)"),
+    )
+    .group(
+      ArgGroup::new("listable")
+        .args(["devices", "playlists", "liked"])
+        .required(true)
+        .multiple(false),
+    )
+}
+
+pub fn search_subcommand() -> Command {
+  Command::new("search")
+    .version(env!("CARGO_PKG_VERSION"))
+    .author(env!("CARGO_PKG_AUTHORS"))
+    .about("Searches for tracks, albums and more")
+    .long_about(
+      "This will search for something on Spotify and displays you the items. The output \
+format can be changed with the `--format` flag and the limit can be changed with \
+the `--limit` flag (between 1 and 10). The type can't be inferred, so you have to \
+specify it.",
+    )
+    .visible_alias("s")
+    .arg(
+      format_arg()
+        .default_value_if("tracks", ArgPredicate::IsPresent, "%t - %a (%u)")
+        .default_value_if("playlists", ArgPredicate::IsPresent, "%p (%u)")
+        .default_value_if("artists", ArgPredicate::IsPresent, "%a (%u)")
+        .default_value_if("albums", ArgPredicate::IsPresent, "%b - %a (%u)")
+        .default_value_if("shows", ArgPredicate::IsPresent, "%h - %a (%u)"),
+    )
+    .arg(
+      Arg::new("search")
+        .required(true)
+        .value_name("SEARCH")
+        .help("Specifies the search query"),
+    )
+    .arg(
+      Arg::new("albums")
+        .short('b')
+        .long("albums")
+        .action(ArgAction::SetTrue)
+        .help("Looks for albums"),
+    )
+    .arg(
+      Arg::new("artists")
+        .short('a')
+        .long("artists")
+        .action(ArgAction::SetTrue)
+        .help("Looks for artists"),
+    )
+    .arg(
+      Arg::new("playlists")
+        .short('p')
+        .long("playlists")
+        .action(ArgAction::SetTrue)
+        .help("Looks for playlists"),
+    )
+    .arg(
+      Arg::new("tracks")
+        .short('t')
+        .long("tracks")
+        .action(ArgAction::SetTrue)
+        .help("Looks for tracks"),
+    )
+    .arg(
+      Arg::new("shows")
+        .short('w')
+        .long("shows")
+        .action(ArgAction::SetTrue)
+        .help("Looks for shows"),
+    )
+    .arg(
+      Arg::new("limit")
+        .long("limit")
+        .help("Specifies the maximum number of results (1 - 10)"),
+    )
+    .group(
+      ArgGroup::new("searchable")
+        .args(["playlists", "tracks", "albums", "artists", "shows"])
+        .required(true)
+        .multiple(false),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn play_uri_accepts_the_spotify_kinds_it_can_start() {
+    for uri in [
+      "spotify:track:1",
+      "spotify:album:1",
+      "spotify:artist:1",
+      "spotify:playlist:1",
+      "spotify:show:1",
+    ] {
+      let matches = play_subcommand()
+        .try_get_matches_from(["play", "--uri", uri])
+        .unwrap();
+      assert_eq!(matches.get_one::<String>("uri").unwrap(), uri);
+    }
+  }
+
+  #[test]
+  fn play_uri_refuses_another_source_and_names_its_scheme() {
+    let error = play_subcommand()
+      .try_get_matches_from(["play", "--uri", "qobuz:track:123"])
+      .unwrap_err();
+    assert!(
+      error
+        .to_string()
+        .contains("qobuz: URIs play only in the running echovena"),
+      "{error}"
+    );
+  }
+
+  #[test]
+  fn play_uri_refuses_a_spotify_kind_it_cannot_start() {
+    for uri in [
+      "spotify:episode:1",
+      "Spotify:track:1",
+      "https://open.spotify.com/track/1",
+      "not-a-uri",
+    ] {
+      let error = parse_spotify_uri(uri).unwrap_err();
+      assert!(error.starts_with("expected a spotify:track:"), "{error}");
+    }
+  }
+
+  #[test]
+  fn play_uri_flags_refuse_queue_with_a_context_uri() {
+    for uri in [
+      "spotify:album:1",
+      "spotify:artist:1",
+      "spotify:playlist:1",
+      "spotify:show:1",
+    ] {
+      let error = check_play_uri_flags(uri, true, false).unwrap_err();
+      assert!(error.contains("--queue"), "{uri}: {error}");
+    }
+  }
+
+  #[test]
+  fn play_uri_flags_refuse_random_with_a_non_playlist_uri() {
+    for uri in [
+      "spotify:track:1",
+      "spotify:album:1",
+      "spotify:artist:1",
+      "spotify:show:1",
+    ] {
+      let error = check_play_uri_flags(uri, false, true).unwrap_err();
+      assert!(error.contains("--random"), "{uri}: {error}");
+    }
+  }
+
+  #[test]
+  fn play_uri_flags_allow_queue_with_a_track_uri() {
+    assert_eq!(check_play_uri_flags("spotify:track:1", true, false), Ok(()));
+  }
+
+  #[test]
+  fn play_uri_flags_allow_random_with_a_playlist_uri() {
+    assert_eq!(
+      check_play_uri_flags("spotify:playlist:1", false, true),
+      Ok(())
+    );
+  }
+
+  #[test]
+  fn play_uri_flags_allow_any_kind_without_flags() {
+    for uri in [
+      "spotify:track:1",
+      "spotify:album:1",
+      "spotify:artist:1",
+      "spotify:playlist:1",
+      "spotify:show:1",
+    ] {
+      assert_eq!(check_play_uri_flags(uri, false, false), Ok(()), "{uri}");
+    }
+  }
+}

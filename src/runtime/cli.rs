@@ -1,0 +1,464 @@
+//! The command-line surface: clap assembly, the self-update plumbing, and
+//! CLI-mode dispatch of one subcommand against the network layer.
+
+use super::bootstrap::{Boot, BootOptions};
+use crate::cli;
+use crate::core::banner::BANNER;
+use crate::core::user_config::UserConfig;
+use crate::infra::network::Network;
+use anyhow::{anyhow, Context, Result};
+use clap::{builder::PossibleValue, Arg, ArgMatches, Command as ClapApp};
+use std::path::PathBuf;
+use std::sync::Arc;
+
+pub(super) fn boot_options(matches: &ArgMatches) -> BootOptions {
+  BootOptions {
+    system_language: None,
+    config_path: matches.get_one::<String>("config").map(PathBuf::from),
+    tick_rate: matches.get_one::<u64>("tick-rate").copied(),
+    subcommand: matches.subcommand_name().map(str::to_owned),
+    reconfigure_auth: matches.get_flag("reconfigure-auth"),
+    play_file: matches.get_one::<String>("play-file").cloned(),
+    no_update: cfg!(feature = "self-update") && matches.get_flag("no-update"),
+  }
+}
+
+pub(super) fn build_clap_app() -> ClapApp {
+  // `mut` is only exercised by the feature-gated subcommand additions below.
+  #[cfg_attr(
+    not(any(feature = "scripting", feature = "mcp-server")),
+    allow(unused_mut)
+  )]
+  let mut clap_app = add_self_update_cli(
+    ClapApp::new(env!("CARGO_PKG_NAME"))
+    .version(env!("CARGO_PKG_VERSION"))
+    .author(env!("CARGO_PKG_AUTHORS"))
+    .about(env!("CARGO_PKG_DESCRIPTION"))
+    .override_usage("Press `?` while running the app to see keybindings")
+    .before_help(BANNER)
+    .after_help(
+      "The Spotify login is cached in the echovena cache directory (use --reconfigure-auth to log in again)",
+    )
+    .arg(
+      Arg::new("tick-rate")
+        .short('t')
+        .long("tick-rate")
+        .value_parser(clap::value_parser!(u64))
+        .help("Set the normal UI tick rate in milliseconds.")
+        .long_help(
+          "Specify the normal UI tick rate in milliseconds. Lower values refresh non-animated \
+screens more often and cost more CPU. Animation-heavy views keep their separate animation tick rate.",
+        ),
+    )
+    .arg(
+      Arg::new("config")
+        .short('c')
+        .long("config")
+        .help("Specify configuration file path."),
+    )
+    .arg(
+      Arg::new("reconfigure-auth")
+        .long("reconfigure-auth")
+        .action(clap::ArgAction::SetTrue)
+        .help("Forget the cached Spotify login and log in again"),
+    )
+    .arg(
+      Arg::new("play-file")
+        .long("play-file")
+        .value_name("PATH")
+        .help("Play a local audio file on startup (requires the local-files build feature)."),
+    )
+    .arg(
+      Arg::new("completions")
+        .long("completions")
+        .help("Generates completions for your preferred shell")
+        .value_parser([
+          PossibleValue::new("bash"),
+          PossibleValue::new("zsh"),
+          PossibleValue::new("fish"),
+          PossibleValue::new("powershell").alias("power-shell"),
+          PossibleValue::new("elvish"),
+        ])
+        .value_name("SHELL"),
+    )
+    .arg(
+      Arg::new("debug")
+        .long("debug")
+        .global(true)
+        .action(clap::ArgAction::SetTrue)
+        .help("Enable verbose debug logging for bug reports (also ECHOVENA_LOG=debug)")
+        .long_help(
+          "Enable verbose debug logging for echovena and the native streaming crates it embeds \
+(equivalent to ECHOVENA_LOG=debug). At this level the log records identifying details such as \
+your Spotify user id and playlist ids. ECHOVENA_LOG=trace goes further and adds raw audio packet \
+activity and full API response bodies, which include your country. Access \
+tokens and request headers are never logged, but read through the file before posting it \
+publicly.",
+        ),
+    )
+    .arg(
+      Arg::new("import-url")
+        .long("import-url")
+        .value_name("URL")
+        .help("Import a Spotify or YouTube playlist into EchoVena"),
+    )
+    .arg(
+      Arg::new("archive-url")
+        .long("archive-url")
+        .value_name("URL")
+        .help("Import and archive a Spotify or YouTube playlist to ~/Music/EchoVena"),
+    )
+    .arg(
+      Arg::new("check-relays")
+        .long("check-relays")
+        .action(clap::ArgAction::SetTrue)
+        .help("Probe all configured audio and lyric relays in providers.json and print health status"),
+    )
+    // Control spotify from the command line
+    .subcommand(cli::playback_subcommand())
+    .subcommand(cli::play_subcommand())
+    .subcommand(cli::list_subcommand())
+    .subcommand(cli::history_subcommand())
+    .subcommand(cli::search_subcommand())
+    .subcommand(cli::sync_subcommand()),
+  );
+
+  #[cfg(feature = "scripting")]
+  {
+    clap_app = clap_app.subcommand(cli::plugin_subcommand());
+  }
+
+  #[cfg(feature = "mcp-server")]
+  {
+    clap_app = clap_app.subcommand(cli::mcp_subcommand());
+  }
+
+  clap_app
+}
+
+/// CLI mode: run one subcommand against the network layer and print its
+/// result.
+pub(super) async fn run_subcommand(boot: Boot, cmd: &str, matches: &ArgMatches) -> Result<()> {
+  if cmd == "sync" {
+    return run_sync(boot, matches).await;
+  }
+  let app = boot.app;
+  // Held (unread) for the length of the command; see the field doc on `Boot`.
+  let _sync_io_rx = boot.sync_io_rx;
+  let network = Network::new(boot.spotify, &app);
+  let cli_result = cli::handle_matches(matches, cmd.to_string(), network, boot.user_config).await;
+  app.lock().await.flush_state_save(true);
+  println!("{}", cli_result?);
+  Ok(())
+}
+
+/// The `sync` subcommand: no device probe, no Spotify requirement, its own exit signal.
+async fn run_sync(boot: Boot, matches: &ArgMatches) -> Result<()> {
+  let app = boot.app;
+  // Held (unread) for the length of the command; see the field doc on `Boot`.
+  let _sync_io_rx = boot.sync_io_rx;
+  let args = cli::sync_args(matches);
+  let ctx = crate::infra::playlist_sync::SyncContext::new(boot.spotify, Arc::clone(&app));
+  let run = crate::infra::playlist_sync::run_guarded(ctx, args.link, args.dry_run, true);
+  let report = tokio::spawn(run)
+    .await
+    .context("playlist sync task failed")?;
+  app.lock().await.flush_state_save(true);
+  println!("{}", report.printable());
+  if report.failed() {
+    return Err(anyhow!("playlist sync failed"));
+  }
+  Ok(())
+}
+
+#[cfg(feature = "self-update")]
+fn add_self_update_cli(clap_app: ClapApp) -> ClapApp {
+  clap_app
+    .arg(
+      Arg::new("no-update")
+        .short('U')
+        .long("no-update")
+        .action(clap::ArgAction::SetTrue)
+        .help("Skip the automatic update check on startup"),
+    )
+    .subcommand(
+      ClapApp::new("update")
+        .version(env!("CARGO_PKG_VERSION"))
+        .about("Check for and install updates")
+        .arg(
+          Arg::new("install")
+            .short('i')
+            .long("install")
+            .action(clap::ArgAction::SetTrue)
+            .help("Install the update if available"),
+        ),
+    )
+}
+
+#[cfg(not(feature = "self-update"))]
+fn add_self_update_cli(clap_app: ClapApp) -> ClapApp {
+  clap_app
+}
+
+#[cfg(feature = "self-update")]
+pub(super) async fn handle_self_update_command(matches: &ArgMatches) -> Result<bool> {
+  if let Some(update_matches) = matches.subcommand_matches("update") {
+    let do_install = update_matches.get_flag("install");
+    // Must use spawn_blocking because self_update uses reqwest::blocking internally,
+    // which creates its own tokio runtime and panics if called from an async context.
+    tokio::task::spawn_blocking(move || cli::check_for_update(do_install)).await??;
+    return Ok(true);
+  }
+
+  Ok(false)
+}
+
+#[cfg(not(feature = "self-update"))]
+pub(super) async fn handle_self_update_command(_matches: &ArgMatches) -> Result<bool> {
+  Ok(false)
+}
+
+/// Run the auto-update check, returning the new version when one was installed.
+///
+/// Deliberately does NOT restart here. This runs concurrently with the
+/// Spotify login, and restarting mid-login stalls startup: the re-exec blocks
+/// this task in `Command::status()`, which stops the joined login from being
+/// polled while it still owns the terminal and waits for the approval. See
+/// `restart_after_update`, which the caller invokes once the login has
+/// finished.
+#[cfg(feature = "self-update")]
+pub(super) async fn run_auto_update(skip: bool, user_config: &UserConfig) -> Option<String> {
+  if skip
+    || std::env::var_os("ECHOVENA_SKIP_UPDATE").is_some()
+    || user_config.behavior.disable_auto_update
+  {
+    return None;
+  }
+
+  println!("Checking for updates...");
+  // Must use spawn_blocking because self_update uses reqwest::blocking internally,
+  // which creates its own tokio runtime and panics if called from an async context.
+  let delay_secs =
+    crate::core::user_config::parse_update_delay_secs(&user_config.behavior.auto_update_delay)
+      .unwrap_or(0);
+  let update_result =
+    match tokio::task::spawn_blocking(move || cli::install_update_silent(delay_secs)).await {
+      Ok(Ok(outcome)) => Some(outcome),
+      Ok(Err(e)) => {
+        log::warn!("auto-update failed: {:#}", e);
+        None
+      }
+      Err(e) => {
+        log::warn!("auto-update task panicked: {}", e);
+        None
+      }
+    };
+
+  match update_result {
+    Some(cli::UpdateOutcome::Installed(new_version)) => Some(new_version),
+    Some(cli::UpdateOutcome::Pending {
+      version,
+      secs_remaining,
+    }) => {
+      println!(
+        "Update v{} detected — will install in {}. Run `echovena update --install` to update now.",
+        version,
+        crate::core::user_config::format_update_delay_secs(secs_remaining)
+      );
+      None
+    }
+    // Up-to-date, check failed, or no update — continue normally.
+    _ => None,
+  }
+}
+
+#[cfg(not(feature = "self-update"))]
+pub(super) async fn run_auto_update(_skip: bool, _user_config: &UserConfig) -> Option<String> {
+  None
+}
+
+/// Re-exec into the freshly installed binary. Never returns when an update was
+/// installed.
+///
+/// Must be called only once startup is no longer holding resources the child
+/// will need. The child repeats startup from scratch, so anything this process
+/// still owns (stdin, the terminal) it would contend with. A finished login is
+/// cached before it returns, so the child reuses it rather than asking for a
+/// second login. The
+/// single-instance lock is released just before the re-exec, since the child
+/// takes it again while this process waits.
+pub(super) fn restart_after_update(
+  new_version: Option<String>,
+  instance_lock: &mut Option<std::fs::File>,
+) -> Result<()> {
+  let Some(new_version) = new_version else {
+    return Ok(());
+  };
+
+  println!("Updated to v{}! Restarting...", new_version);
+  // Re-exec the current binary with the same args, skipping the update check.
+  // Reported rather than panicked: the update is already installed by now, so
+  // an unreadable executable path should surface as an error the user can act
+  // on, not a backtrace.
+  let exe = std::env::current_exe()
+    .context("failed to get current executable path while restarting after an update")?;
+  let args: Vec<String> = std::env::args().skip(1).collect();
+  drop(instance_lock.take());
+  let status = std::process::Command::new(&exe)
+    .args(&args)
+    .env("ECHOVENA_SKIP_UPDATE", "1")
+    .status();
+  match status {
+    Ok(exit_status) => std::process::exit(exit_status.code().unwrap_or(0)),
+    Err(e) => {
+      eprintln!("Failed to restart after update: {}", e);
+      eprintln!("Please restart echovena manually.");
+      std::process::exit(1);
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// `--debug` is the flag every bug report in issue #566 is going to be asked
+  /// for, and the help text is the only place a user learns that the log can
+  /// carry personal data. Renaming either is a silent regression otherwise:
+  /// nothing else in the suite builds the clap app.
+  #[test]
+  fn debug_flag_parses_and_defaults_to_off() {
+    let app = build_clap_app();
+    let matches = app
+      .clone()
+      .try_get_matches_from(["echovena", "--debug"])
+      .expect("--debug must parse");
+    assert!(matches.get_flag("debug"));
+
+    let matches = app
+      .try_get_matches_from(["echovena"])
+      .expect("no args must parse");
+    assert!(!matches.get_flag("debug"));
+  }
+
+  /// `--debug` needs `global(true)` to parse after a subcommand
+  /// (`echovena playback --status --debug`), not just before one. `run_cli`
+  /// reads it off the root `ArgMatches` (`matches.get_flag("debug")` in
+  /// `runtime/mod.rs`), and clap copies a global flag's value back up to
+  /// every parent level it was propagated through, so that read keeps working
+  /// once the flag is placed on the subcommand line instead of the root one.
+  #[test]
+  fn debug_flag_parses_after_a_subcommand() {
+    let matches = build_clap_app()
+      .try_get_matches_from(["echovena", "playback", "--status", "--debug"])
+      .expect("--debug after a subcommand must parse");
+    assert!(matches.get_flag("debug"));
+  }
+
+  #[test]
+  fn debug_flag_long_help_warns_about_personal_data() {
+    let help = build_clap_app()
+      .get_arguments()
+      .find(|arg| arg.get_id() == "debug")
+      .and_then(|arg| arg.get_long_help().or_else(|| arg.get_help()))
+      .map(ToString::to_string)
+      .expect("--debug must document itself");
+    let help = help.to_lowercase();
+    assert!(
+      help.contains("before posting"),
+      "the long help must tell the user to read the log before posting it:\n{help}"
+    );
+    assert!(
+      help.contains("country"),
+      "the long help must name what trace adds to the log:\n{help}"
+    );
+  }
+
+  #[test]
+  fn tick_rate_flag_rejects_invalid_values() {
+    for bad in ["fast", "250ms", "1.5", "-5"] {
+      let err = build_clap_app()
+        .try_get_matches_from(["echovena", &format!("--tick-rate={bad}")])
+        .expect_err("invalid tick-rate must be rejected at parse time");
+      assert!(
+        err.to_string().contains("tick-rate"),
+        "error must name the flag: {err}"
+      );
+    }
+  }
+
+  #[test]
+  fn out_of_range_tick_rate_still_reaches_boot_options() {
+    // The 1..=999 range check stays in `bootstrap.rs`, shared with `config.yml`
+    // loading, so an out-of-range value must still parse here and reach boot.
+    let matches = build_clap_app()
+      .try_get_matches_from(["echovena", "-t", "5000"])
+      .expect("out-of-range tick-rate must parse; the range check lives in bootstrap");
+    assert_eq!(boot_options(&matches).tick_rate, Some(5000));
+  }
+
+  #[test]
+  fn completions_accepts_powershell() {
+    let matches = build_clap_app()
+      .try_get_matches_from(["echovena", "--completions", "powershell"])
+      .unwrap();
+    assert_eq!(
+      matches.get_one::<String>("completions").map(String::as_str),
+      Some("powershell")
+    );
+  }
+
+  #[test]
+  fn completions_still_accepts_the_old_power_shell_spelling() {
+    let matches = build_clap_app()
+      .try_get_matches_from(["echovena", "--completions", "power-shell"])
+      .unwrap();
+    assert_eq!(
+      matches.get_one::<String>("completions").map(String::as_str),
+      Some("power-shell")
+    );
+  }
+
+  #[test]
+  fn completions_rejects_an_unknown_shell() {
+    assert!(build_clap_app()
+      .try_get_matches_from(["echovena", "--completions", "nushell"])
+      .is_err());
+  }
+
+  #[test]
+  fn boot_options_carry_the_launch_flags() {
+    let matches = build_clap_app()
+      .try_get_matches_from([
+        "echovena",
+        "-c",
+        "x.yml",
+        "-t",
+        "100",
+        "--reconfigure-auth",
+        "--play-file",
+        "a.mp3",
+      ])
+      .unwrap();
+    let options = boot_options(&matches);
+    assert_eq!(options.config_path, Some(PathBuf::from("x.yml")));
+    assert_eq!(options.tick_rate, Some(100));
+    assert_eq!(options.subcommand, None);
+    assert!(options.reconfigure_auth);
+    assert_eq!(options.play_file.as_deref(), Some("a.mp3"));
+    assert!(!options.no_update);
+
+    let matches = build_clap_app()
+      .try_get_matches_from(["echovena", "sync"])
+      .unwrap();
+    assert_eq!(boot_options(&matches).subcommand.as_deref(), Some("sync"));
+
+    #[cfg(feature = "self-update")]
+    {
+      let matches = build_clap_app()
+        .try_get_matches_from(["echovena", "-U"])
+        .unwrap();
+      assert!(boot_options(&matches).no_update);
+    }
+  }
+}

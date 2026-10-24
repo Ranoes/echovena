@@ -1,0 +1,1077 @@
+//! The frontend-neutral scheduler ("the driver"): everything the app must do
+//! on a timer, extracted from the terminal event loop so any frontend can run
+//! playback correctly by calling [`Driver::tick`] at its tick rate.
+//!
+//! One tick advances playback state (`App::update_on_tick` plus the debounced
+//! seek/volume/state flushes), syncs OS presence (Discord, MPRIS, window title), detects track changes (lyrics + cover
+//! art), counts plays for the global song counter, auto-advances the native
+//! queue and the decoded sources, persists the non-Spotify session, and feeds
+//! the audio visualizer.
+//!
+//! What stays with the frontend, injected through [`TickEnv`] or kept at the
+//! call site: the visualizer bar count (a function of frontend geometry), the
+//! terminal image-protocol probe behind `TickEnv::cover_art_full_image_support`,
+//! and the macOS `NSRunLoop` pump (the frontend owns the main thread).
+//!
+//! A frontend that stops ticking is a bug this module makes loud:
+//! `App::playback_position_ms` reports stale once no tick has run for two
+//! seconds, instead of leaving a silently frozen playbar.
+
+mod plan;
+mod play_count;
+mod presence;
+#[cfg(any(feature = "audio-viz", feature = "audio-viz-cpal"))]
+mod viz_capture;
+
+use crate::core::app::{App, RouteId};
+#[cfg(any(feature = "audio-viz", feature = "audio-viz-cpal"))]
+use crate::infra::audio;
+#[cfg(feature = "discord-rpc")]
+use crate::infra::discord_rpc;
+#[cfg(all(feature = "mpris", target_os = "linux"))]
+use crate::infra::mpris;
+use crate::infra::network::IoEvent;
+#[cfg(feature = "scripting")]
+use crate::infra::scripting::ScriptEngine;
+#[cfg(feature = "scripting")]
+use log::info;
+use std::time::{Duration, Instant};
+
+#[cfg(feature = "discord-rpc")]
+pub type DiscordRpcHandle = Option<discord_rpc::DiscordRpcManager>;
+#[cfg(not(feature = "discord-rpc"))]
+pub type DiscordRpcHandle = Option<()>;
+
+#[cfg(all(feature = "mpris", target_os = "linux"))]
+pub type MprisHandle = Option<std::sync::Arc<mpris::MprisManager>>;
+#[cfg(not(all(feature = "mpris", target_os = "linux")))]
+pub type MprisHandle = Option<()>;
+
+/// Identity of the currently-playing track, used by the shared track-change
+/// detector to fire lyrics + cover-art fetches exactly once per track (rather
+/// than every tick). Title + artists + album + duration distinguishes tracks
+/// across every source without depending on a source-specific id.
+type TrackIdentity = (String, Vec<String>, String, u32);
+
+fn track_identity(snapshot: &crate::infra::media_metadata::PlaybackSnapshot) -> TrackIdentity {
+  (
+    snapshot.metadata.title.clone(),
+    snapshot.metadata.artists.clone(),
+    snapshot.metadata.album.clone(),
+    snapshot.metadata.duration_ms,
+  )
+}
+
+/// The base62 id that gets Spotify's own lyrics; `None` keeps the LRCLIB lookup.
+fn spotify_lyrics_id(item_uri: Option<&str>) -> Option<String> {
+  let id = item_uri?.strip_prefix("spotify:track:")?;
+  (id.len() == 22 && id.bytes().all(|b| b.is_ascii_alphanumeric())).then(|| id.to_string())
+}
+
+/// Fetch a track's lyrics, or publish "not found" at once when the user turned lyrics off.
+fn request_track_lyrics(
+  app: &mut App,
+  title: String,
+  artists: Vec<String>,
+  duration_secs: f64,
+  item_uri: Option<&str>,
+) {
+  app.desired_lyrics_identity = Some((title.clone(), artists.join(", ")));
+  if app.user_config.behavior.enable_lyrics {
+    app.dispatch(IoEvent::GetLyrics(
+      title,
+      artists,
+      duration_secs,
+      spotify_lyrics_id(item_uri),
+    ));
+  } else {
+    app.set_lyrics(crate::core::app::LyricsStatus::NotFound, None, false);
+    app
+      .plugin_data_generations
+      .bump(crate::core::app::PluginDataKind::Lyrics);
+  }
+}
+
+/// Resolve what cover art to fetch for the track described by `snapshot`.
+///
+/// Local files carry embedded artwork read straight from the file (no URL), so
+/// they take a dedicated `LocalFile` request. Every other source that can supply
+/// art (Spotify album art, YouTube thumbnail, Subsonic getCoverArt) surfaces it
+/// as `snapshot.metadata.image_url`. `None` means the current track has no art
+/// to show (e.g. internet radio, or a Spotify item without images).
+#[cfg(feature = "art-decode")]
+fn cover_art_request_for(
+  app: &App,
+  snapshot: &crate::infra::media_metadata::PlaybackSnapshot,
+) -> Option<crate::core::art::CoverArtRequest> {
+  use crate::core::art::CoverArtRequest;
+
+  #[cfg(feature = "local-files")]
+  if let Some(local) = app.local_playback.as_ref() {
+    let uri = local.queue.get(local.index)?;
+    let path = crate::infra::local::file_uri_to_path(uri).ok()?;
+    return Some(CoverArtRequest::LocalFile {
+      key: uri.clone(),
+      path,
+    });
+  }
+  #[cfg(not(feature = "local-files"))]
+  let _ = app;
+
+  snapshot
+    .metadata
+    .image_url
+    .clone()
+    .map(CoverArtRequest::Url)
+}
+
+/// Per-tick inputs only the frontend can supply.
+pub struct TickEnv {
+  /// Wall-clock instant of this tick; injected so the driver's throttling
+  /// decisions stay deterministic under test.
+  pub now: Instant,
+  /// What the frontend's visualizer reads from the capture, or `None` while
+  /// no visualizer shows (which releases the capture).
+  #[cfg(any(feature = "audio-viz", feature = "audio-viz-cpal"))]
+  pub viz: Option<VizNeed>,
+  /// Whether the frontend renders real pixels for cover art (the terminal
+  /// image-protocol probe); false in a decode-only build, where art is
+  /// fetched solely for the adaptive theme.
+  #[cfg(feature = "art-decode")]
+  pub cover_art_full_image_support: bool,
+}
+
+#[cfg(any(feature = "audio-viz", feature = "audio-viz-cpal"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VizNeed {
+  /// cava's bands, as many as the frontend's geometry fits, into `App::spectrum_data`.
+  Bars(usize),
+  /// Only the capture: the frontend reads `Driver::recent_audio`, analyses it
+  /// itself and closes a failed capture to try again; no status message.
+  #[cfg_attr(not(feature = "gui"), allow(dead_code))]
+  Samples,
+}
+
+/// The scheduler's own state: everything that used to live as locals of the
+/// terminal event loop, one instance per frontend session.
+pub struct Driver {
+  #[cfg(all(feature = "mpris", target_os = "linux"))]
+  mpris_manager: MprisHandle,
+  #[cfg(feature = "discord-rpc")]
+  discord_rpc_manager: DiscordRpcHandle,
+  #[cfg(feature = "scripting")]
+  script_engine: Option<ScriptEngine>,
+  #[cfg(any(feature = "audio-viz", feature = "audio-viz-cpal"))]
+  audio_capture: viz_capture::VizCapture<audio::AudioCaptureManager>,
+  /// Previous tick's `is_streaming_active`, so a native session that ends can
+  /// push a final stopped state to MPRIS clients.
+  #[cfg(all(feature = "mpris", target_os = "linux"))]
+  prev_is_streaming_active: bool,
+  #[cfg(feature = "discord-rpc")]
+  discord_presence: presence::DiscordPresenceState,
+  #[cfg(all(feature = "mpris", target_os = "linux"))]
+  mpris_state: presence::MprisState,
+  window_title: presence::WindowTitleState,
+  /// Last track the shared detector fired lyrics for, so the lookup re-fires
+  /// only on an actual track change rather than every tick.
+  last_track_identity: Option<TrackIdentity>,
+  play_counter: play_count::PlayCounter,
+  /// Cache key (URL / file URI) of the cover art last requested, so the
+  /// per-tick cover-art evaluation dispatches a fetch only when the resolved
+  /// art changes.
+  #[cfg(feature = "art-decode")]
+  last_cover_art_key: Option<String>,
+  /// Throttle state for `last_session.yml` (see `plan::session_persist_action`):
+  /// `last_session_save` spaces the periodic writes; `session_was_present`
+  /// lets a Some -> None transition (queue ended, switched to Spotify) clear
+  /// the file so a stale session is never resurrected.
+  last_session_save: Option<Instant>,
+  session_was_present: bool,
+  /// Whether the active internet-radio stream has produced audio yet, so the
+  /// tick can tell "stream just started, sink not filled" apart from "stream
+  /// died / drained" — both of which report `is_finished()` (empty sink).
+  #[cfg(feature = "internet-radio")]
+  radio_stream_started: bool,
+}
+
+/// The startup route's data fetch, gated on what the route needs.
+fn fetch_startup_route(app: &mut App) {
+  let route = app.get_current_route().id.clone();
+  if !app.availability(route.startup_requirement()).is_available() {
+    return;
+  }
+  match route {
+    RouteId::RecentlyPlayed => app.dispatch(IoEvent::GetRecentlyPlayed),
+    RouteId::AlbumList => app.dispatch(IoEvent::GetCurrentUserSavedAlbums(None)),
+    RouteId::Artists => app.dispatch(IoEvent::GetFollowedArtists(None)),
+    RouteId::Podcasts => app.dispatch(IoEvent::GetCurrentUserSavedShows(None)),
+    RouteId::Stats => app.reload_stats(),
+    RouteId::Discover => app.fetch_discover(),
+    _ => {}
+  }
+}
+
+impl Driver {
+  pub fn new(mpris_manager: MprisHandle, discord_rpc_manager: DiscordRpcHandle) -> Self {
+    #[cfg(not(all(feature = "mpris", target_os = "linux")))]
+    let _ = mpris_manager;
+    #[cfg(not(feature = "discord-rpc"))]
+    let _ = discord_rpc_manager;
+
+    // The Lua VM (plus its HTTP client) is only constructed when the user
+    // actually has script files; a zero-plugin install skips the engine — and
+    // its per-tick `on_tick` dispatch — entirely.
+    #[cfg(feature = "scripting")]
+    let script_engine: Option<ScriptEngine> = {
+      let config_dir = crate::core::user_config::default_app_config_dir();
+      match config_dir {
+        Some(config_dir) if ScriptEngine::has_user_scripts(&config_dir) => {
+          match ScriptEngine::new() {
+            Ok(mut engine) => {
+              let loaded = engine.load_user_scripts(&config_dir);
+              info!("loaded {loaded} lua plugin file(s)");
+              Some(engine)
+            }
+            Err(e) => {
+              log::error!("failed to initialize lua scripting engine: {e}");
+              None
+            }
+          }
+        }
+        _ => {
+          info!("no lua plugin files found; scripting engine not started");
+          None
+        }
+      }
+    };
+
+    Driver {
+      #[cfg(all(feature = "mpris", target_os = "linux"))]
+      mpris_manager,
+      #[cfg(feature = "discord-rpc")]
+      discord_rpc_manager,
+      #[cfg(feature = "scripting")]
+      script_engine,
+      #[cfg(any(feature = "audio-viz", feature = "audio-viz-cpal"))]
+      audio_capture: viz_capture::VizCapture::new(),
+      #[cfg(all(feature = "mpris", target_os = "linux"))]
+      prev_is_streaming_active: false,
+      #[cfg(feature = "discord-rpc")]
+      discord_presence: presence::DiscordPresenceState::default(),
+      #[cfg(all(feature = "mpris", target_os = "linux"))]
+      mpris_state: presence::MprisState::default(),
+      window_title: presence::WindowTitleState::default(),
+      last_track_identity: None,
+      play_counter: play_count::PlayCounter::default(),
+      #[cfg(feature = "art-decode")]
+      last_cover_art_key: None,
+      last_session_save: None,
+      session_was_present: false,
+      #[cfg(feature = "internet-radio")]
+      radio_stream_started: false,
+    }
+  }
+
+  /// One tick. The frontend calls this at its tick rate with the `App` lock
+  /// held; everything slow (file I/O, network) is dispatched off-lock. Must
+  /// run inside a Tokio runtime: session persistence goes through
+  /// `tokio::task::spawn_blocking`, which panics without one.
+  pub fn tick(&mut self, app: &mut App, elapsed: Duration, env: TickEnv) {
+    #[cfg(feature = "streaming")]
+    if let Some(player) = app.streaming_player.clone() {
+      if let Some(error) = player.take_audio_backend_error(app.strings()) {
+        app.pause_native_playback();
+        app.set_status_message(error, 15);
+      }
+    }
+
+    #[cfg(all(feature = "mpris", target_os = "linux"))]
+    {
+      let current_is_streaming_active = app.is_streaming_active;
+      if self.prev_is_streaming_active && !current_is_streaming_active {
+        if let Some(ref mpris) = self.mpris_manager {
+          mpris.set_stopped();
+        }
+      }
+      self.prev_is_streaming_active = current_is_streaming_active;
+    }
+
+    app.update_on_tick(elapsed);
+
+    #[cfg(feature = "streaming")]
+    app.flush_pending_native_seek();
+    app.flush_pending_api_seek();
+    app.flush_pending_source_seek();
+    app.flush_apple_music_volume();
+    app.flush_pending_volume();
+    app.flush_state_save(false);
+
+    #[cfg(feature = "scripting")]
+    if let Some(engine) = self.script_engine.as_mut() {
+      engine.on_tick(app);
+    }
+
+    #[cfg(feature = "discord-rpc")]
+    if let Some(ref manager) = self.discord_rpc_manager {
+      presence::update_discord_presence(manager, &mut self.discord_presence, app);
+    }
+
+    #[cfg(all(feature = "mpris", target_os = "linux"))]
+    if let Some(ref mpris) = self.mpris_manager {
+      presence::update_mpris_state(mpris, &mut self.mpris_state, app);
+    }
+
+    // Shared track-change detector. One place decides "the playing track
+    // changed" off the source-agnostic snapshot, then drives BOTH lyrics
+    // (every source) and cover art (cover-art feature) — so both light up
+    // for Spotify, local files, Subsonic, radio and YouTube through a single
+    // path.
+    let playing = {
+      let snapshot = crate::infra::media_metadata::tracking_playback_snapshot(app);
+
+      self.play_counter.tick(app, snapshot.as_ref());
+
+      // Lyrics fire once per track (identity latch): their inputs — title,
+      // artist, duration — ARE the identity, so they are correct at the
+      // instant the identity changes.
+      let identity = snapshot.as_ref().map(track_identity);
+      if identity != self.last_track_identity {
+        self.last_track_identity = identity;
+        app.view.lyrics_view.reset();
+        match snapshot.as_ref() {
+          Some(snapshot) => {
+            use crate::infra::media_metadata::PlaybackItemKind;
+            // LRCLIB lookup by title + artist + duration. Source agnostic;
+            // radio (duration 0) simply resolves to "not found". Podcast
+            // episodes have no lyrics, so skip the lookup and show the
+            // not-found message rather than stale lyrics.
+            if snapshot.item_kind == PlaybackItemKind::Track {
+              let title = snapshot.metadata.title.clone();
+              // The identity latch keys on the joined display credit, but the
+              // LRCLIB lookup needs the structured artist list so it can fall
+              // back to the primary artist alone for collaborations (#410).
+              let artists = snapshot.metadata.artists.clone();
+              request_track_lyrics(
+                app,
+                title,
+                artists,
+                snapshot.metadata.duration_ms as f64 / 1000.0,
+                snapshot.item_uri.as_deref(),
+              );
+            } else {
+              app.desired_lyrics_identity = None;
+              app.set_lyrics(crate::core::app::LyricsStatus::NotFound, None, false);
+              app
+                .plugin_data_generations
+                .bump(crate::core::app::PluginDataKind::Lyrics);
+            }
+          }
+          None => {
+            app.desired_lyrics_identity = None;
+            // Nothing is playing: reset so no stale lyrics linger.
+            app.set_lyrics(crate::core::app::LyricsStatus::NotStarted, None, false);
+            app
+              .plugin_data_generations
+              .bump(crate::core::app::PluginDataKind::Lyrics);
+          }
+        }
+      }
+
+      // Cover art is re-evaluated EVERY tick against the desired image key,
+      // NOT latched to the identity change. With native streaming the
+      // snapshot's `image_url` comes from the polled Spotify context, which
+      // catches up seconds *after* `native_track_info` flips the identity —
+      // an identity-latched fetch would fire once with the previous track's
+      // URL (or none at startup) and never see the real one, leaving the art
+      // stuck or missing until restart. Comparing against
+      // `last_cover_art_key` keeps this a no-op on quiet ticks and fires
+      // exactly once whenever the resolved art actually changes.
+      #[cfg(feature = "art-decode")]
+      {
+        use crate::core::art::CoverArtStatus;
+        let enabled = app
+          .user_config
+          .needs_cover_art(env.cover_art_full_image_support);
+        let desired = if enabled {
+          snapshot
+            .as_ref()
+            .and_then(|snapshot| cover_art_request_for(app, snapshot))
+        } else {
+          None
+        };
+        match plan::cover_art_action(
+          desired.as_ref().map(|request| request.key()),
+          self.last_cover_art_key.as_deref(),
+          app.cover_art.available(),
+          enabled,
+          snapshot.is_some(),
+        ) {
+          plan::CoverArtAction::Fetch => {
+            let request = desired.expect("Fetch is only planned with a desired request");
+            app.desired_cover_art_key = Some(request.key().to_string());
+            self.last_cover_art_key = Some(request.key().to_string());
+            // Keep the previous image on screen until the new one
+            // resolves (smooth swap); the fetch runs off-lock.
+            app.cover_art.status = CoverArtStatus::Loading;
+            app.dispatch(IoEvent::FetchCoverArt(request));
+          }
+          plan::CoverArtAction::Keep => {
+            app.desired_cover_art_key = desired.map(|request| request.key().to_string());
+          }
+          plan::CoverArtAction::Drop { clear, status } => {
+            app.desired_cover_art_key = None;
+            self.last_cover_art_key = None;
+            // No art to show (radio, art disabled, nothing playing): drop
+            // any stale image once, so the pane shows the placeholder.
+            if clear {
+              app.clear_cover_art();
+            }
+            app.cover_art.status = status;
+          }
+        }
+      }
+
+      let (is_track, item_id) = snapshot.as_ref().map_or((false, None), |snapshot| {
+        (
+          snapshot.item_kind == crate::infra::media_metadata::PlaybackItemKind::Track,
+          snapshot.item_id.as_deref(),
+        )
+      });
+      let track = plan::audio_analysis_track(app.spotify_connected, is_track, item_id);
+      app.sync_audio_analysis(track);
+      snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.is_playing)
+    };
+
+    // Output device lost mid-track (Bluetooth headphones disconnected, a USB
+    // DAC unplugged). cpal pauses the stream and reports it, after which no
+    // audio callback runs again: `LocalPlayer` then refuses the transport calls
+    // that would wait on one, so nothing hangs, but the session sits silent and
+    // still looks like it is playing (`is_finished` stays false — the source is
+    // queued on a sink that will never drain it). That is why this runs before
+    // every advance block below: a dead device must not read as end-of-track.
+    //
+    // Rebuild the output on the new default device (with retries: a Bluetooth
+    // output takes seconds to come back) and restage the track there, at the
+    // position it stopped. Whether it stays paused depends on which of the
+    // two shapes this was: cpal reporting the device *removed* (headphones
+    // out) pauses, like macOS itself does — nobody wants the music jumping to
+    // the laptop speakers. A default that merely moved (headphones *in*) keeps
+    // whatever play/pause state the session had. The seek and the pause ride
+    // on the session as `resume_at`, applied by the path that stages the
+    // track, never as events queued behind it.
+    #[cfg(feature = "audio-decode-queue")]
+    macro_rules! decoded_device_recovery {
+      ($app:ident, $playback:ident) => {
+        // Not while the queue owns the sink: the session below is suspended, and
+        // its player is the *same* handle the queue slot is using (see
+        // `suspended_context_player`). The queue branch further down recovers it.
+        if !$app.queue_owns_playback()
+          && $app
+            .$playback
+            .as_ref()
+            .is_some_and(|s| s.player.device_lost())
+        {
+          use crate::infra::audio::Reopen;
+          // Read before the reopen: it swaps in a fresh sink that is paused,
+          // empty, and reports no removal. A change already in flight stages a
+          // different track, so its position is the top.
+          let (position_ms, paused) = $app.$playback.as_ref().map_or((0, false), |s| {
+            (
+              if s.advancing {
+                0
+              } else {
+                s.player.position().as_millis() as u64
+              },
+              s.player.device_removed() || s.player.is_paused(),
+            )
+          });
+          match $app.$playback.as_ref().map(|s| s.player.recover_device()) {
+            Some(Reopen::Reopened) => {
+              // The fresh sink is empty, so `is_finished()` is true from here
+              // on: hold the advance latch or the block below would read that
+              // as end-of-track and skip a song while the replay is in flight.
+              if let Some(s) = $app.$playback.as_mut() {
+                s.advancing = true;
+                s.resume_at = Some(crate::infra::queue::ResumePoint {
+                  position_ms,
+                  paused,
+                });
+              }
+              $app.dispatch(IoEvent::ReplayCurrentTrack);
+              $app.set_status_message(
+                if paused {
+                  $app.strings().status.app.audio_device_paused
+                } else {
+                  $app.strings().status.app.audio_device_moved
+                },
+                8,
+              );
+            }
+            Some(Reopen::Retrying) => {
+              $app.set_status_message($app.strings().status.app.audio_device_waiting, 8);
+            }
+            Some(Reopen::GaveUp) => {
+              $app.$playback = None;
+              $app.set_status_message($app.strings().status.infra.audio_disconnected, 8);
+            }
+            Some(Reopen::Waiting) | None => {}
+          }
+        }
+      };
+    }
+    #[cfg(feature = "local-files")]
+    decoded_device_recovery!(app, local_playback);
+    #[cfg(feature = "subsonic")]
+    decoded_device_recovery!(app, subsonic_playback);
+    #[cfg(feature = "qobuz")]
+    decoded_device_recovery!(app, qobuz_playback);
+    #[cfg(feature = "youtube")]
+    decoded_device_recovery!(app, youtube_playback);
+
+    // Radio has no track to restage: a station is an infinite stream with no
+    // position, and pausing one only stalls its ring buffer. Drop the session
+    // and say so, rather than leave a dead player behind the playbar.
+    #[cfg(feature = "internet-radio")]
+    if app
+      .radio_playback
+      .as_ref()
+      .is_some_and(|s| s.player.device_lost())
+    {
+      app.radio_playback = None;
+      app.set_status_message(app.strings().status.app.radio_device_lost, 8);
+    }
+
+    // The native queue slot's own sink. There is no "replay this queued item"
+    // event, so recovery here reopens the device and lets the advance block
+    // below take it from the top of the next item: the interrupted queued track
+    // is skipped rather than restaged. Same split as the context path above:
+    // a removal clears the slot's desired play state, which every path that
+    // stages the next item (and the suspended context's resume) reads, so the
+    // queue does not play out loud on a device the user just left.
+    #[cfg(feature = "audio-decode-queue")]
+    {
+      use crate::infra::audio::Reopen;
+      use crate::infra::queue::QueueNowPlaying;
+      let lost = match app.queue_now.as_ref() {
+        Some(QueueNowPlaying::Decoded(d)) if d.player.device_lost() => Some((
+          std::sync::Arc::clone(&d.player),
+          d.player.device_removed() || d.player.is_paused(),
+        )),
+        _ => None,
+      };
+      if let Some((player, paused)) = lost {
+        match player.recover_device() {
+          Reopen::Reopened => {
+            if paused {
+              app.queue_slot_desired_playing = false;
+            }
+            app.set_status_message(
+              if paused {
+                app.strings().status.app.audio_device_paused
+              } else {
+                app.strings().status.app.audio_device_moved
+              },
+              8,
+            );
+          }
+          Reopen::Retrying => {
+            app.set_status_message(app.strings().status.app.audio_device_waiting, 8);
+          }
+          // No device to play on. Hand the slot to the same teardown a drained
+          // queue uses: clearing `queue_now` here would strand the suspended
+          // context (latched `advancing`) and the remaining queued items.
+          Reopen::GaveUp => {
+            if paused {
+              app.queue_slot_desired_playing = false;
+            }
+            app.dispatch(IoEvent::FinishNativeQueue);
+            app.set_status_message(app.strings().status.infra.audio_disconnected, 8);
+          }
+          Reopen::Waiting => {}
+        }
+      }
+    }
+
+    // Native queue slot: when the queued track finishes, advance the queue
+    // (play the next queued item, or resume the suspended context). Runs
+    // before the per-source blocks so it takes precedence over them.
+    #[cfg(feature = "audio-decode-queue")]
+    {
+      use crate::infra::queue::QueueNowPlaying;
+      let advance = match app.queue_now.as_mut() {
+        Some(QueueNowPlaying::Decoded(d))
+          if plan::native_queue_advance_due(d.player.is_finished(), d.advancing) =>
+        {
+          d.advancing = true; // atomic check-and-set: one dispatch only
+          true
+        }
+        _ => false,
+      };
+      if advance {
+        app.dispatch(IoEvent::AdvanceNativeQueue);
+      }
+    }
+
+    // Auto-queue refill. Dispatch only: this path holds `&mut App`, so the
+    // brain call itself must happen on the detached service lane. The
+    // generation goes along for the ride so a refill the user has since
+    // abandoned (DJ off, vibe shift, source change) can be dropped when it
+    // lands instead of queueing tracks for a session that is gone.
+    #[cfg(feature = "ai-dj")]
+    {
+      if crate::infra::network::dj::wants_top_up(
+        app.native_queue.len(),
+        &app.dj,
+        app.spotify_external_device_active(),
+      ) {
+        let turn_seq = app.dj.begin_turn(crate::infra::dj::TurnKind::Refill);
+        let generation = app.dj.generation;
+        // Not `dispatch`: that pins the global `is_loading` spinner until the
+        // service-lane task finishes, which for a brain call is minutes. The
+        // DJ's own `thinking` flag is the progress surface here.
+        app.dispatch_without_spinner(IoEvent::DjTopUp(generation, turn_seq));
+      }
+    }
+
+    // Decoded-source auto-advance, one macro invocation per source (the
+    // blocks are identical except for which `*_playback` session and queue
+    // field they read). Each session reads its progress live from the
+    // player at render time; the only state self-managed here is
+    // end-of-track. When the sink drains and no track change is already in
+    // flight (`!advancing`), `plan::decoded_advance` picks the move: advance /
+    // replay (repeat-one) / suspend to the native queue / tear down.
+    //
+    // Decide under one borrow, then act after the borrow ends. `advancing`
+    // is set *synchronously here* (atomic check-and-set, before
+    // dispatching) because the sink stays empty for the whole decode — or,
+    // for Subsonic/YouTube, multi-second download — window; without it the
+    // next tick would re-dispatch and skip several tracks per advance.
+    #[cfg(feature = "audio-decode-queue")]
+    macro_rules! decoded_auto_advance {
+      ($app:ident, $playback:ident, $queue:ident) => {
+        if !$app.queue_owns_playback() {
+          use crate::infra::queue::next_index;
+          let queue_len = $app.native_queue.len();
+          let repeat = $app.decoded_repeat;
+          let advance = $app.$playback.as_ref().map(|s| {
+            plan::decoded_advance(
+              s.player.is_finished(),
+              s.advancing,
+              next_index(s.index, s.$queue.len()).is_some(),
+              queue_len,
+              repeat,
+            )
+          });
+          match advance {
+            Some(plan::DecodedAdvance::Dispatch { replay }) => {
+              if let Some(s) = $app.$playback.as_mut() {
+                s.advancing = true; // atomic check-and-set: one dispatch only
+              }
+              $app.dispatch(if replay {
+                IoEvent::ReplayCurrentTrack
+              } else {
+                IoEvent::NextTrack
+              });
+            }
+            Some(plan::DecodedAdvance::SuspendToQueue) => {
+              // End-of-track handoff: under Repeat One the context resumes
+              // the same track, so a queued song can't consume the repeat.
+              $app.suspend_active_decoded_context_for_skip(
+                crate::infra::queue::SuspendCause::AutoAdvance,
+              );
+              $app.dispatch(IoEvent::AdvanceNativeQueue);
+            }
+            Some(plan::DecodedAdvance::Teardown) => {
+              $app.$playback = None;
+              $app.release_decoded_sink_claim();
+            }
+            Some(plan::DecodedAdvance::None) | None => {}
+          }
+        }
+      };
+    }
+    #[cfg(feature = "local-files")]
+    decoded_auto_advance!(app, local_playback, queue);
+    #[cfg(feature = "subsonic")]
+    decoded_auto_advance!(app, subsonic_playback, tracks);
+    #[cfg(feature = "qobuz")]
+    decoded_auto_advance!(app, qobuz_playback, tracks);
+    #[cfg(feature = "youtube")]
+    decoded_auto_advance!(app, youtube_playback, tracks);
+
+    // Apply any shuffle toggle that was deferred while a track change was in
+    // flight, now that the advance may have committed (a cheap no-op when the
+    // queue order already matches the decoded shuffle state).
+    #[cfg(feature = "audio-decode-queue")]
+    app.reconcile_decoded_shuffle();
+
+    // Internet radio has no queue to auto-advance; instead the tick watches
+    // for a live stream that dies (server disconnect or the ring buffer
+    // draining to EOF), which leaves `is_finished()` (empty sink) true while
+    // the session was never paused. `is_finished()` is also true during the
+    // brief pre-playback window before the first bytes arrive, so only tear
+    // down once the stream has actually started producing audio.
+    #[cfg(feature = "internet-radio")]
+    match app.radio_playback.as_ref() {
+      Some(radio) => {
+        if !radio.player.is_finished() {
+          self.radio_stream_started = true;
+        } else if self.radio_stream_started {
+          app.radio_playback = None;
+          app.release_decoded_sink_claim();
+          self.radio_stream_started = false;
+          app.set_status_message(app.strings().status.app.radio_ended, 4);
+        }
+      }
+      None => self.radio_stream_started = false,
+    }
+
+    // A decoded non-Spotify source owns the sink while its `*_playback` is
+    // `Some`. Drive `song_progress_ms` from its live player, and do NOT let
+    // the (paused) librespot position below clobber it. Music's position was
+    // set by `update_on_tick`.
+    #[allow(unused_mut)]
+    #[cfg_attr(not(feature = "streaming"), allow(unused_variables))]
+    let mut source_owns_playback = app.apple_music_owns_playback();
+    // The native queue slot owns the sink when playing a decoded track; read
+    // progress from its player first (it may share the suspended context's
+    // player, in which case a per-source block below reads the same value).
+    #[cfg(feature = "audio-decode-queue")]
+    if let Some(crate::infra::queue::QueueNowPlaying::Decoded(d)) = app.queue_now.as_ref() {
+      source_owns_playback = true;
+      app.song_progress_ms = d.player.position().as_millis();
+    }
+    #[allow(unused_variables)]
+    let spotify_queue_slot = app.queue_now_is_spotify();
+    #[cfg(feature = "local-files")]
+    if !spotify_queue_slot {
+      if let Some(local) = app.local_playback.as_ref() {
+        source_owns_playback = true;
+        let position_ms = local.player.position().as_millis();
+        app.song_progress_ms = position_ms;
+      }
+    }
+    #[cfg(feature = "subsonic")]
+    if !spotify_queue_slot {
+      if let Some(subsonic) = app.subsonic_playback.as_ref() {
+        source_owns_playback = true;
+        let position_ms = subsonic.player.position().as_millis();
+        app.song_progress_ms = position_ms;
+      }
+    }
+    #[cfg(feature = "qobuz")]
+    if !spotify_queue_slot {
+      if let Some(qobuz) = app.qobuz_playback.as_ref() {
+        source_owns_playback = true;
+        app.song_progress_ms = qobuz.player.position().as_millis();
+      }
+    }
+    #[cfg(feature = "internet-radio")]
+    if !spotify_queue_slot {
+      if let Some(radio) = app.radio_playback.as_ref() {
+        source_owns_playback = true;
+        let position_ms = radio.player.position().as_millis();
+        app.song_progress_ms = position_ms;
+      }
+    }
+    #[cfg(feature = "youtube")]
+    if !spotify_queue_slot {
+      if let Some(youtube) = app.youtube_playback.as_ref() {
+        source_owns_playback = true;
+        let position_ms = youtube.player.position().as_millis();
+        app.song_progress_ms = position_ms;
+      }
+    }
+
+    // Persist the active non-Spotify session so it resumes on next launch.
+    // Throttled to avoid churning the file every tick; a Some -> None
+    // transition (queue ended, or switched to Spotify) clears it instead.
+    let has_session = app.has_persistable_session();
+    match plan::session_persist_action(
+      has_session,
+      self.session_was_present,
+      self.last_session_save,
+      env.now,
+    ) {
+      plan::SessionPersist::Save => {
+        self.last_session_save = Some(env.now);
+        // Snapshot (clones the queue) only when a save is actually due,
+        // not on every tick.
+        if let Some(session) = app.current_persisted_session() {
+          // Fire-and-forget on the blocking pool: file I/O never blocks the
+          // UI tick, and a dropped handle still runs to completion.
+          tokio::task::spawn_blocking(move || {
+            if let Ok(path) = crate::core::persisted_playback::default_session_path() {
+              if let Err(e) = crate::core::persisted_playback::save(&path, &session) {
+                log::warn!("[session] failed to persist playback session: {e}");
+              }
+            }
+          });
+        }
+      }
+      plan::SessionPersist::Clear => {
+        self.last_session_save = None;
+        tokio::task::spawn_blocking(|| {
+          if let Ok(path) = crate::core::persisted_playback::default_session_path() {
+            if let Err(e) = crate::core::persisted_playback::clear(&path) {
+              log::warn!("[session] failed to clear playback session: {e}");
+            }
+          }
+        });
+      }
+      plan::SessionPersist::None => {}
+    }
+    self.session_was_present = has_session;
+
+    #[cfg(feature = "streaming")]
+    if !source_owns_playback && app.is_streaming_active {
+      if let Some(position_ms) = app.native_position_ms(env.now) {
+        app.song_progress_ms = position_ms as u128;
+      }
+    }
+    app.note_analysis_clock(playing, env.now);
+    if app.pitch_view_shows() {
+      app.step_pitch_levels(env.now, elapsed);
+    }
+
+    // The terminal's pitch view draws Spotify's analysis, so its bars need no capture.
+    #[cfg(any(feature = "audio-viz", feature = "audio-viz-cpal"))]
+    match env
+      .viz
+      .filter(|need| *need == VizNeed::Samples || !app.pitch_view_shows())
+    {
+      Some(need) => {
+        // Built at the count we are about to ask for, so the first frame
+        // does not immediately throw the fresh cavacore plan away. Samples
+        // alone need the smallest plan.
+        let desired_bars = match need {
+          VizNeed::Bars(bars) => bars,
+          VizNeed::Samples => 2,
+        };
+        // A frontend that reads samples retries a failed capture by itself, quietly.
+        let report = matches!(need, VizNeed::Bars(_));
+        let capture = self.audio_capture.poll(app, report, move || {
+          audio::AudioCaptureManager::new(desired_bars)
+        });
+        match capture {
+          Some(capture) => {
+            if let VizNeed::Bars(bars) = need {
+              if let Some(spectrum) = capture.get_spectrum(bars) {
+                app.spectrum_data = Some(spectrum);
+              }
+            }
+            // Kept outside the spectrum arm: a dead stream must drop the
+            // "Capturing audio" status instead of freezing it on.
+            app.audio_capture_active = capture.is_active();
+          }
+          None => app.audio_capture_active = false,
+        }
+      }
+      None => {
+        if self.audio_capture.close() {
+          app.audio_capture_active = false;
+          app.spectrum_data = None;
+        }
+      }
+    }
+
+    app.note_display_changes();
+  }
+
+  /// The open capture's newest tenth of a second, for `VizNeed::Samples`.
+  #[cfg(any(feature = "audio-viz", feature = "audio-viz-cpal"))]
+  #[cfg_attr(not(feature = "gui"), allow(dead_code))]
+  pub fn recent_audio(&self) -> Option<audio::RecentAudio> {
+    self.audio_capture.current()?.recent_audio()
+  }
+
+  /// The one-shot startup dispatch, fired by the frontend right after its
+  /// first frame: initial Spotify fetches, the startup route's data, the
+  /// persisted active source's sidebar data, and `--play-file`.
+  pub fn dispatch_startup(&mut self, app: &mut App) {
+    // Spotify-only startup fetches: skip them entirely when launched against a
+    // free source with no Spotify session, so the network layer doesn't reject
+    // three events with "connect Spotify" status flashes on every launch.
+    if app.spotify_connected {
+      app.dispatch(IoEvent::GetCurrentPlayback);
+      app.dispatch(IoEvent::GetPlaylists);
+      app.dispatch(IoEvent::GetUser);
+    }
+    // startup_route seeds the nav stack directly (App::new), bypassing the
+    // handlers that normally fetch a screen's data on navigation — kick
+    // off that fetch here or the screen renders empty until re-entered.
+    // (Home needs nothing extra.)
+    fetch_startup_route(app);
+    // A persisted non-Spotify active source needs its sidebar data loaded
+    // too (all of these are inert no-ops when the feature is off).
+    app.load_source_sidebar(app.active_source);
+    if app.user_config.behavior.enable_global_song_count {
+      app.dispatch(IoEvent::FetchGlobalSongCount);
+    }
+    app.dispatch(IoEvent::FetchAnnouncements);
+
+    // `--play-file`: kick off local playback now that dispatch is wired.
+    if let Some(uri) = app.pending_play_file.take() {
+      app.dispatch(IoEvent::StartPlayback(Some(uri), None, None));
+    }
+
+    #[cfg(feature = "scripting")]
+    if let Some(engine) = self.script_engine.as_mut() {
+      engine.on_start(app);
+    }
+  }
+
+  /// Run any plugin commands a keypress queued; the frontend calls this after
+  /// each key event. No-op without the `scripting` feature.
+  pub fn run_pending_script_commands(&mut self, app: &mut App) {
+    #[cfg(feature = "scripting")]
+    if let Some(engine) = self.script_engine.as_mut() {
+      engine.run_pending_commands(app);
+    }
+    #[cfg(not(feature = "scripting"))]
+    let _ = app;
+  }
+
+  /// The window title the frontend should apply now, or `None` when it is
+  /// unchanged. Called once per frame (cheaper than a tick, and a title
+  /// change should not wait for one).
+  pub fn next_window_title(&mut self, app: &App) -> Option<String> {
+    presence::next_window_title(&mut self.window_title, app)
+  }
+
+  /// On teardown: the default title to restore if this session changed it.
+  pub fn window_title_reset(&mut self) -> Option<&'static str> {
+    presence::window_title_reset(&mut self.window_title)
+  }
+
+  /// The scripting quit hook. No-op without the `scripting` feature.
+  pub fn on_quit(&mut self, app: &mut App) {
+    #[cfg(feature = "scripting")]
+    if let Some(engine) = self.script_engine.as_mut() {
+      engine.on_quit(app);
+    }
+    #[cfg(not(feature = "scripting"))]
+    let _ = app;
+  }
+
+  /// Clear any published rich presence on the way out.
+  pub fn clear_presence(&self) {
+    #[cfg(feature = "discord-rpc")]
+    if let Some(ref manager) = self.discord_rpc_manager {
+      manager.clear();
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::core::app::ActiveBlock;
+  use crate::core::user_config::UserConfig;
+  use std::sync::mpsc::{channel, Receiver};
+  use std::time::SystemTime;
+
+  fn app_on(route: RouteId, block: ActiveBlock, connected: bool) -> (App, Receiver<IoEvent>) {
+    let (tx, rx) = channel();
+    let mut app = App::new(tx, UserConfig::new(), connected.then(SystemTime::now));
+    app.push_navigation_stack(route, block);
+    (app, rx)
+  }
+
+  #[test]
+  fn a_spotify_track_uri_gives_a_lyrics_id() {
+    assert_eq!(
+      spotify_lyrics_id(Some("spotify:track:0DiWol3AO6WpXZgp0goxAV")).as_deref(),
+      Some("0DiWol3AO6WpXZgp0goxAV")
+    );
+  }
+
+  #[test]
+  fn local_files_episodes_and_other_sources_give_no_lyrics_id() {
+    for uri in [
+      Some("spotify:local:Daft+Punk:Discovery:One+More+Time:320"),
+      // What a native Spotify local file reports: the local URI behind the track prefix.
+      Some("spotify:track:spotify:local:Daft+Punk:Discovery:One+More+Time:320"),
+      Some("spotify:episode:4rOoJ6Egrf8K2IrywzwOMk"),
+      Some("file:///music/one-more-time.flac"),
+      Some("youtube:FGBhQbmPwH8"),
+      None,
+    ] {
+      assert_eq!(spotify_lyrics_id(uri), None, "{uri:?}");
+    }
+  }
+
+  #[test]
+  fn a_track_change_fetches_lyrics_when_lyrics_are_on() {
+    let (mut app, rx) = app_on(RouteId::Home, ActiveBlock::Home, false);
+
+    request_track_lyrics(&mut app, "One".into(), vec!["Two".into()], 180.0, None);
+
+    assert!(matches!(rx.try_recv(), Ok(IoEvent::GetLyrics(..))));
+  }
+
+  #[test]
+  fn a_track_change_sends_no_lyrics_request_when_lyrics_are_off() {
+    let (mut app, rx) = app_on(RouteId::Home, ActiveBlock::Home, false);
+    app.user_config.behavior.enable_lyrics = false;
+
+    request_track_lyrics(&mut app, "One".into(), vec!["Two".into()], 180.0, None);
+
+    assert!(rx.try_recv().is_err());
+    assert_eq!(
+      app.lyrics_status(),
+      crate::core::app::LyricsStatus::NotFound
+    );
+    assert_eq!(
+      app.desired_lyrics_identity,
+      Some(("One".to_string(), "Two".to_string()))
+    );
+  }
+
+  #[test]
+  fn a_spotify_startup_route_fetches_nothing_without_a_session() {
+    let (mut app, rx) = app_on(RouteId::AlbumList, ActiveBlock::AlbumList, false);
+
+    fetch_startup_route(&mut app);
+
+    assert!(!rx
+      .try_iter()
+      .any(|event| matches!(event, IoEvent::GetCurrentUserSavedAlbums(_))));
+  }
+
+  #[test]
+  fn a_spotify_startup_route_fetches_its_data_with_a_session() {
+    let (mut app, rx) = app_on(RouteId::AlbumList, ActiveBlock::AlbumList, true);
+
+    fetch_startup_route(&mut app);
+
+    assert!(rx
+      .try_iter()
+      .any(|event| matches!(event, IoEvent::GetCurrentUserSavedAlbums(_))));
+  }
+
+  #[test]
+  fn the_stats_startup_route_loads_without_a_session() {
+    let (mut app, rx) = app_on(RouteId::Stats, ActiveBlock::Stats, false);
+
+    fetch_startup_route(&mut app);
+
+    assert!(app.stats_loading());
+    assert!(rx
+      .try_iter()
+      .any(|event| matches!(event, IoEvent::LoadListeningStats(_))));
+  }
+
+  #[test]
+  fn the_discover_startup_route_fetches_made_for_you_with_a_session() {
+    let (mut app, rx) = app_on(RouteId::Discover, ActiveBlock::Discover, true);
+
+    fetch_startup_route(&mut app);
+
+    assert!(rx
+      .try_iter()
+      .any(|event| matches!(event, IoEvent::GetMadeForYou)));
+  }
+}

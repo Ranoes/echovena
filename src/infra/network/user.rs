@@ -1,0 +1,279 @@
+use super::requests::is_rate_limited_error;
+use super::{ids, IoEvent, Network};
+use crate::core::app::{ActiveBlock, DiscoverShelf, RouteId, UserInfo};
+use crate::core::plugin_api::TrackInfo;
+use anyhow::anyhow;
+
+use crate::infra::network::mapping::map_cursor_page;
+use rspotify::model::{
+  device::DevicePayload, page::CursorBasedPage, playing::PlayHistory, user::PrivateUser,
+};
+#[cfg(feature = "streaming")]
+use rspotify::model::{enums::DeviceType, Device};
+use rspotify::prelude::*;
+use serde::Deserialize;
+
+/// The router's `views/made-for-x` answer.
+#[derive(Deserialize)]
+struct MadeForYou {
+  sections: Vec<DiscoverShelf>,
+}
+
+#[cfg(feature = "streaming")]
+fn include_native_streaming_device(
+  app: &crate::core::app::App,
+  parked_device_name: &str,
+  payload: &mut DevicePayload,
+) {
+  let parked = app.native_backend_parked();
+  let (device_name, device_id, is_active, volume_percent) = match app.streaming_player.as_ref() {
+    Some(player) if player.is_available() => (
+      player.device_name(),
+      app
+        .native_device_id
+        .clone()
+        .unwrap_or_else(|| player.device_id()),
+      app.is_streaming_active,
+      player.get_volume(),
+    ),
+    // A parked backend keeps its row: Enter on it is the rebuild.
+    None if parked => {
+      let Some(device_id) = app.native_device_id.clone() else {
+        return;
+      };
+      (
+        parked_device_name,
+        device_id,
+        false,
+        app.runtime_state.volume_percent,
+      )
+    }
+    _ => return,
+  };
+
+  // The parked row matches by id: another device can carry the same name.
+  if let Some(device) = payload.devices.iter_mut().find(|device| {
+    if parked {
+      device.id.as_deref() == Some(device_id.as_str())
+    } else {
+      device.name.eq_ignore_ascii_case(device_name)
+    }
+  }) {
+    if parked {
+      device.is_active = false;
+    } else if device.id.is_none() {
+      device.id = Some(device_id);
+    }
+    return;
+  }
+
+  payload.devices.push(Device {
+    id: Some(device_id),
+    is_active,
+    is_private_session: false,
+    is_restricted: false,
+    name: device_name.to_string(),
+    _type: DeviceType::Computer,
+    volume_percent: Some(volume_percent.into()),
+  });
+}
+
+pub trait UserNetwork {
+  async fn get_user(&mut self);
+  /// `navigate: false` refreshes the device list without opening the device
+  /// picker (used by plugin data reads).
+  async fn get_devices(&mut self, navigate: bool);
+  async fn get_made_for_you(&mut self);
+  /// `navigate: false` refreshes the data without opening the screen (used by
+  /// plugin data reads).
+  #[allow(dead_code)]
+  async fn get_recently_played(&mut self, navigate: bool);
+}
+
+impl UserNetwork for Network {
+  async fn get_user(&mut self) {
+    match self.spotify_get_typed::<PrivateUser>("me", &[]).await {
+      Ok(user) => {
+        let mut app = self.app.lock().await;
+        // `PrivateUser::country` is deprecated upstream but still the only
+        // market signal available; mirror the existing read in `get_user_country`.
+        #[allow(deprecated)]
+        let country = user.country.map(|c| <&'static str>::from(c).to_string());
+        *app.user_mut() = Some(UserInfo {
+          id: user.id.id().to_string(),
+          display_name: user.display_name.clone(),
+          // Store the ISO 3166-1 alpha-2 code as a plain string so no rspotify
+          // type leaks into App state; `App::get_user_country` re-derives it.
+          country,
+        });
+      }
+      Err(e) => {
+        let err = anyhow!(e);
+        if is_rate_limited_error(&err) {
+          let mut app = self.app.lock().await;
+          let strings = app.strings();
+          app.set_status_message(strings.status.infra.spotify_profile_retry, 6);
+          return;
+        }
+        self.handle_error(err).await;
+      }
+    }
+  }
+
+  async fn get_devices(&mut self, navigate: bool) {
+    match self
+      .spotify_get_typed::<DevicePayload>("me/player/devices", &[])
+      .await
+    {
+      Ok(result) => {
+        let mut app = self.app.lock().await;
+        if navigate {
+          app.push_navigation_stack(RouteId::SelectedDevice, ActiveBlock::SelectDevice);
+        }
+
+        #[cfg(feature = "streaming")]
+        let mut result = result;
+        #[cfg(feature = "streaming")]
+        {
+          let recovering = app.request_native_streaming_recovery_if_disconnected(true);
+          if !recovering {
+            let device_name = app.user_config.behavior.streaming_device_name.clone();
+            include_native_streaming_device(&app, &device_name, &mut result);
+          }
+        }
+
+        app.view.selected_device_index = if result.devices.is_empty() {
+          None
+        } else {
+          app
+            .view
+            .selected_device_index
+            .filter(|index| *index < result.devices.len())
+            .or(Some(0))
+        };
+        app.set_devices(result);
+        app
+          .plugin_data_generations
+          .bump(crate::core::app::PluginDataKind::Devices);
+      }
+      Err(e) => {
+        self.handle_error(anyhow!(e)).await;
+      }
+    }
+  }
+
+  async fn get_made_for_you(&mut self) {
+    let result = self
+      .spotify_get_typed::<MadeForYou>("views/made-for-x", &[])
+      .await;
+    self
+      .finish_made_for_you(result.map(|page| page.sections))
+      .await;
+  }
+
+  async fn get_recently_played(&mut self, navigate: bool) {
+    let limit = self.large_search_limit;
+    match self
+      .spotify_get_typed::<CursorBasedPage<PlayHistory>>(
+        "me/player/recently-played",
+        &[("limit", limit.to_string())],
+      )
+      .await
+    {
+      Ok(recently_played) => {
+        let domain_page = map_cursor_page(&recently_played, |ph| TrackInfo::from(&ph.track));
+        let mut app = self.app.lock().await;
+        // Check if these tracks are liked.
+        let track_check =
+          ids::track_check_ids(recently_played.items.iter().map(|ph| ph.track.id.as_ref()));
+        if !track_check.is_empty() {
+          app.dispatch(IoEvent::CurrentUserSavedTracksContains(track_check));
+        }
+        app.recently_played = Some(domain_page);
+        app.sort_recently_played_items();
+        app.bump_display(crate::core::app::DisplayDomain::RecentlyPlayed);
+        app
+          .plugin_data_generations
+          .bump(crate::core::app::PluginDataKind::RecentlyPlayed);
+        if navigate {
+          app.push_navigation_stack(RouteId::RecentlyPlayed, ActiveBlock::RecentlyPlayed);
+        }
+      }
+      Err(e) => {
+        self.handle_error(anyhow!(e)).await;
+      }
+    }
+  }
+}
+
+#[cfg(all(test, feature = "streaming"))]
+mod tests {
+  use super::*;
+  use crate::core::app::App;
+  use crate::core::user_config::UserConfig;
+  use std::sync::mpsc::channel;
+  use std::time::SystemTime;
+
+  #[test]
+  fn a_parked_backend_keeps_its_row_in_the_device_list() {
+    let (tx, _rx) = channel();
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
+    app.seed_native_parked();
+    app.native_device_id = Some("native-device".to_string());
+    let mut payload = DevicePayload { devices: vec![] };
+
+    include_native_streaming_device(&app, "echovena", &mut payload);
+
+    assert_eq!(payload.devices.len(), 1);
+    let row = &payload.devices[0];
+    assert_eq!(row.id.as_deref(), Some("native-device"));
+    assert_eq!(row.name, "echovena");
+    assert!(!row.is_active);
+  }
+
+  #[test]
+  fn a_parked_row_matches_by_id_not_by_name() {
+    let device = |id: &str| Device {
+      id: Some(id.to_string()),
+      is_active: true,
+      is_private_session: false,
+      is_restricted: false,
+      name: "echovena".to_string(),
+      _type: DeviceType::Computer,
+      volume_percent: Some(50),
+    };
+    let (tx, _rx) = channel();
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
+    app.seed_native_parked();
+    app.native_device_id = Some("native-device".to_string());
+
+    // Another computer with the same device name.
+    let mut payload = DevicePayload {
+      devices: vec![device("other-computer")],
+    };
+    include_native_streaming_device(&app, "echovena", &mut payload);
+    assert_eq!(payload.devices.len(), 2);
+    assert_eq!(payload.devices[1].id.as_deref(), Some("native-device"));
+
+    // Spotify still lists the parked device as active.
+    let mut payload = DevicePayload {
+      devices: vec![device("native-device")],
+    };
+    include_native_streaming_device(&app, "echovena", &mut payload);
+    assert_eq!(payload.devices.len(), 1);
+    assert!(!payload.devices[0].is_active);
+  }
+}
+
+impl Network {
+  /// Complete the fetch through the same pump/CLI error policy as other requests.
+  pub(super) async fn finish_made_for_you(&mut self, result: anyhow::Result<Vec<DiscoverShelf>>) {
+    match result {
+      Ok(shelves) => self.app.lock().await.end_discover_fetch(Some(shelves)),
+      Err(error) => {
+        self.app.lock().await.end_discover_fetch(None);
+        self.handle_error(error).await;
+      }
+    }
+  }
+}

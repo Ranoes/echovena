@@ -1,0 +1,350 @@
+use crate::core::app::{ActiveBlock, App, ArtistBlock, SearchResultBlock};
+use crate::core::user_config::Theme;
+use crate::tui::theme::ThemeExt;
+use ratatui::{
+  layout::Rect,
+  style::{Modifier, Style},
+  text::{Line, Span},
+  widgets::{Block, BorderType, Borders, List, ListItem, ListState},
+  Frame,
+};
+use rspotify::model::artist::SimplifiedArtist;
+use std::cell::Cell;
+use std::time::Duration;
+
+pub fn get_search_results_highlight_state(
+  app: &App,
+  block_to_match: SearchResultBlock,
+) -> (bool, bool) {
+  let current_route = app.get_current_route();
+  (
+    app.view.search_selected_block == block_to_match,
+    current_route.hovered_block == ActiveBlock::SearchResultBlock
+      && app.view.search_hovered_block == block_to_match,
+  )
+}
+
+pub fn get_artist_highlight_state(app: &App, block_to_match: ArtistBlock) -> (bool, bool) {
+  let current_route = app.get_current_route();
+  if let Some(artist) = &app.artist {
+    let is_hovered = artist.artist_selected_block == block_to_match;
+    let is_selected = current_route.hovered_block == ActiveBlock::ArtistBlock
+      && artist.artist_hovered_block == block_to_match;
+    (is_hovered, is_selected)
+  } else {
+    (false, false)
+  }
+}
+
+/// Prefix for folder rows in the sidebar and the playlist picker. A text
+/// glyph with no emoji presentation, so it takes the theme's text color (an
+/// emoji such as 📁 is drawn as a fixed-color picture no theme can recolor).
+pub const FOLDER_ICON: &str = "\u{25B8}";
+
+/// Bold key hint for help bars, e.g. the "↑/↓" in "↑/↓ Navigate".
+pub fn hint_span(key: &'static str, theme: Theme) -> Span<'static> {
+  Span::styled(
+    key,
+    Style::default()
+      .fg(theme.hint.into())
+      .add_modifier(Modifier::BOLD),
+  )
+}
+
+pub fn get_color((is_active, is_hovered): (bool, bool), theme: Theme) -> Style {
+  match (is_active, is_hovered) {
+    (true, _) => Style::default()
+      .fg(theme.selected.into())
+      .bg(theme.background.into()),
+    (false, true) => Style::default()
+      .fg(theme.hovered.into())
+      .bg(theme.background.into()),
+    _ => Style::default()
+      .fg(theme.inactive.into())
+      .bg(theme.background.into()),
+  }
+}
+
+/// Eight call-site arguments: the panel pairs are (highlight state, cursor,
+/// scroll cell) so each list owns its own offset; cf. `draw_table`.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_selectable_list<S>(
+  f: &mut Frame<'_>,
+  app: &App,
+  layout_chunk: Rect,
+  title: &str,
+  items: &[S],
+  highlight_state: (bool, bool),
+  selected_index: Option<usize>,
+  scroll_offset: &Cell<usize>,
+) where
+  S: std::convert::AsRef<str>,
+{
+  let mut state = ListState::default();
+
+  let visible_rows = layout_chunk.height.saturating_sub(2) as usize; // inner area without borders
+  let max_offset = items.len().saturating_sub(visible_rows);
+  let offset = scroll_offset.get().min(max_offset);
+
+  *state.offset_mut() = offset;
+  state.select(selected_index);
+
+  let lst_items: Vec<ListItem> = items
+    .iter()
+    .map(|i| ListItem::new(Span::raw(i.as_ref())))
+    .collect();
+
+  let block = Block::default()
+    .borders(Borders::ALL)
+    .border_type(BorderType::Rounded)
+    .title(Span::styled(
+      title,
+      get_color(highlight_state, app.user_config.theme),
+    ))
+    .border_style(get_color(highlight_state, app.user_config.theme));
+
+  let list = List::new(lst_items)
+    .block(block)
+    .style(app.user_config.theme.base_style())
+    .highlight_style(
+      get_color(highlight_state, app.user_config.theme)
+        .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+    )
+    .highlight_symbol(
+      Line::from(format!("{} ", app.user_config.behavior.list_highlight_icon))
+        .style(get_color(highlight_state, app.user_config.theme)),
+    );
+
+  f.render_stateful_widget(list, layout_chunk, &mut state);
+
+  scroll_offset.set(state.offset());
+}
+
+#[cfg(feature = "cover-art")]
+pub fn cover_art_status(app: &App) -> &'static str {
+  use crate::core::art::CoverArtStatus;
+  let strings = &app.strings().screens;
+  match app.cover_art.status {
+    CoverArtStatus::Loading => strings.cover_loading,
+    CoverArtStatus::Unavailable => strings.cover_source_unavailable,
+    CoverArtStatus::Failed => strings.cover_failed,
+    CoverArtStatus::Loaded | CoverArtStatus::NotStarted => strings.cover_empty,
+  }
+}
+
+pub fn create_artist_string(artists: &[SimplifiedArtist]) -> String {
+  artists
+    .iter()
+    .map(|artist| artist.name.to_string())
+    .collect::<Vec<String>>()
+    .join(", ")
+}
+
+/// Join a domain artist list's display names with `", "` for rendering.
+///
+/// Source-agnostic counterpart to [`create_artist_string`] (which takes the
+/// rspotify `SimplifiedArtist`). Use this once a screen's data is domain-typed
+/// ([`crate::core::plugin_api::ArtistRef`], e.g. `AlbumInfo::artists`), so the
+/// renderer needs no rspotify types. Note `TrackInfo::artists` is already
+/// `Vec<String>` and can be `.join(", ")` directly.
+// Wired up by the per-screen migration slices, not yet by the binary.
+#[allow(dead_code)]
+pub fn join_artist_names(artists: &[crate::core::plugin_api::ArtistRef]) -> String {
+  artists
+    .iter()
+    .map(|artist| artist.name.as_str())
+    .collect::<Vec<&str>>()
+    .join(", ")
+}
+
+// Frontend-neutral time formatting lives in `core/format.rs`; re-exported so
+// the many draw-fn callers keep their `util::` paths.
+pub use crate::core::format::{display_track_progress, millis_to_minutes};
+
+/// Truncate at extended grapheme boundaries and measure the complete prefix.
+/// Variation selectors and joined emoji can change a preceding character's width.
+pub fn truncate_text(s: &str, width: usize) -> String {
+  use unicode_segmentation::UnicodeSegmentation;
+  use unicode_width::UnicodeWidthStr;
+  if s.width() <= width {
+    return s.to_string();
+  }
+  if width == 0 {
+    return String::new();
+  }
+  let mut end = 0;
+  for (start, grapheme) in s.grapheme_indices(true) {
+    let next = start + grapheme.len();
+    if s[..next].width() + "…".width() > width {
+      break;
+    }
+    end = next;
+  }
+  format!("{}…", &s[..end])
+}
+
+/// Pad translated labels to a minimum number of terminal cells.
+pub fn pad_to_width(text: &str, width: usize) -> String {
+  use unicode_width::UnicodeWidthStr;
+  format!("{text}{}", " ".repeat(width.saturating_sub(text.width())))
+}
+
+// `percentage` param needs to be between 0 and 1
+pub fn get_percentage_width(width: u16, percentage: f32) -> u16 {
+  let padding = 3;
+  let width = width.saturating_sub(padding);
+  (f32::from(width) * percentage) as u16
+}
+
+/// The year of a release date (`YYYY`, `YYYY-MM` or `YYYY-MM-DD`).
+/// Spotify reports an unknown date as `0000`, which counts as none.
+pub fn release_year(date: Option<&str>) -> Option<&str> {
+  let year = date?.get(..4)?;
+  (year.bytes().all(|b| b.is_ascii_digit()) && year != "0000").then_some(year)
+}
+
+// Ensure track progress percentage is between 0 and 100 inclusive
+pub fn get_track_progress_percentage(song_progress_ms: u128, track_duration: Duration) -> u16 {
+  let min_perc = 0_f64;
+  let track_progress = std::cmp::min(song_progress_ms, track_duration.as_millis());
+  let track_perc = (track_progress as f64 / track_duration.as_millis() as f64) * 100_f64;
+  min_perc.max(track_perc) as u16
+}
+
+// Make better use of space on small terminals
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn truncation_keeps_complete_graphemes_within_the_cell_budget() {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+    for text in [
+      "abcdefghijklmnopqr#\u{FE0F}x",
+      "a\u{301}bcd",
+      "家人👨‍👩‍👧‍👦音乐",
+      "👍🏽🎵abc",
+      "中文测试",
+      "abcdefgh",
+    ] {
+      for width in 0..=24 {
+        let truncated = truncate_text(text, width);
+        assert!(
+          truncated.width() <= width,
+          "{text:?} at {width}: {truncated:?}"
+        );
+        if truncated != text && width > 0 {
+          let prefix = truncated.strip_suffix('…').unwrap();
+          assert!(text.starts_with(prefix));
+          assert!(
+            prefix.is_empty()
+              || text
+                .grapheme_indices(true)
+                .any(|(i, g)| i + g.len() == prefix.len())
+          );
+        }
+        let padded = super::super::help::padded_help_cell(text, width);
+        assert_eq!(padded.width(), width, "{text:?}: {padded:?}");
+      }
+    }
+    assert_eq!(
+      truncate_text("abcdefghijklmnopqr#\u{FE0F}x", 20),
+      "abcdefghijklmnopqr…"
+    );
+    assert_eq!(truncate_text("a\u{301}bc", 2), "a\u{301}…");
+    assert_eq!(truncate_text("abcdef", 4), "abc…");
+    assert_eq!(truncate_text("English", 7), "English");
+    assert_eq!(super::super::help::padded_help_cell("abc", 5), "abc  ");
+  }
+
+  #[test]
+  fn join_artist_names_test() {
+    use crate::core::plugin_api::ArtistRef;
+    let artists = vec![
+      ArtistRef {
+        id: None,
+        name: "Daft Punk".to_string(),
+      },
+      ArtistRef {
+        id: Some("abc".to_string()),
+        name: "Pharrell".to_string(),
+      },
+    ];
+    assert_eq!(join_artist_names(&artists), "Daft Punk, Pharrell");
+    assert_eq!(join_artist_names(&[]), "");
+  }
+
+  #[test]
+  fn release_year_reads_the_first_four_digits_of_any_date_precision() {
+    for date in ["2024", "2024-05", "2024-05-17"] {
+      assert_eq!(release_year(Some(date)), Some("2024"), "{date}");
+    }
+  }
+
+  #[test]
+  fn release_year_is_none_for_a_missing_short_or_zero_date() {
+    for date in [None, Some(""), Some("19"), Some("0000"), Some("abcd-01-01")] {
+      assert_eq!(release_year(date), None, "{date:?}");
+    }
+  }
+
+  #[test]
+  fn get_track_progress_percentage_test() {
+    let track_length = Duration::from_millis(60 * 1000);
+    assert_eq!(get_track_progress_percentage(0, track_length), 0);
+    assert_eq!(
+      get_track_progress_percentage((60 * 1000) / 2, track_length),
+      50
+    );
+
+    // If progress is somehow higher than total duration, 100 should be max
+    assert_eq!(
+      get_track_progress_percentage(60 * 1000 * 2, track_length),
+      100
+    );
+  }
+
+  #[test]
+  fn percentage_width_is_zero_when_the_pane_is_no_wider_than_the_padding() {
+    for width in 0..=3 {
+      assert_eq!(get_percentage_width(width, 0.5), 0, "width {width}");
+    }
+  }
+
+  #[test]
+  fn percentage_width_applies_the_percentage_after_the_padding() {
+    assert_eq!(get_percentage_width(103, 0.5), 50);
+  }
+
+  #[test]
+  fn truncate_text_keeps_text_that_fits() {
+    assert_eq!(truncate_text("abc", 4), "abc");
+    assert_eq!(truncate_text("abcd", 4), "abcd");
+  }
+
+  #[test]
+  fn truncate_text_ends_long_text_with_a_single_ellipsis_char() {
+    assert_eq!(truncate_text("abcdef", 4), "abc…");
+  }
+
+  #[test]
+  fn truncate_text_counts_chars_not_bytes() {
+    let truncated = truncate_text("héllo wörld", 5);
+    assert_eq!(truncated, "héll…");
+    assert_eq!(truncated.chars().count(), 5);
+  }
+  #[test]
+  fn truncation_and_padding_use_terminal_cells_for_chinese() {
+    use unicode_width::UnicodeWidthStr;
+    assert_eq!(truncate_text("中文歌曲", 5), "中文…");
+    assert_eq!(truncate_text("中文", 0), "");
+    assert_eq!(truncate_text("中文", 1), "…");
+    assert_eq!(truncate_text("中文", 4), "中文");
+    assert_eq!(pad_to_width("播放", 7), "播放   ");
+    assert_eq!(pad_to_width("Playing", 7), "Playing");
+    for width in 0..8 {
+      assert!(truncate_text("中文歌曲", width).width() <= width);
+    }
+  }
+}

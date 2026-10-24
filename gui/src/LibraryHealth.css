@@ -1,0 +1,286 @@
+/* Library health: the linked playlists, then the selected link's mirrors. */
+.health {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 8px;
+  min-height: 0;
+  outline: none;
+}
+
+.health button {
+  height: 32px;
+  padding: 0 16px;
+  border: 1px solid var(--quiet);
+  border-radius: 999px;
+  background: transparent;
+  font-weight: 700;
+}
+
+.health button:not(:disabled):hover {
+  border-color: var(--text);
+  transform: scale(1.04);
+}
+
+.health-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: 16px 24px 0;
+  overflow-y: auto;
+}
+
+.health .crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  margin-bottom: 16px;
+  padding: 0 12px 0 8px;
+  border: none;
+  background: var(--frame);
+}
+
+.health .crumb:not(:disabled):hover {
+  background: var(--raised);
+}
+
+.health-title {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.health h1 {
+  margin: 0;
+  font-size: 32px;
+  font-weight: 700;
+}
+
+.health-title span,
+.health .sub,
+.health .empty p {
+  color: var(--sub);
+}
+
+.health .label {
+  color: var(--sub);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.health-tabs {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.health-tabs [role="tab"] {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: var(--text);
+  color: var(--frame);
+}
+
+.health .empty {
+  padding: 16px 0;
+}
+
+.health .empty p {
+  margin: 0 0 8px;
+  max-width: 560px;
+}
+
+.health .failed {
+  color: var(--text) !important;
+}
+
+.health [role="listbox"] {
+  border-radius: 4px;
+  outline: none;
+}
+
+.health [role="listbox"]:focus-visible {
+  outline: 1px solid var(--quiet);
+}
+
+.link-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) repeat(4, 100px) 120px;
+  column-gap: 8px;
+  align-items: center;
+  height: 48px;
+  padding: 0 12px 0 8px;
+  border-radius: 4px;
+  cursor: default;
+}
+
+.link-row:not(.head):hover {
+  background: var(--hover);
+}
+
+.link-row.head {
+  height: 36px;
+  margin-top: 16px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--rule);
+  border-radius: 0;
+  color: var(--sub);
+  font-size: 13px;
+}
+
+.link-row[aria-selected="true"] {
+  background: var(--press);
+}
+
+.link-row .n {
+  color: var(--sub);
+  text-align: right;
+}
+
+.link-row .name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.link-row .name b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 16px;
+  font-weight: 400;
+}
+
+.cell,
+.link-row:not(.head) .when {
+  font-size: 13px;
+}
+
+.cell.master {
+  color: var(--quiet);
+}
+
+.cell.synced {
+  color: var(--text);
+}
+
+.cell.unmatched {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.cell.never {
+  color: var(--sub);
+}
+
+.cell.none {
+  color: var(--quiet);
+}
+
+.link-row .when {
+  color: var(--sub);
+}
+
+.health .keys {
+  margin-top: auto;
+  padding: 12px 0;
+  border-top: none;
+}
+
+.health aside {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  padding: 24px 20px;
+  overflow-y: auto;
+  border-radius: var(--radius);
+  background: #181818;
+}
+
+.health h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.mirror-box {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  background: var(--raised);
+}
+
+.mirror-box > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.mirror-box .label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+}
+
+.mirror-box .tag,
+.mirror-box .detail,
+.mirror-box .miss {
+  color: var(--sub);
+  font-size: 13px;
+}
+
+.mirror-box.warn .tag {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.health .line {
+  margin: 0;
+  color: var(--sub);
+  font-size: 13px;
+}
+
+.health-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.health-actions .primary {
+  border: none;
+  background: var(--text);
+  color: var(--frame);
+}
+
+.health-actions .danger {
+  border-color: var(--text);
+}
+
+@media (max-width: 1100px) {
+  .health {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  .health aside {
+    max-height: 40vh;
+  }
+
+  .link-row {
+    grid-template-columns: 24px minmax(0, 1fr) repeat(4, 80px);
+  }
+
+  .link-row .when {
+    display: none;
+  }
+}

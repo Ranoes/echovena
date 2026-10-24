@@ -1,0 +1,13 @@
+#[cfg(feature = "cover-art")]
+pub mod cover_art;
+pub mod dev_inspect;
+pub mod event;
+pub mod first_run;
+pub mod fuzzy;
+pub mod handlers;
+pub mod keymap;
+pub mod layout;
+pub mod onboarding;
+pub mod runner;
+pub mod theme;
+pub mod ui;

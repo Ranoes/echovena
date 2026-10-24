@@ -1,0 +1,23 @@
+{
+  "version": "1.0.0",
+  "description": "Lossless Hi-Res FLAC Terminal Music Streamer, Multi-Platform Playlist Sync & Live Karaoke TUI",
+  "homepage": "https://github.com/Ranoes/echovena",
+  "license": "MIT",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/Ranoes/echovena/releases/download/v1.0.0/echovena-windows-x86_64.zip",
+      "bin": "echovena.exe"
+    }
+  },
+  "suggest": {
+    "yt-dlp": "yt-dlp"
+  },
+  "checkver": "github",
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/Ranoes/echovena/releases/download/v$version/echovena-windows-x86_64.zip"
+      }
+    }
+  }
+}

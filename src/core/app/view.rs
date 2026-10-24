@@ -1,0 +1,239 @@
+use super::*;
+/// Presentation state of the terminal frontend, grouped on [`App::view`].
+///
+/// Everything in here is a cursor, a scroll offset, an edit buffer, a focus
+/// marker, a popup flag or the terminal geometry: state that tells a frontend
+/// *where the user is looking*, not what the player or the library holds. It
+/// lives on `App` today so the existing handlers and draw functions keep one
+/// argument, but nothing outside the TUI should depend on it. Producers that
+/// replace a list (the network layer, a source dispatcher, a script effect)
+/// still reset or clamp a few of these cursors directly; the
+/// `view_writes_outside_tui` ratchet in `src/gates.rs` counts those writes and
+/// exists to burn them down to zero. The table cursors (`track_table_index`, the
+/// `search_*` fields, `recently_played_index`, `library_selected`) are reset
+/// through `App` methods such as `set_track_table` and `set_search_results`,
+/// so a producer never writes them.
+///
+/// Add a field here only when it is presentation state. A pending operation or
+/// a value another frontend would also need belongs on `App` itself.
+#[derive(Default)]
+pub struct ViewState {
+  /// Terminal geometry as of the last frame. The small/large search limits
+  /// derive from it.
+  pub size: Viewport,
+  /// What the terminal can report about key presses, probed at startup and
+  /// consulted when the rebind flow validates a capture.
+  pub terminal_input_caps: TerminalInputCapabilities,
+
+  // Inputs:
+  // input is the string for input;
+  // input_idx is the index of the cursor in terms of character;
+  // input_cursor_position is the sum of the width of characters preceding the cursor.
+  // Reason for this complication is due to non-ASCII characters, they may
+  // take more than 1 bytes to store and more than 1 character width to display.
+  pub input: Vec<char>,
+  pub input_idx: usize,
+  pub input_cursor_position: u16,
+  pub input_context: InputContext,
+  /// Horizontal scroll offset for the input box, computed during rendering.
+  pub input_scroll_offset: Cell<u16>,
+
+  // Sidebar, library and table cursors
+  pub home_scroll: u16,
+  pub selected_playlist_index: Option<usize>,
+  pub active_playlist_index: Option<usize>,
+  pub saved_album_tracks_index: usize,
+  pub album_list_index: usize,
+  pub artists_list_index: usize,
+  pub shows_list_index: usize,
+  pub episode_list_index: usize,
+  pub queue_selected_index: usize,
+  /// Cursor in the Local Files folder list.
+  pub local_playlists_index: usize,
+  /// Hold the last sidebar block the user was on.
+  /// Defaults to [`SidebarBlock::Library`]
+  pub last_sidebar_block: SidebarBlock,
+  /// Block and focus state saved when the playbar takes focus.
+  pub last_playbar_origin: Option<PlaybarOrigin>,
+
+  // Table cursors. A producer that replaces a list resets or clamps these
+  // through an `App` method (`set_track_table`, `set_search_results`, ...),
+  // never directly.
+  /// The row under the cursor in the shared track table.
+  pub track_table_index: usize,
+  /// First row the track table shows. Persisted across frames so the cursor
+  /// can move inside the visible window without dragging the view; updated
+  /// during draw, hence `Cell`.
+  pub track_table_scroll_offset: Cell<usize>,
+  /// The sidebar row the cursor is on, by identity.
+  pub library_selected: LibraryTarget,
+  /// The row under the cursor in the Recently Played table.
+  pub recently_played_index: usize,
+  // The search screen: one cursor per result block, plus its focus.
+  pub search_selected_album_index: Option<usize>,
+  pub search_selected_artists_index: Option<usize>,
+  pub search_selected_playlists_index: Option<usize>,
+  pub search_selected_tracks_index: Option<usize>,
+  pub search_selected_shows_index: Option<usize>,
+  pub search_hovered_block: SearchResultBlock,
+  pub search_selected_block: SearchResultBlock,
+
+  // The `d` device/source picker
+  pub selected_device_index: Option<usize>,
+  /// Cursor within the Source panel of the `d` picker (index into [`Source::picker_sources`]).
+  pub source_list_index: usize,
+  /// Which panel of the `d` picker currently has focus.
+  pub source_device_focus: SourceFocus,
+
+  // Help menu
+  pub help_docs_size: u32,
+  pub help_menu_page: u32,
+  pub help_menu_max_lines: u32,
+  pub help_menu_offset: u32,
+  /// Text filter applied to the rows in the Help menu.
+  pub help_filter: String,
+  /// Whether typed keys are currently editing [`Self::help_filter`].
+  pub help_filter_editing: bool,
+  /// Formatted Help rows for the current width/keys/filter; `None` until the
+  /// Help menu is first prepared for rendering.
+  pub help_menu_model: Option<HelpMenuModel>,
+
+  // Modal dialogs
+  /// Which modal dialog is open, if any.
+  pub dialog: Option<String>,
+  /// The yes/no cursor of the open dialog.
+  pub confirm: bool,
+
+  /// Scroll/browse state for the lyrics view.
+  pub lyrics_view: LyricsViewState,
+  /// Set when `V` leaves the Spotify pitch view; cleared when the analysis screen opens.
+  pub pitch_dismissed: bool,
+
+  // Settings screen state
+  pub settings_category: SettingsCategory,
+  pub settings_selected_index: usize,
+  pub settings_edit_mode: bool,
+  pub settings_edit_buffer: String,
+  /// Fuzzy filter over the current category's rows. Survives a tab switch, so
+  /// one query can be walked across categories.
+  pub settings_filter: String,
+  /// Whether typed keys are currently editing [`Self::settings_filter`].
+  pub settings_filter_editing: bool,
+  pub settings_unsaved_prompt_visible: bool,
+  /// Yes/no cursor of the unsaved-changes prompt. Set to `true` whenever the
+  /// prompt opens; only read while the prompt is visible.
+  pub settings_unsaved_prompt_save_selected: bool,
+
+  // Discover and Stats screens
+  /// Selected index in the Discover view
+  pub discover_selected_index: usize,
+  /// Selected index in the Stats screen's Top Tracks list
+  pub stats_selected_track: usize,
+
+  // Playlist sync screen and its picker
+  /// Cursor in the link list.
+  pub playlist_sync_selected_link: usize,
+  /// Cursor in the mirror picker dialog.
+  pub playlist_sync_picker_index: usize,
+
+  // Sort menu state
+  /// Whether the sort menu popup is visible
+  pub sort_menu_visible: bool,
+  /// Whether the Relay Health modal is visible
+  pub relay_status_visible: bool,
+  /// Whether the URL Import modal is visible (U key)
+  pub url_import_visible: bool,
+  /// Input buffer for the URL Import modal
+  pub url_import_input: Vec<char>,
+  /// Cursor position in the URL Import input
+  pub url_import_cursor: usize,
+  /// Status message displayed in the URL Import modal
+  pub url_import_status: Option<String>,
+  /// Whether an import operation is running in the background
+  pub url_import_in_progress: bool,
+  /// Whether the Full-Screen Karaoke Stage View (K key) is visible
+  pub karaoke_stage_visible: bool,
+  /// Whether Romanization/translation line display is enabled (T key)
+  pub karaoke_show_romanization: bool,
+  /// Active KaraokeTimeline for live rendering
+  pub active_karaoke_timeline: Option<crate::lyrics::KaraokeTimeline>,
+  /// Currently selected sort option in the menu
+  pub sort_menu_selected: usize,
+  /// Current sort context (what we're sorting)
+  pub sort_context: Option<SortContext>,
+
+  // Animation
+  /// Animation frame counter for the "Liked" heart flash effect (0-10)
+  pub liked_song_animation_frame: Option<u8>,
+  /// Global animation tick counter, incremented every tick.
+  pub animation_tick: u64,
+
+  // Listening party inputs
+  /// Input buffer for the party join code
+  pub party_input: Vec<char>,
+  /// Cursor position in party code input
+  pub party_input_idx: usize,
+  /// Input buffer for the required party guest name
+  pub party_join_name: Vec<char>,
+
+  // Add-to-playlist picker dialog
+  /// Selected playlist index in the add-to-playlist picker dialog
+  pub playlist_picker_selected_index: usize,
+  /// Folder ID the add-to-playlist picker dialog is viewing (0 = root)
+  pub playlist_picker_folder_id: usize,
+
+  // Friends screen state
+  /// Cursor position in the friends list
+  pub friend_selected_index: usize,
+  /// Active filter (All / Online)
+  pub friend_filter: FriendFilter,
+  /// Inline search / filter input on the Friends screen
+  pub friend_search_input: Vec<char>,
+  /// Whether the "Add Friend" overlay dialog is open
+  pub friend_add_dialog_visible: bool,
+  /// Which tab is active inside the add-friend dialog
+  pub friend_add_mode: FriendAddMode,
+  /// Input buffer for the "add by friend code" text field
+  pub friend_add_input: Vec<char>,
+  /// Input buffer for the "search by username" text field in the add dialog
+  pub friend_user_search_input: Vec<char>,
+  /// Selected row in the user-search results list
+  pub friend_user_search_selected: usize,
+
+  // Create Playlist form state
+  pub create_playlist_name: Vec<char>,
+  pub create_playlist_name_idx: usize,
+  pub create_playlist_name_cursor: u16,
+  pub create_playlist_stage: CreatePlaylistStage,
+  pub create_playlist_search_input: Vec<char>,
+  pub create_playlist_search_idx: usize,
+  pub create_playlist_search_cursor: u16,
+  pub create_playlist_selected_result: usize,
+  pub create_playlist_focus: CreatePlaylistFocus,
+
+  // Plugin surfaces
+  /// Vertical scroll for the focused plugin screen.
+  pub plugin_screen_scroll: u16,
+  /// Scroll offset for the plugin popup.
+  pub plugin_popup_scroll: u16,
+
+  pub search_tracks_scroll_offset: Cell<usize>,
+  pub search_artists_scroll_offset: Cell<usize>,
+  pub search_albums_scroll_offset: Cell<usize>,
+  pub search_playlists_scroll_offset: Cell<usize>,
+  pub search_shows_scroll_offset: Cell<usize>,
+  pub library_scroll_offset: Cell<usize>,
+  pub playlist_scroll_offset: Cell<usize>,
+  pub local_files_scroll_offset: Cell<usize>,
+  pub artist_top_tracks_scroll_offset: Cell<usize>,
+  pub artist_albums_scroll_offset: Cell<usize>,
+  pub artist_related_artists_scroll_offset: Cell<usize>,
+  pub playlist_sync_scroll_offset: Cell<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlaybarOrigin {
+  pub route: RouteId,
+  pub block: ActiveBlock,
+  pub was_focused: bool,
+}

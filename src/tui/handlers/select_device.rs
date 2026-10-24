@@ -1,0 +1,156 @@
+use super::common_key_events;
+use crate::core::action::Action;
+use crate::core::app::{App, SourceFocus};
+use crate::core::source::Source;
+use crate::tui::event::Key;
+
+pub fn handler(key: Key, app: &mut App) {
+  match key {
+    Key::Tab => {
+      // Devices are Spotify Connect only, so keep focus pinned to the Source
+      // list when Local is active (the Devices panel is dimmed).
+      app.view.source_device_focus = if app.active_source != Source::Spotify {
+        SourceFocus::Source
+      } else {
+        match app.view.source_device_focus {
+          SourceFocus::Source => SourceFocus::Devices,
+          SourceFocus::Devices => SourceFocus::Source,
+        }
+      };
+    }
+    k if common_key_events::down_event(k, &app.user_config.keys) => {
+      match app.view.source_device_focus {
+        SourceFocus::Source => {
+          app.view.source_list_index = common_key_events::on_down_press_handler(
+            Source::picker_sources(),
+            Some(app.view.source_list_index),
+          );
+        }
+        SourceFocus::Devices => {
+          if let Some(p) = app.devices() {
+            if let Some(selected_device_index) = app.view.selected_device_index {
+              let next_index =
+                common_key_events::on_down_press_handler(&p.devices, Some(selected_device_index));
+              app.view.selected_device_index = Some(next_index);
+            }
+          }
+        }
+      }
+    }
+    k if common_key_events::up_event(k, &app.user_config.keys) => {
+      match app.view.source_device_focus {
+        SourceFocus::Source => {
+          app.view.source_list_index = common_key_events::on_up_press_handler(
+            Source::picker_sources(),
+            Some(app.view.source_list_index),
+          );
+        }
+        SourceFocus::Devices => {
+          if let Some(p) = app.devices() {
+            if let Some(selected_device_index) = app.view.selected_device_index {
+              let next_index =
+                common_key_events::on_up_press_handler(&p.devices, Some(selected_device_index));
+              app.view.selected_device_index = Some(next_index);
+            }
+          }
+        }
+      }
+    }
+    k if common_key_events::high_event(k) => {
+      if app.view.source_device_focus == SourceFocus::Devices {
+        if let Some(_p) = app.devices() {
+          if app.view.selected_device_index.is_some() {
+            app.view.selected_device_index = Some(common_key_events::on_high_press_handler());
+          }
+        }
+      }
+    }
+    k if common_key_events::middle_event(k) => {
+      if app.view.source_device_focus == SourceFocus::Devices {
+        if let Some(p) = app.devices() {
+          if app.view.selected_device_index.is_some() {
+            let next_index = common_key_events::on_middle_press_handler(&p.devices);
+            app.view.selected_device_index = Some(next_index);
+          }
+        }
+      }
+    }
+    k if common_key_events::low_event(k) => {
+      if app.view.source_device_focus == SourceFocus::Devices {
+        if let Some(p) = app.devices() {
+          if app.view.selected_device_index.is_some() {
+            let next_index = common_key_events::on_low_press_handler(&p.devices);
+            app.view.selected_device_index = Some(next_index);
+          }
+        }
+      }
+    }
+    Key::Enter => match app.view.source_device_focus {
+      SourceFocus::Source => select_source(app),
+      SourceFocus::Devices => transfer_to_selected_device(app),
+    },
+    _ => {}
+  }
+}
+
+/// Commit the highlighted source as the new active source and close the picker.
+/// This is browse-scope only: it never starts or stops playback.
+fn select_source(app: &mut App) {
+  let source = Source::picker_sources()[app.view.source_list_index];
+  // Picking Apple Music again reloads it: Music's library can change under us.
+  // Picking Spotify again without a session retries the login.
+  if app.active_source != source
+    || source == Source::AppleMusic
+    || (source == Source::Spotify && !app.spotify_connected)
+  {
+    app.apply(Action::SelectSource(source));
+    // Reset the sidebar playlist cursor to the top of the new source's list.
+    app.view.selected_playlist_index = Some(0);
+    if source == Source::Local {
+      app.view.local_playlists_index = 0;
+    }
+  }
+
+  app.set_status_message(
+    app
+      .strings()
+      .status
+      .app
+      .source_selected(app.strings().sidebar.source_label(source)),
+    4,
+  );
+  app.pop_navigation_stack();
+}
+
+/// Existing behaviour: transfer Spotify playback to the highlighted device.
+fn transfer_to_selected_device(app: &mut App) {
+  let Some(index) = app.view.selected_device_index else {
+    app.set_status_message(app.strings().status.app.no_playback_device_selected, 4);
+    return;
+  };
+
+  let Some(devices) = app.devices() else {
+    app.set_status_message(app.strings().status.app.no_playback_devices, 4);
+    return;
+  };
+
+  let Some(device) = devices.devices.get(index) else {
+    app.set_status_message(app.strings().status.app.playback_device_unavailable, 4);
+    return;
+  };
+
+  let Some(device_id) = &device.id else {
+    app.set_status_message(app.strings().status.app.playback_device_no_id, 4);
+    return;
+  };
+
+  // Both clones end the `app.devices` borrow before the apply.
+  let device_id = device_id.clone();
+  let device_name = device.name.clone();
+  app.set_status_message(app.strings().status.app.switching_device(&device_name), 4);
+  app.apply(Action::TransferPlayback {
+    device_id,
+    persist: true,
+  });
+  app.pop_navigation_stack();
+}

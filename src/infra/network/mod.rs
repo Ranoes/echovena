@@ -1,0 +1,2848 @@
+#[cfg(any(feature = "mcp-server", feature = "ai-dj"))]
+pub mod dj;
+pub mod friends;
+pub mod ids;
+pub mod library;
+pub mod mapping;
+pub mod metadata;
+pub mod native_shuffle;
+pub mod playback;
+pub mod recommend;
+pub mod requests;
+pub mod search;
+pub mod sync;
+pub mod user;
+pub mod utils;
+
+#[cfg(test)]
+use crate::core::app::SPOTIFY_NOT_CONNECTED_STATUS;
+use crate::core::app::{App, PlaybackOwner};
+use crate::core::auth::SpotifyLogin;
+use crate::core::plugin_api::{ShowInfo, TrackInfo};
+use crate::core::source::Source;
+use anyhow::anyhow;
+use rspotify::model::{
+  album::SimplifiedAlbum,
+  enums::{Country, RepeatState},
+};
+use rspotify::prelude::Id;
+use std::sync::Arc;
+
+/// How long the in-app login waits for the approval in the browser.
+const LOGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+use tokio::sync::Mutex;
+// Re-export traits
+use self::library::LibraryNetwork;
+use self::metadata::MetadataNetwork;
+use self::playback::PlaybackNetwork;
+use self::recommend::RecommendationNetwork;
+use self::search::SearchNetwork;
+use self::user::UserNetwork;
+use self::utils::UtilsNetwork;
+
+// Most variants are constructed by TUI handlers, so a headless build counts
+// them as dead; every tui-enabled CI leg lints the enum in full. Never `cfg`
+// a variant out for this - a build leg missing a feature would then compile
+// clean while the feature is silently absent.
+#[cfg_attr(not(feature = "tui"), allow(dead_code))]
+pub enum IoEvent {
+  GetCurrentPlayback,
+  /// After a track transition (e.g., EndOfTrack), ensure we don't end up paused on the next item.
+  /// The payload is the previous track identifier (either base62 id or a `spotify:track:` URI).
+  #[allow(dead_code)]
+  EnsurePlaybackContinues(String),
+  GetPlaylists,
+  GetDevices,
+  /// Refresh the device list without opening the device picker (plugin data reads).
+  #[cfg_attr(not(feature = "scripting"), allow(dead_code))]
+  GetDevicesSilent,
+  GetSearchResults(String, Option<Country>),
+  /// Playlist id/URI, page offset.
+  GetPlaylistItems(String, u32),
+  /// Playlist id/URI, query.
+  SearchPlaylistTracks(String, String),
+  GetCurrentSavedTracks(Option<u32>),
+  /// Context URI (album/artist/playlist), specific playable URIs, start offset.
+  StartPlayback(Option<String>, Option<Vec<String>>, Option<usize>),
+  /// Restore a generation-guarded native playback snapshot after rebuilding
+  /// the librespot backend. This is a direct Spirc load and does not use the Web API.
+  #[cfg(feature = "streaming")]
+  RestoreNativePlayback(u64),
+  /// Replay the published native Spotify queue slot after recovery. Routed by
+  /// the native queue before the Spotify network handler.
+  #[cfg(feature = "streaming")]
+  ReplayPublishedSpotifyQueueSlot,
+  UpdateSearchLimits(u32, u32),
+  Seek(u32),
+  NextTrack,
+  PreviousTrack,
+  ForcePreviousTrack,
+  Shuffle(bool), // desired shuffle state
+  Repeat(RepeatState),
+  PausePlayback,
+  ChangeVolume(u8),
+  /// Artist id/URI, display name, market.
+  GetArtist(String, String, Option<Country>),
+  GetAlbumTracks(Box<SimplifiedAlbum>),
+  /// Seed artist ids/URIs, seed track ids/URIs, first seed track, market.
+  GetRecommendationsForSeed(
+    Option<Vec<String>>,
+    Option<Vec<String>>,
+    Box<Option<TrackInfo>>,
+    Option<Country>,
+  ),
+  GetCurrentUserSavedAlbums(Option<u32>),
+  CurrentUserSavedAlbumsContains(Vec<String>),
+  CurrentUserSavedAlbumDelete(String),
+  CurrentUserSavedAlbumAdd(String),
+  UserUnfollowArtists(Vec<String>),
+  UserFollowArtists(Vec<String>),
+  /// Owner user id, playlist id/URI, public flag.
+  UserFollowPlaylist(String, String, Option<bool>),
+  /// Owner user id, playlist id/URI.
+  UserUnfollowPlaylist(String, String),
+  /// Playlist id/URI, track id/URI.
+  AddTrackToPlaylist(String, String),
+  /// Playlist id/URI, track id/URI, position.
+  RemoveTrackFromPlaylistAtPosition(String, String, usize),
+  GetUser,
+  /// The audio analysis of a Spotify track, by base62 id, for the pitch view.
+  GetAudioAnalysis(String),
+  /// Playable URI (track or episode) to toggle in saved tracks.
+  ToggleSaveTrack(String),
+  /// Track id/URI, market.
+  GetRecommendationsForTrackId(String, Option<Country>),
+  GetRecentlyPlayed,
+  /// Refresh recently-played data without opening the screen (plugin data reads).
+  #[cfg_attr(not(feature = "scripting"), allow(dead_code))]
+  GetRecentlyPlayedSilent,
+  /// Pagination cursor: artist id/URI to fetch after.
+  GetFollowedArtists(Option<String>),
+  UserArtistFollowCheck(Vec<String>),
+  GetAlbum(String),
+  TransferPlaybackToDevice(String, bool),
+  #[allow(dead_code)]
+  AutoSelectStreamingDevice(String, bool, bool), // Auto-select a device by name (used for native streaming): (device name, persist_device_id, yield_to_external_playback)
+  GetAlbumForTrack(String),
+  CurrentUserSavedTracksContains(Vec<String>),
+  GetCurrentUserSavedShows(Option<u32>),
+  CurrentUserSavedShowsContains(Vec<String>),
+  CurrentUserSavedShowDelete(String),
+  CurrentUserSavedShowAdd(String),
+  GetShowEpisodes(Box<ShowInfo>),
+  GetShow(String),
+  GetCurrentShowEpisodes(String, Option<u32>),
+  /// Playable URI (track or episode) to enqueue.
+  AddItemToQueue(String),
+  GetQueue,
+  /// Advance the native cross-source queue: play the next queued item, or resume
+  /// the suspended per-source context when the queue drains. Consumed by
+  /// `infra::queue::dispatch::route_queue_event` (wired first in the pump); it
+  /// never reaches the Spotify network handler.
+  AdvanceNativeQueue,
+  /// Give up the native queue slot without playing anything else: run the same
+  /// teardown a drained queue does (stop the slot, resume the suspended
+  /// context). Dispatched by the driver's tick when the slot's output device is
+  /// gone and no replacement will open. Consumed by
+  /// `infra::queue::dispatch::route_queue_event`; it never reaches the Spotify
+  /// network handler. Only the decoded queue slot can lose a device, so in a
+  /// build without a queueable decoded source nothing dispatches it.
+  #[cfg_attr(not(feature = "audio-decode-queue"), allow(dead_code))]
+  FinishNativeQueue,
+  /// Replay the current track of the active decoded source (repeat-one). Consumed
+  /// by the per-source routers (`route_local_event` / `route_subsonic_event` /
+  /// `route_youtube_event`); it never reaches the Spotify network handler. Only
+  /// dispatched by the runner tick under a decoded source feature.
+  #[cfg_attr(not(feature = "audio-decode-queue"), allow(dead_code))]
+  ReplayCurrentTrack,
+  /// Resume a suspended native-streaming Spotify context after the native queue
+  /// drains (context URI, resume-track URI). Re-loads the context on the native
+  /// device via the existing `start_playback` machinery. `allow(dead_code)`:
+  /// only constructed under `streaming`, but the handler arm is unconditional.
+  #[allow(dead_code)]
+  ResumeSpotifyContext(Option<String>, Option<String>),
+  /// Toggle the native-Spotify client-side shuffle session on/off: reorder the
+  /// app-owned track list and reload it into Spirc (building a session
+  /// mid-playback when possible; falls back to Spirc shuffle otherwise).
+  #[cfg_attr(not(feature = "streaming"), allow(dead_code))]
+  ToggleNativeShuffleSession(bool),
+  /// Re-randomize the shuffle session for a fresh repeat-all lap (dispatched
+  /// when the last track wraps back to the first).
+  #[cfg_attr(not(feature = "streaming"), allow(dead_code))]
+  ReshuffleNativeShuffleLap,
+  /// Resume the suspended shuffle session at the given index once the native
+  /// queue drains (`None` = session exhausted, finish instead). The `u64` is the
+  /// session generation the resume was snapshotted from; the handler applies the
+  /// index only while the live session still matches, so a session replaced
+  /// mid-drain cannot inherit a stale index.
+  #[cfg_attr(not(feature = "streaming"), allow(dead_code))]
+  ResumeNativeShuffleSession(Option<usize>, u64),
+  IncrementGlobalSongCount,
+  FetchGlobalSongCount,
+  FetchAnnouncements,
+  /// Title, artists, duration in seconds, and the base62 id of a Spotify track.
+  GetLyrics(String, Vec<String>, f64, Option<String>),
+  /// Fetch Spotify's Made For You page for Discover.
+  GetMadeForYou,
+  /// Fetch all playlist tracks and apply sorting
+  FetchAllPlaylistTracksAndSort(String),
+  /// Start hosting a listening party
+  StartParty(sync::ControlMode),
+  /// Join an existing listening party by code
+  JoinParty {
+    code: String,
+    name: String,
+  },
+  /// Update the host control mode in the relay
+  SetPartyControlMode(sync::ControlMode),
+  /// Leave the current listening party
+  LeaveParty,
+  /// Broadcast current playback state to party guests (host only)
+  SyncPlayback,
+  /// Send a playback command to the party host (guest only, Phase 2)
+  #[allow(dead_code)]
+  PartyPlaybackCommand(sync::PlaybackAction),
+  /// Search tracks to add to a new playlist
+  SearchTracksForPlaylist(String),
+  /// Create a new playlist: playlist name, track ids/URIs.
+  CreateNewPlaylist(String, Vec<String>),
+  /// Fetch the current user's own friend code from echovena.com
+  GetFriendCode,
+  /// Fetch the current user's friends list from echovena.com
+  GetFriends,
+  /// Add a friend by their 6-character friend code
+  AddFriendByCode(String),
+  /// Add a friend by their echovena.com user ID
+  AddFriendById(String),
+  /// Unfollow a friend by their echovena.com user ID
+  UnfollowFriend(String),
+  /// Search echovena.com users by display name or friend code
+  SearchFriendUsers(String),
+  /// Aggregate local listening history for the Stats screen
+  LoadListeningStats(crate::infra::history::RecapPeriod),
+  /// Export the shareable HTML recap and open it in the browser
+  GenerateRecap(crate::infra::history::RecapPeriod),
+  /// List the folders under the configured local music directory (handled by
+  /// `infra::local::dispatch`; a no-op on the Spotify network).
+  GetLocalPlaylists,
+  /// List the audio files in a local folder, identified by its `file://` URI.
+  /// The URI is only read by `infra::local::dispatch` (the `local-files`
+  /// feature); without it the event is an inert no-op.
+  #[cfg_attr(not(feature = "local-files"), allow(dead_code))]
+  GetLocalTracks(String),
+  /// List the user's Subsonic server playlists (handled by
+  /// `infra::subsonic::dispatch`; a no-op on the Spotify network).
+  GetSubsonicPlaylists,
+  /// List the tracks of a Subsonic playlist, identified by its
+  /// `subsonic:playlist:` URI. Only read by `infra::subsonic::dispatch` (the
+  /// `subsonic` feature); without it the event is an inert no-op.
+  #[cfg_attr(not(feature = "subsonic"), allow(dead_code))]
+  GetSubsonicTracks(String),
+  /// Run a Subsonic catalog search and populate `app.search_results`. Only read
+  /// by `infra::subsonic::dispatch`; an inert no-op without the `subsonic` feature.
+  #[cfg_attr(not(feature = "subsonic"), allow(dead_code))]
+  GetSubsonicSearchResults(String),
+  /// List the Qobuz sidebar rows: favorites, playlists, albums (handled by
+  /// `infra::qobuz::dispatch`; a no-op on the Spotify network).
+  GetQobuzPlaylists,
+  /// List the tracks of a Qobuz sidebar row by its `qobuz:` URI. Only read by
+  /// `infra::qobuz::dispatch`; without the feature the event is an inert no-op.
+  #[cfg_attr(not(feature = "qobuz"), allow(dead_code))]
+  GetQobuzTracks(String),
+  /// Run a Qobuz catalog search and populate `app.search_results`. Only read
+  /// by `infra::qobuz::dispatch`; an inert no-op without the `qobuz` feature.
+  #[cfg_attr(not(feature = "qobuz"), allow(dead_code))]
+  GetQobuzSearchResults(String),
+  /// Start the in-TUI Qobuz browser login (handled by `infra::qobuz::dispatch`).
+  #[cfg_attr(not(feature = "qobuz"), allow(dead_code))]
+  QobuzLogin,
+  /// A start held back while Music paused: sent after an acknowledged pause
+  /// or proof the Apple Event was not delivered. The Music router hands
+  /// `event` back to the pump. Never bypasses the claim gate.
+  #[cfg_attr(
+    not(all(feature = "apple-music", target_os = "macos")),
+    allow(dead_code)
+  )]
+  AppleMusicHandoff {
+    generation: u64,
+    event: Box<IoEvent>,
+  },
+  /// Coalesced Music volume for one ownership generation. Always consumed by
+  /// the Music router, even after ownership changed, so it cannot reach a
+  /// different player. Without the router the network fallback discards it.
+  #[cfg_attr(
+    not(all(feature = "apple-music", target_os = "macos")),
+    allow(dead_code)
+  )]
+  AppleMusicVolume {
+    generation: u64,
+    volume: u8,
+  },
+  /// Load one page of a Music list (the playlists, a playlist's tracks or a
+  /// search) at `offset`. Consumed by `infra::apple_music::dispatch`, which
+  /// drops it once `generation` or the list on screen moved on.
+  #[cfg_attr(
+    not(all(feature = "apple-music", target_os = "macos")),
+    allow(dead_code)
+  )]
+  AppleMusicPage {
+    request: crate::infra::apple_music::Browse,
+    offset: usize,
+    generation: u64,
+  },
+  /// Load the configured internet-radio stations into the sidebar (handled by
+  /// `infra::radio::dispatch`; a no-op on the Spotify network).
+  GetRadioStations,
+  /// Search the radio-browser.info directory and populate `app.search_results`.
+  /// Only read by `infra::radio::dispatch`; an inert no-op without the
+  /// `internet-radio` feature.
+  #[cfg_attr(not(feature = "internet-radio"), allow(dead_code))]
+  GetRadioSearchResults(String),
+  /// Run a YouTube search (via yt-dlp) and populate `app.search_results`.
+  /// Only read by `infra::youtube::dispatch`; an inert no-op without the
+  /// `youtube` feature.
+  #[cfg_attr(not(feature = "youtube"), allow(dead_code))]
+  GetYouTubeSearchResults(String),
+  /// Load the local YouTube playlists file into the sidebar (handled by
+  /// `infra::youtube::dispatch`; a no-op on the Spotify network).
+  GetYouTubePlaylists,
+  /// Open a local YouTube playlist's tracks in the shared track table,
+  /// identified by its `youtube:playlist:` URI.
+  #[cfg_attr(not(feature = "youtube"), allow(dead_code))]
+  GetYouTubeTracks(String),
+  /// Create a local YouTube playlist with the given name.
+  #[cfg_attr(not(feature = "youtube"), allow(dead_code))]
+  CreateYouTubePlaylist(String),
+  /// Delete the local YouTube playlist with the given `youtube:playlist:` URI.
+  #[cfg_attr(not(feature = "youtube"), allow(dead_code))]
+  DeleteYouTubePlaylist(String),
+  /// Add a video (bare id or `youtube:` URI; metadata resolved from the browse
+  /// views) to a local YouTube playlist (URI or bare id).
+  #[cfg_attr(not(feature = "youtube"), allow(dead_code))]
+  AddTrackToYouTubePlaylist(String, String),
+  /// Remove a video (bare id or `youtube:` URI) from a local YouTube playlist.
+  #[cfg_attr(not(feature = "youtube"), allow(dead_code))]
+  RemoveTrackFromYouTubePlaylist(String, String),
+  /// Run the configured playlist-sync links on a detached task.
+  RunPlaylistSync {
+    /// Search again for tracks the last run found no candidate for.
+    retry_unmatched: bool,
+  },
+  /// Create a mirror of the first endpoint's playlist on the source, link it and sync it.
+  LinkPlaylist(crate::core::playlist_sync::Endpoint, Source),
+  /// Forget one playlist-sync link by id; the mirror playlists stay.
+  RemovePlaylistSyncLink(String),
+  /// Start an in-app Spotify login: show the pairing code, open the browser and
+  /// wait for the approval off the pump. Runs without a Spotify session
+  /// (bypasses the auth gate).
+  BeginSpotifyLogin,
+  /// The in-app login finished and the session is live. Bypasses the auth gate.
+  #[cfg_attr(not(feature = "spotify-session"), allow(dead_code))]
+  CompleteSpotifyLogin,
+  /// The in-app login failed or timed out, with the reason to show.
+  #[cfg_attr(not(feature = "spotify-session"), allow(dead_code))]
+  CancelSpotifyLogin(String),
+  /// Fetch and decode the current track's cover art (album-art URL, source
+  /// thumbnail, or a local file's embedded picture). Dispatched by the shared
+  /// track-change detector; handled off the `App` lock so the render loop never
+  /// blocks on the download/decode. Source-agnostic and independent of Spotify
+  /// auth.
+  #[cfg(feature = "art-decode")]
+  FetchCoverArt(crate::core::art::CoverArtRequest),
+  /// A DJ tool call that needs the live Spotify client, plus the channel to
+  /// answer on.
+  ///
+  /// Runs on the **Spotify** lane, not the service lane: resolving a track name
+  /// to a URI needs the real Spotify client, and the service lane deliberately
+  /// builds its `Network` with `None` for it. It does bypass the auth *gate* so
+  /// the handler can answer an unauthenticated caller with a useful message
+  /// rather than silently dropping the response channel.
+  ///
+  /// Boxed because the payload is much larger than the other variants.
+  #[cfg(any(feature = "mcp-server", feature = "ai-dj"))]
+  DjToolCall(
+    Box<(
+      crate::infra::dj::tools::DjToolCall,
+      tokio::sync::oneshot::Sender<crate::infra::dj::tools::ToolOutcome>,
+    )>,
+  ),
+  /// Ask the in-TUI DJ's brain for tracks. Optionally carries the listener's
+  /// words; `None` means "keep the queue going in the current direction".
+  ///
+  /// Runs on the **service** lane: a brain call can take a minute or more (an
+  /// agent CLI is a subprocess with real startup cost), and parking that on the
+  /// serial pump would freeze every other event behind it. It touches only
+  /// `self.app` plus its own HTTP client / subprocess, which is exactly the
+  /// service-lane contract.
+  #[cfg(feature = "ai-dj")]
+  AskDj(Box<crate::infra::dj::AskDjRequest>),
+  /// Top the queue up because it is running low.
+  ///
+  /// Fields, in order: the DJ generation this refill was dispatched for, so a
+  /// stale one can be dropped; and the turn sequence from `DjState::begin_turn`,
+  /// so only this refill may clear the progress flag. Both are `u64`, so a
+  /// transposition would compile and then discard the wrong turn's flag.
+  #[cfg(feature = "ai-dj")]
+  DjTopUp(u64, u64),
+  /// Crawl the listener's own playlists for the avoid-library filter.
+  ///
+  /// Spotify lane: it needs the real Spotify client, and its pages must not hold
+  /// the pump. One lane, so a `queue_tracks(exclude_owned)` behind it finds the
+  /// index built. Dispatched when the filter is
+  /// switched on, so the index is usually warm by the time the first batch comes
+  /// back from the brain; the resolve step builds it inline if it is not.
+  ///
+  /// The MCP front door dispatches it too, from `search_tracks`, so that marking
+  /// results as owned never crawls *inside* a latency-sensitive tool call. Hence
+  /// the gate is both features rather than `ai-dj` alone.
+  #[cfg(any(feature = "mcp-server", feature = "ai-dj"))]
+  DjIndexLibrary,
+}
+
+#[derive(Clone)]
+struct SpotifyPairingPrompt {
+  url: String,
+  code: String,
+}
+
+impl SpotifyPairingPrompt {
+  fn render(&self, strings: &crate::core::i18n::Strings) -> String {
+    strings.status.infra.spotify_pair(&self.url, &self.code)
+  }
+}
+
+pub struct Network {
+  /// The cached Spotify login, or `None` when echovena runs without one (a
+  /// free source, or a build without Spotify). Spotify-bound `IoEvent`s stop
+  /// at the auth gate in `handle_network_event` when this is `None`. The
+  /// in-app login (`CompleteSpotifyLogin`) fills it in live.
+  pub spotify: Option<SpotifyLogin>,
+  pub large_search_limit: u32,
+  pub small_search_limit: u32,
+  pub app: Arc<Mutex<App>>,
+  #[cfg(feature = "streaming")]
+  native_idle_recovery: playback::NativeIdleRecoveryState,
+  pub party_connection: Option<sync::PartyConnection>,
+  pub party_incoming_rx: Option<tokio::sync::mpsc::UnboundedReceiver<sync::SyncMessage>>,
+  /// The pairing prompt of an in-app login that waits for the approval in the browser.
+  login_prompt: Option<SpotifyPairingPrompt>,
+  /// How many playback polls in a row came back 401. A lone 401 is noise; only
+  /// a sustained run means the session is broken and deserves the error route.
+  /// Reset by every poll the API answers.
+  consecutive_playback_auth_failures: u8,
+  /// TTL caches so re-visiting the same artist/album skips the round trip
+  /// (see `metadata::MetadataTtlCache`).
+  artist_cache: metadata::MetadataTtlCache<metadata::CachedArtistData>,
+  album_cache: metadata::MetadataTtlCache<rspotify::model::album::FullAlbum>,
+  album_tracks_cache: metadata::MetadataTtlCache<Vec<rspotify::model::track::SimplifiedTrack>>,
+  /// The rate-limit window every Spotify call checks: the shared gate in
+  /// production, a private one in tests.
+  rate_gate: requests::RateLimitGate,
+  /// Session-scoped reuse for the external-playlist fallback path: confirmed
+  /// external classifications and resolved playlist contents, shared by
+  /// foreground fetch, background prefetch, sort, and search.
+  pub(crate) external_playlist_fallbacks: library::ExternalPlaylistFallbackCache,
+  /// Spotify-bound events held back while that window is open. The pump and the
+  /// Spotify lane set `defers_rate_limited` (the lane hands what it holds back
+  /// to the pump); the CLI has no pump to block and waits inline.
+  deferred: Vec<Deferred>,
+  pub(crate) defers_rate_limited: bool,
+}
+/// A held-back event and the playback owner it was addressed to.
+struct Deferred {
+  event: IoEvent,
+  owner: PlaybackOwner,
+}
+
+/// Whether `queued`, the owner at deferral time, still holds the sink under
+/// `now`. librespot and an external device are one Spotify owner: a poll can
+/// flip between them inside one window.
+fn owner_still_owns(queued: PlaybackOwner, now: PlaybackOwner) -> bool {
+  use PlaybackOwner::{NativeSpotify, Spotify};
+  queued == now
+    || matches!(
+      (queued, now),
+      (Spotify | NativeSpotify, Spotify | NativeSpotify)
+    )
+}
+
+impl Network {
+  pub fn new(spotify: Option<SpotifyLogin>, app: &Arc<Mutex<App>>) -> Self {
+    Network {
+      spotify,
+      large_search_limit: 50,
+      small_search_limit: search::SPOTIFY_SEARCH_LIMIT,
+      app: Arc::clone(app),
+      #[cfg(feature = "streaming")]
+      native_idle_recovery: playback::NativeIdleRecoveryState::default(),
+      party_connection: None,
+      party_incoming_rx: None,
+      login_prompt: None,
+      consecutive_playback_auth_failures: 0,
+      artist_cache: Default::default(),
+      album_cache: Default::default(),
+      album_tracks_cache: Default::default(),
+      rate_gate: requests::shared_rate_gate().clone(),
+      external_playlist_fallbacks: library::external_playlist_fallback_cache(),
+      deferred: Vec::new(),
+      defers_rate_limited: false,
+    }
+  }
+
+  /// True for `IoEvent`s whose handlers need no Spotify login, so they run
+  /// even without one (free-source launch). Keep this in sync with the
+  /// handlers: an event listed here must not call Spotify. Covered here: the login,
+  /// source-agnostic services (telemetry, announcements, LRCLIB lyrics, cover
+  /// art), the echovena.com friends/party features (their own HTTP/relay
+  /// clients), pure-state updates, and the per-source browse events that the
+  /// source dispatchers handle upstream (only reaching here as no-ops when their
+  /// feature is disabled).
+  fn event_bypasses_spotify_auth(io_event: &IoEvent) -> bool {
+    #[cfg(feature = "art-decode")]
+    if matches!(io_event, IoEvent::FetchCoverArt(_)) {
+      return true;
+    }
+    #[cfg(feature = "streaming")]
+    if matches!(
+      io_event,
+      IoEvent::RestoreNativePlayback(_) | IoEvent::ReplayPublishedSpotifyQueueSlot
+    ) {
+      return true;
+    }
+    // Bypasses the gate but NOT onto the service lane: the handler needs the real
+    // Spotify client, and answers an unauthenticated caller itself so whichever
+    // front door asked — an MCP client or the in-TUI DJ — gets a diagnosable
+    // error instead of a dropped channel.
+    #[cfg(any(feature = "mcp-server", feature = "ai-dj"))]
+    if matches!(io_event, IoEvent::DjToolCall(_)) {
+      return true;
+    }
+    // The brain call needs no Spotify session at all. The tool calls the loop
+    // makes from inside it do, and those go back through `DjToolCall` above.
+    #[cfg(feature = "ai-dj")]
+    if matches!(io_event, IoEvent::AskDj(_) | IoEvent::DjTopUp(..)) {
+      return true;
+    }
+    matches!(
+      io_event,
+      IoEvent::BeginSpotifyLogin
+        | IoEvent::CompleteSpotifyLogin
+        | IoEvent::CancelSpotifyLogin(_)
+        | IoEvent::FetchGlobalSongCount
+        | IoEvent::IncrementGlobalSongCount
+        | IoEvent::FetchAnnouncements
+        | IoEvent::GetLyrics(..)
+        | IoEvent::UpdateSearchLimits(..)
+        | IoEvent::GetFriendCode
+        | IoEvent::GetFriends
+        | IoEvent::AddFriendByCode(_)
+        | IoEvent::AddFriendById(_)
+        | IoEvent::UnfollowFriend(_)
+        | IoEvent::SearchFriendUsers(_)
+        | IoEvent::LoadListeningStats(_)
+        | IoEvent::GenerateRecap(_)
+        | IoEvent::StartParty(_)
+        | IoEvent::JoinParty { .. }
+        | IoEvent::SetPartyControlMode(_)
+        | IoEvent::LeaveParty
+        | IoEvent::SyncPlayback
+        | IoEvent::PartyPlaybackCommand(_)
+        | IoEvent::GetLocalPlaylists
+        | IoEvent::GetLocalTracks(_)
+        | IoEvent::GetSubsonicPlaylists
+        | IoEvent::GetSubsonicTracks(_)
+        | IoEvent::GetSubsonicSearchResults(_)
+        | IoEvent::GetQobuzPlaylists
+        | IoEvent::GetQobuzTracks(_)
+        | IoEvent::GetQobuzSearchResults(_)
+        | IoEvent::QobuzLogin
+        | IoEvent::AppleMusicHandoff { .. }
+        | IoEvent::AppleMusicVolume { .. }
+        | IoEvent::AppleMusicPage { .. }
+        | IoEvent::GetRadioStations
+        | IoEvent::GetRadioSearchResults(_)
+        | IoEvent::GetYouTubeSearchResults(_)
+        | IoEvent::GetYouTubePlaylists
+        | IoEvent::GetYouTubeTracks(_)
+        | IoEvent::CreateYouTubePlaylist(_)
+        | IoEvent::DeleteYouTubePlaylist(_)
+        | IoEvent::AddTrackToYouTubePlaylist(..)
+        | IoEvent::RemoveTrackFromYouTubePlaylist(..)
+        | IoEvent::RunPlaylistSync { .. }
+        | IoEvent::LinkPlaylist(..)
+        | IoEvent::RemovePlaylistSyncLink(_)
+    )
+  }
+
+  /// Events that run on the concurrent service lane in `start_tokio`: a strict
+  /// subset of [`Self::event_bypasses_spotify_auth`] whose handlers touch only
+  /// `self.app` (plus their own HTTP clients / `spawn_blocking`) — never the
+  /// Spotify client, API pacing, or `Network` state (party connection, pending
+  /// login, search limits) — so they can execute on a detached task with a
+  /// throwaway `Network` instead of head-of-line-blocking the serial pump.
+  /// Keep in sync with the handlers: an event listed here MUST NOT read or
+  /// write anything on `Network` besides `app`.
+  pub fn runs_on_service_lane(io_event: &IoEvent) -> bool {
+    if !Self::event_bypasses_spotify_auth(io_event) {
+      return false;
+    }
+    #[cfg(feature = "art-decode")]
+    if matches!(io_event, IoEvent::FetchCoverArt(_)) {
+      return true;
+    }
+    #[cfg(feature = "ai-dj")]
+    if matches!(io_event, IoEvent::AskDj(_) | IoEvent::DjTopUp(..)) {
+      return true;
+    }
+    matches!(
+      io_event,
+      IoEvent::FetchGlobalSongCount
+        | IoEvent::IncrementGlobalSongCount
+        | IoEvent::FetchAnnouncements
+        | IoEvent::GetLyrics(..)
+        | IoEvent::GetFriendCode
+        | IoEvent::GetFriends
+        | IoEvent::AddFriendByCode(_)
+        | IoEvent::AddFriendById(_)
+        | IoEvent::UnfollowFriend(_)
+        | IoEvent::SearchFriendUsers(_)
+        | IoEvent::LoadListeningStats(_)
+        | IoEvent::GenerateRecap(_)
+    )
+  }
+
+  /// Events that run on the Spotify lane in `start_tokio`: slow Spotify work
+  /// (a library crawl, a catalogue lookup) that needs the real client but no
+  /// order against transport events, so it runs in its own order beside the
+  /// pump. Never a transport event, never an event that writes `Network` state
+  /// the pump reads (a login, the search limits).
+  pub fn runs_on_spotify_lane(io_event: &IoEvent) -> bool {
+    #[cfg(any(feature = "mcp-server", feature = "ai-dj"))]
+    if matches!(io_event, IoEvent::DjIndexLibrary | IoEvent::DjToolCall(_)) {
+      return true;
+    }
+    let _ = io_event;
+    false
+  }
+
+  /// Events that drive whoever owns the sink. One held back by a rate-limit
+  /// window is dropped at the flush when the owner changed meanwhile: replayed,
+  /// it would reach the player that owned the sink when it was queued. A new
+  /// transport event goes here too.
+  pub fn event_is_transport(io_event: &IoEvent) -> bool {
+    matches!(
+      io_event,
+      IoEvent::StartPlayback(..)
+        | IoEvent::PausePlayback
+        | IoEvent::NextTrack
+        | IoEvent::PreviousTrack
+        | IoEvent::ForcePreviousTrack
+        | IoEvent::Seek(_)
+        | IoEvent::Shuffle(_)
+        | IoEvent::Repeat(_)
+        | IoEvent::ChangeVolume(_)
+        | IoEvent::EnsurePlaybackContinues(_)
+        | IoEvent::ResumeSpotifyContext(..)
+        | IoEvent::TransferPlaybackToDevice(..)
+        | IoEvent::AutoSelectStreamingDevice(..)
+        | IoEvent::ToggleNativeShuffleSession(_)
+        | IoEvent::ReshuffleNativeShuffleLap
+        | IoEvent::ResumeNativeShuffleSession(..)
+    )
+  }
+
+  #[allow(clippy::cognitive_complexity)]
+  pub async fn handle_network_event(&mut self, mut io_event: IoEvent) {
+    let pending_playlist_id = match &io_event {
+      IoEvent::GetPlaylistItems(id, _) => Some(id.clone()),
+      _ => None,
+    };
+    // Events whose handlers never touch the Spotify client run regardless of
+    // whether a Spotify session exists (see `event_bypasses_spotify_auth`).
+    // Everything else is Spotify-bound: when launched against a free source with
+    // no Spotify login, point the user at the in-app login instead of failing
+    // loudly.
+    let bypass_auth = Self::event_bypasses_spotify_auth(&io_event);
+    let on_spotify_lane = Self::runs_on_spotify_lane(&io_event);
+    // Only the `GetCurrentPlayback` handler releases the tick's poll latch, so
+    // a poll dropped at the gate below must release it here (#563).
+    let is_playback_poll = matches!(io_event, IoEvent::GetCurrentPlayback);
+
+    if !bypass_auth {
+      if self.spotify.is_none() {
+        self
+          .show_status_message(
+            self
+              .strings()
+              .await
+              .status
+              .infra
+              .spotify_not_connected
+              .to_string(),
+            6,
+          )
+          .await;
+        let mut app = self.app.lock().await;
+        app.is_loading = false;
+        app.is_volume_change_in_flight = false;
+        if is_playback_poll {
+          app.is_fetching_current_playback = false;
+        }
+        if matches!(io_event, IoEvent::GetMadeForYou) {
+          app.end_discover_fetch(None);
+        }
+        if pending_playlist_id
+          .as_deref()
+          .is_some_and(|id| app.pending_playlist_open.as_deref() == Some(id))
+        {
+          app.pending_playlist_open = None;
+        }
+        return;
+      }
+      io_event = match self.hold_back_if_rate_limited(io_event).await {
+        Some(io_event) => io_event,
+        None => return,
+      };
+    }
+
+    match io_event {
+      IoEvent::EnsurePlaybackContinues(previous_track_id) => {
+        self.ensure_playback_continues(previous_track_id).await;
+      }
+      IoEvent::GetPlaylists => {
+        self.get_current_user_playlists().await;
+      }
+      IoEvent::GetUser => {
+        self.get_user().await;
+      }
+      IoEvent::GetAudioAnalysis(track_id) => {
+        // A detached task, so the pump does not wait for it.
+        tokio::spawn(metadata::fetch_audio_analysis(
+          Arc::clone(&self.app),
+          track_id,
+        ));
+      }
+      IoEvent::GetDevices => {
+        self.get_devices(true).await;
+      }
+      IoEvent::GetDevicesSilent => {
+        self.get_devices(false).await;
+      }
+      IoEvent::GetCurrentPlayback => {
+        self.get_current_playback().await;
+      }
+      IoEvent::GetSearchResults(search_term, country) => {
+        self.get_search_results(search_term, country).await;
+      }
+
+      IoEvent::GetPlaylistItems(playlist_id, playlist_offset) => {
+        if let Some(id) = ids::playlist_id(&playlist_id) {
+          self.get_playlist_tracks(id, playlist_offset).await;
+        } else {
+          let mut app = self.app.lock().await;
+          if app.pending_playlist_open.as_deref() == Some(playlist_id.as_str()) {
+            app.pending_playlist_open = None;
+          }
+          let strings = app.strings();
+          app.set_status_message(strings.status.infra.playlist_id_invalid, 5);
+        }
+      }
+      IoEvent::SearchPlaylistTracks(playlist_id, query) => {
+        if let Some(id) = ids::playlist_id(&playlist_id) {
+          self.search_playlist_tracks(id, query).await;
+        }
+      }
+      IoEvent::GetCurrentSavedTracks(offset) => {
+        self.get_current_user_saved_tracks(offset).await;
+      }
+      IoEvent::StartPlayback(context_uri, uris, offset) => {
+        let context = context_uri.as_deref().and_then(ids::play_context_id);
+        let uris = uris.map(|v| ids::playable_ids(&v));
+        self.start_playback(context, uris, offset).await;
+      }
+      #[cfg(feature = "streaming")]
+      IoEvent::RestoreNativePlayback(generation) => {
+        self.restore_native_playback(generation).await;
+      }
+      IoEvent::UpdateSearchLimits(large_search_limit, small_search_limit) => {
+        self.large_search_limit = large_search_limit;
+        self.small_search_limit = small_search_limit;
+      }
+      IoEvent::Seek(position_ms) => {
+        self.seek(position_ms).await;
+      }
+      IoEvent::NextTrack => {
+        self.next_track().await;
+      }
+      IoEvent::PreviousTrack => {
+        self.previous_track().await;
+      }
+      IoEvent::ForcePreviousTrack => {
+        self.force_previous_track().await;
+      }
+      IoEvent::Repeat(repeat_state) => {
+        self.repeat(repeat_state).await;
+      }
+      IoEvent::PausePlayback => {
+        self.pause_playback().await;
+      }
+      IoEvent::ChangeVolume(volume) => {
+        self.change_volume(volume).await;
+      }
+      IoEvent::GetArtist(artist_id, input_artist_name, country) => {
+        if let Some(id) = ids::artist_id(&artist_id) {
+          self.get_artist(id, input_artist_name, country).await;
+        }
+      }
+      IoEvent::GetAlbumTracks(album) => {
+        self.get_album_tracks(album).await;
+      }
+      IoEvent::GetRecommendationsForSeed(seed_artists, seed_tracks, first_track, country) => {
+        let seed_artists = seed_artists.map(|v| ids::artist_ids(&v));
+        let seed_tracks = seed_tracks.map(|v| ids::track_ids(&v));
+        self
+          .get_recommendations_for_seed(seed_artists, seed_tracks, first_track, country)
+          .await;
+      }
+      IoEvent::GetCurrentUserSavedAlbums(offset) => {
+        self.get_current_user_saved_albums(offset).await;
+      }
+      IoEvent::CurrentUserSavedAlbumsContains(album_ids) => {
+        self
+          .current_user_saved_albums_contains(ids::album_ids(&album_ids))
+          .await;
+      }
+      IoEvent::CurrentUserSavedAlbumDelete(album_id) => {
+        if let Some(id) = ids::album_id(&album_id) {
+          self.current_user_saved_album_delete(id).await;
+        }
+      }
+      IoEvent::CurrentUserSavedAlbumAdd(album_id) => {
+        if let Some(id) = ids::album_id(&album_id) {
+          self.current_user_saved_album_add(id).await;
+        }
+      }
+      IoEvent::UserUnfollowArtists(artist_ids) => {
+        self
+          .user_unfollow_artists(ids::artist_ids(&artist_ids))
+          .await;
+      }
+      IoEvent::UserFollowArtists(artist_ids) => {
+        self.user_follow_artists(ids::artist_ids(&artist_ids)).await;
+      }
+      IoEvent::UserFollowPlaylist(playlist_owner_id, playlist_id, is_public) => {
+        if let (Some(owner), Some(id)) = (
+          ids::user_id(&playlist_owner_id),
+          ids::playlist_id(&playlist_id),
+        ) {
+          self.user_follow_playlist(owner, id, is_public).await;
+        }
+      }
+      IoEvent::UserUnfollowPlaylist(user_id, playlist_id) => {
+        if let (Some(owner), Some(id)) = (ids::user_id(&user_id), ids::playlist_id(&playlist_id)) {
+          self.user_unfollow_playlist(owner, id).await;
+        }
+      }
+      IoEvent::AddTrackToPlaylist(playlist_id, track_id) => {
+        if let (Some(pid), Some(tid)) = (ids::playlist_id(&playlist_id), ids::track_id(&track_id)) {
+          self.add_track_to_playlist(pid, tid).await;
+        }
+      }
+      IoEvent::RemoveTrackFromPlaylistAtPosition(playlist_id, track_id, position) => {
+        if let (Some(pid), Some(tid)) = (ids::playlist_id(&playlist_id), ids::track_id(&track_id)) {
+          self
+            .remove_track_from_playlist_at_position(pid, tid, position)
+            .await;
+        }
+      }
+
+      IoEvent::ToggleSaveTrack(uri) => {
+        if let Some(id) = ids::playable_id(&uri) {
+          self.toggle_save_track(id).await;
+        }
+      }
+      IoEvent::GetRecommendationsForTrackId(track_id, country) => {
+        if let Some(id) = ids::track_id(&track_id) {
+          self.get_recommendations_for_track_id(id, country).await;
+        }
+      }
+      IoEvent::GetRecentlyPlayed => {
+        self.get_recently_played(true).await;
+      }
+      IoEvent::GetRecentlyPlayedSilent => {
+        self.get_recently_played(false).await;
+      }
+      IoEvent::GetFollowedArtists(after) => {
+        self
+          .get_followed_artists(after.and_then(|s| ids::artist_id(&s)))
+          .await;
+      }
+      IoEvent::UserArtistFollowCheck(artist_ids) => {
+        self
+          .user_artist_check_follow(ids::artist_ids(&artist_ids))
+          .await;
+      }
+      IoEvent::GetAlbum(album_id) => {
+        if let Some(id) = ids::album_id(&album_id) {
+          self.get_album(id).await;
+        }
+      }
+      IoEvent::TransferPlaybackToDevice(device_id, persist_device_id) => {
+        self
+          .transfert_playback_to_device(device_id, persist_device_id)
+          .await;
+      }
+      #[cfg(feature = "streaming")]
+      IoEvent::AutoSelectStreamingDevice(device_name, persist_device_id, yield_to_external) => {
+        self
+          .auto_select_streaming_device(device_name, persist_device_id, yield_to_external)
+          .await;
+      }
+      #[cfg(not(feature = "streaming"))]
+      IoEvent::AutoSelectStreamingDevice(..) => {} // No-op without native streaming
+      IoEvent::GetAlbumForTrack(track_id) => {
+        if let Some(id) = ids::track_id(&track_id) {
+          self.get_album_for_track(id).await;
+        }
+      }
+      IoEvent::Shuffle(shuffle_state) => {
+        self.shuffle(shuffle_state).await;
+      }
+      IoEvent::CurrentUserSavedTracksContains(track_ids) => {
+        self
+          .current_user_saved_tracks_contains(ids::track_ids(&track_ids))
+          .await;
+      }
+      IoEvent::GetCurrentUserSavedShows(offset) => {
+        self.get_current_user_saved_shows(offset).await;
+      }
+      IoEvent::CurrentUserSavedShowsContains(show_ids) => {
+        self
+          .current_user_saved_shows_contains(ids::show_ids(&show_ids))
+          .await;
+      }
+      IoEvent::CurrentUserSavedShowDelete(show_id) => {
+        if let Some(id) = ids::show_id(&show_id) {
+          self.current_user_saved_shows_delete(id).await;
+        }
+      }
+      IoEvent::CurrentUserSavedShowAdd(show_id) => {
+        if let Some(id) = ids::show_id(&show_id) {
+          self.current_user_saved_shows_add(id).await;
+        }
+      }
+      IoEvent::GetShowEpisodes(show) => {
+        self.get_show_episodes(show).await;
+      }
+      IoEvent::GetShow(show_id) => {
+        if let Some(id) = ids::show_id(&show_id) {
+          self.get_show(id).await;
+        }
+      }
+      IoEvent::GetCurrentShowEpisodes(show_id, offset) => {
+        if let Some(id) = ids::show_id(&show_id) {
+          self.get_current_show_episodes(id, offset).await;
+        }
+      }
+      IoEvent::AddItemToQueue(uri) => {
+        if let Some(id) = ids::playable_id(&uri) {
+          self.add_item_to_queue(id).await;
+        }
+      }
+      IoEvent::GetQueue => {
+        self.get_queue().await;
+      }
+      // Consumed by the queue router before it reaches the network; only lands
+      // here if the router somehow let it through. No Spotify work to do.
+      IoEvent::AdvanceNativeQueue | IoEvent::FinishNativeQueue => {}
+      #[cfg(feature = "streaming")]
+      IoEvent::ReplayPublishedSpotifyQueueSlot => {}
+      // Consumed by a per-source router when a decoded source owns playback; only
+      // lands here otherwise (e.g. Spotify is playing). No Spotify work to do.
+      IoEvent::ReplayCurrentTrack => {}
+      IoEvent::ResumeSpotifyContext(context_uri, resume_track_uri) => {
+        self
+          .resume_spotify_context(context_uri, resume_track_uri)
+          .await;
+      }
+      #[cfg(feature = "streaming")]
+      IoEvent::ToggleNativeShuffleSession(on) => {
+        self.toggle_native_shuffle_session(on).await;
+      }
+      #[cfg(feature = "streaming")]
+      IoEvent::ReshuffleNativeShuffleLap => {
+        self.reshuffle_native_shuffle_lap().await;
+      }
+      #[cfg(feature = "streaming")]
+      IoEvent::ResumeNativeShuffleSession(resume_index, generation) => {
+        self
+          .resume_native_shuffle_session(resume_index, generation)
+          .await;
+      }
+      // Only constructed under `streaming`; inert otherwise.
+      #[cfg(not(feature = "streaming"))]
+      IoEvent::ToggleNativeShuffleSession(_)
+      | IoEvent::ReshuffleNativeShuffleLap
+      | IoEvent::ResumeNativeShuffleSession(_, _) => {}
+      IoEvent::IncrementGlobalSongCount => {
+        self.increment_global_song_count().await;
+      }
+      IoEvent::FetchGlobalSongCount => {
+        self.fetch_global_song_count().await;
+      }
+      IoEvent::FetchAnnouncements => {
+        self.fetch_announcements().await;
+      }
+      IoEvent::GetLyrics(track, artists, duration, spotify_id) => {
+        self.get_lyrics(track, artists, duration, spotify_id).await;
+      }
+      #[cfg(feature = "art-decode")]
+      IoEvent::FetchCoverArt(request) => {
+        self.fetch_cover_art(request).await;
+      }
+      #[cfg(any(feature = "mcp-server", feature = "ai-dj"))]
+      IoEvent::DjToolCall(payload) => {
+        let (call, responder) = *payload;
+        self.run_dj_tool_call(call, responder).await;
+      }
+      #[cfg(feature = "ai-dj")]
+      IoEvent::AskDj(request) => {
+        self.ask_dj(*request).await;
+      }
+      #[cfg(feature = "ai-dj")]
+      IoEvent::DjTopUp(generation, turn_seq) => {
+        self.dj_top_up(generation, turn_seq).await;
+      }
+      #[cfg(any(feature = "mcp-server", feature = "ai-dj"))]
+      IoEvent::DjIndexLibrary => {
+        self.dj_index_library().await;
+      }
+      IoEvent::GetMadeForYou => {
+        self.get_made_for_you().await;
+      }
+      IoEvent::FetchAllPlaylistTracksAndSort(playlist_id) => {
+        if let Some(id) = ids::playlist_id(&playlist_id) {
+          self.fetch_all_playlist_tracks_and_sort(id).await;
+        }
+      }
+      IoEvent::StartParty(control_mode) => {
+        self.start_party(control_mode).await;
+      }
+      IoEvent::JoinParty { code, name } => {
+        self.join_party(code, name).await;
+      }
+      IoEvent::SetPartyControlMode(control_mode) => {
+        self.set_party_control_mode(control_mode).await;
+      }
+      IoEvent::LeaveParty => {
+        self.leave_party().await;
+      }
+      IoEvent::SyncPlayback => {
+        self.sync_playback().await;
+      }
+      IoEvent::PartyPlaybackCommand(action) => {
+        self.party_playback_command(action).await;
+      }
+      IoEvent::SearchTracksForPlaylist(query) => {
+        self.search_tracks_for_playlist(query).await;
+      }
+      IoEvent::CreateNewPlaylist(name, track_ids) => {
+        self
+          .create_new_playlist(name, ids::track_ids(&track_ids))
+          .await;
+      }
+      IoEvent::GetFriendCode => {
+        friends::handle_get_friend_code(self).await;
+      }
+      IoEvent::GetFriends => {
+        friends::handle_get_friends(self).await;
+      }
+      IoEvent::AddFriendByCode(code) => {
+        friends::handle_add_friend_by_code(self, code).await;
+      }
+      IoEvent::AddFriendById(user_id) => {
+        friends::handle_add_friend_by_user_id(self, user_id).await;
+      }
+      IoEvent::UnfollowFriend(user_id) => {
+        friends::handle_unfollow_friend(self, user_id).await;
+      }
+      IoEvent::SearchFriendUsers(query) => {
+        friends::handle_search_friend_users(self, query).await;
+      }
+      IoEvent::LoadListeningStats(period) => {
+        self.load_listening_stats(period).await;
+      }
+      IoEvent::GenerateRecap(period) => {
+        self.generate_recap(period).await;
+      }
+      IoEvent::BeginSpotifyLogin => {
+        self.begin_spotify_login().await;
+      }
+      IoEvent::CompleteSpotifyLogin => {
+        self.complete_spotify_login().await;
+      }
+      IoEvent::CancelSpotifyLogin(reason) => {
+        self.cancel_spotify_login(reason).await;
+      }
+      // Local-files browse events are handled by infra::local::dispatch before
+      // reaching the network; they only arrive here when the feature is off.
+      IoEvent::GetLocalPlaylists | IoEvent::GetLocalTracks(_) => {}
+      // Subsonic browse/search events are handled by infra::subsonic::dispatch
+      // before reaching the network; they only arrive here when the feature is off.
+      IoEvent::GetSubsonicPlaylists
+      | IoEvent::GetSubsonicTracks(_)
+      | IoEvent::GetSubsonicSearchResults(_) => {}
+      // Qobuz browse/search/login events are handled by infra::qobuz::dispatch
+      // before reaching the network; they only arrive here when the feature is off.
+      IoEvent::GetQobuzPlaylists
+      | IoEvent::GetQobuzTracks(_)
+      | IoEvent::GetQobuzSearchResults(_)
+      | IoEvent::QobuzLogin => {}
+      // Consumed by infra::apple_music::dispatch; only a build without the
+      // Apple Music router gets here.
+      IoEvent::AppleMusicHandoff { .. } | IoEvent::AppleMusicPage { .. } => {
+        let mut app = self.app.lock().await;
+        let message = app.strings().status.infra.music_requires_macos;
+        app.set_status_message(message, 5);
+      }
+      IoEvent::AppleMusicVolume { generation, .. } => {
+        self.app.lock().await.finish_apple_music_volume(generation);
+      }
+      // Radio browse/search events are handled by infra::radio::dispatch before
+      // reaching the network; they only arrive here when the feature is off.
+      IoEvent::GetRadioStations | IoEvent::GetRadioSearchResults(_) => {}
+      // YouTube search/playlist events are handled by infra::youtube::dispatch
+      // before reaching the network; they only arrive here when the feature is
+      // off.
+      IoEvent::GetYouTubeSearchResults(_)
+      | IoEvent::GetYouTubePlaylists
+      | IoEvent::GetYouTubeTracks(_)
+      | IoEvent::CreateYouTubePlaylist(_)
+      | IoEvent::DeleteYouTubePlaylist(_)
+      | IoEvent::AddTrackToYouTubePlaylist(..)
+      | IoEvent::RemoveTrackFromYouTubePlaylist(..) => {}
+      IoEvent::RunPlaylistSync { retry_unmatched } => {
+        crate::infra::playlist_sync::spawn_run(
+          self.spotify,
+          Arc::clone(&self.app),
+          retry_unmatched,
+        );
+      }
+      IoEvent::LinkPlaylist(master, mirror) => {
+        crate::infra::playlist_sync::spawn_link(
+          self.spotify,
+          Arc::clone(&self.app),
+          master,
+          mirror,
+        );
+      }
+      IoEvent::RemovePlaylistSyncLink(id) => {
+        crate::infra::playlist_sync::spawn_remove_link(Arc::clone(&self.app), id);
+      }
+    };
+
+    {
+      let mut app = self.app.lock().await;
+      // Lane events never set the spinner, and clearing it here would hide a
+      // pump event still in flight.
+      if !on_spotify_lane {
+        app.is_loading = false;
+      }
+      app.note_display_changes();
+    }
+  }
+
+  async fn handle_error(&mut self, e: anyhow::Error) {
+    let rate_limited = requests::is_rate_limited_error(&e);
+    let mut app = self.app.lock().await;
+    // The first hit of a window under the pump: every later event is held
+    // back, so a status message is enough. The CLI keeps its exit signal.
+    if self.defers_rate_limited && rate_limited {
+      let message = app
+        .strings()
+        .status
+        .infra
+        .network_rate_error(&e.to_string());
+      app.set_error_status_message(message, 8);
+      return;
+    }
+    report_request_error(&mut app, e);
+  }
+
+  /// Holds a Spotify-bound event back while a rate-limit window is open: queued
+  /// for the pump's flush, or slept out where nothing flushes (the CLI).
+  /// `None` when it was queued.
+  pub(crate) async fn hold_back_if_rate_limited(&mut self, io_event: IoEvent) -> Option<IoEvent> {
+    if Self::event_bypasses_spotify_auth(&io_event) {
+      return Some(io_event);
+    }
+    let left = self.rate_gate.rate_limit_remaining().await;
+    let Some(left) = left else {
+      return Some(io_event);
+    };
+    if !self.defers_rate_limited {
+      tokio::time::sleep(left).await;
+      return Some(io_event);
+    }
+    if self.deferred.is_empty() {
+      let secs = left.as_secs().max(1);
+      self
+        .show_status_message(
+          self.strings().await.status.infra.spotify_rate_wait(secs),
+          secs,
+        )
+        .await;
+    }
+    let owner = self.app.lock().await.playback_owner();
+    self.deferred.push(Deferred {
+      event: io_event,
+      owner,
+    });
+    None
+  }
+
+  /// A `Network` for the Spotify lane: the pump's login, limits, fallback cache
+  /// and rate gate, taken per event so a login reaches it. It defers like the
+  /// pump; the lane hands what it defers back to the pump.
+  pub(crate) fn spotify_lane_network(&self) -> Network {
+    let mut lane = Network::new(self.spotify, &self.app);
+    lane.large_search_limit = self.large_search_limit;
+    lane.small_search_limit = self.small_search_limit;
+    lane.external_playlist_fallbacks = self.external_playlist_fallbacks.clone();
+    lane.rate_gate = self.rate_gate.clone();
+    lane.defers_rate_limited = true;
+    lane
+  }
+
+  /// When the pump must flush the held-back events: the window's end.
+  pub(crate) async fn deferred_deadline(&self) -> Option<std::time::Instant> {
+    if self.deferred.is_empty() {
+      return None;
+    }
+    let left = self.rate_gate.rate_limit_remaining().await;
+    Some(std::time::Instant::now() + left.unwrap_or_default())
+  }
+
+  /// Re-send the held-back events on the pump's channel in their original
+  /// order, so the claim gate and the source routers see them; a window that
+  /// is still open holds them back again. A transport event whose owner
+  /// changed since it was queued is dropped instead.
+  pub(crate) async fn flush_deferred(&mut self) {
+    let (io_tx, owner_now) = {
+      let app = self.app.lock().await;
+      (app.io_tx_clone(), app.playback_owner())
+    };
+    let Some(io_tx) = io_tx else {
+      return;
+    };
+    for Deferred { event, owner } in std::mem::take(&mut self.deferred) {
+      if Self::event_is_transport(&event) && !owner_still_owns(owner, owner_now) {
+        log::debug!("deferred transport event dropped: the sink changed hands");
+        let mut app = self.app.lock().await;
+        app.is_loading = false;
+        if matches!(event, IoEvent::ChangeVolume(_)) {
+          app.cancel_volume_change();
+        }
+        continue;
+      }
+      let _ = io_tx.send(event);
+    }
+  }
+
+  /// Aggregate local listening history for the Stats screen. Reads the
+  /// listens file off the runtime threads; never touches Spotify.
+  async fn load_listening_stats(&mut self, period: crate::infra::history::RecapPeriod) {
+    use crate::infra::history;
+
+    let strings = self.strings().await;
+    let result = tokio::task::spawn_blocking(move || {
+      let listens = history::load_listens()?;
+      let filtered = history::filter_listens_for_period(&listens, period);
+      Ok::<_, anyhow::Error>((
+        history::build_stats_data_with(&filtered, &listens, period, strings),
+        history::compute_streaks(&listens),
+      ))
+    })
+    .await
+    .map_err(anyhow::Error::from)
+    .and_then(|result| result);
+
+    let mut app = self.app.lock().await;
+    // A language change queues a fresh load. Neither data nor failure from
+    // the superseded load may finish that new request's loading lifecycle.
+    if !std::ptr::eq(strings, app.strings()) {
+      return;
+    }
+    match result {
+      Ok((stats, streaks)) => {
+        app.listening_streaks = Some(streaks);
+        app.land_listening_stats(period, stats);
+      }
+      Err(error) => {
+        app.fail_listening_stats();
+        {
+          let strings = app.strings();
+          app.handle_error_with_message(
+            anyhow!("failed to load listening history: {}", error),
+            strings.status.infra.history_failed(&error.to_string()),
+          )
+        };
+      }
+    }
+  }
+
+  /// Export the shareable HTML recap off the runtime threads and open it in
+  /// the browser; reads only local history, never Spotify.
+  async fn generate_recap(&mut self, period: crate::infra::history::RecapPeriod) {
+    use crate::infra::history;
+
+    let strings = crate::infra::app_strings(&self.app).await;
+    let result = tokio::task::spawn_blocking(move || {
+      let output_path = history::recap_output_path()?;
+      let count = history::export_history_recap_with(period, &output_path, strings)?;
+      Ok::<_, anyhow::Error>((output_path, count))
+    })
+    .await
+    .map_err(anyhow::Error::from)
+    .and_then(|result| result);
+
+    match result {
+      Ok((output_path, count)) => {
+        if let Err(e) = open::that_detached(&output_path) {
+          log::warn!("failed to open recap in browser: {}", e);
+        }
+        let mut app = self.app.lock().await;
+        let strings = app.strings();
+        app.set_status_message(
+          strings
+            .status
+            .infra
+            .recap_created(&output_path.display().to_string(), count),
+          5,
+        );
+      }
+      Err(error) => {
+        let mut app = self.app.lock().await;
+        let strings = app.strings();
+        app.set_status_message(strings.status.infra.recap_failed(&error.to_string()), 5);
+      }
+    }
+  }
+
+  /// Snapshot the active table after releasing the app lock.
+  async fn strings(&self) -> &'static crate::core::i18n::Strings {
+    crate::infra::app_strings(&self.app).await
+  }
+
+  async fn show_status_message(&self, message: String, ttl_secs: u64) {
+    self.app.lock().await.set_status_message(message, ttl_secs);
+  }
+
+  /// Starts the in-app login: the pairing code goes in the status line, the
+  /// browser opens, and a task waits for the approval off the pump.
+  async fn begin_spotify_login(&mut self) {
+    if self.spotify.is_some() {
+      return;
+    }
+    // A repeat ask shows the waiting login's code again instead of replacing it.
+    if let Some(prompt) = self.login_prompt.clone() {
+      self
+        .show_status_message(prompt.render(self.strings().await), LOGIN_TIMEOUT.as_secs())
+        .await;
+      return;
+    }
+    #[cfg(feature = "spotify-session")]
+    {
+      use crate::infra::spotify::{credentials, session};
+      let pending = match credentials::begin_login().await {
+        Ok(pending) => pending,
+        Err(e) => {
+          self
+            .show_status_message(
+              self
+                .strings()
+                .await
+                .status
+                .infra
+                .spotify_login_failed(&e.to_string()),
+              8,
+            )
+            .await;
+          return;
+        }
+      };
+      let Some(io_tx) = self.app.lock().await.io_tx_clone() else {
+        return;
+      };
+      log::info!("[login] pairing URL: {}", pending.url());
+      if let Err(e) = open::that_detached(pending.url()) {
+        log::warn!("[login] failed to open browser automatically: {e}");
+      }
+      let prompt = SpotifyPairingPrompt {
+        url: pending.url().to_string(),
+        code: pending.code().to_string(),
+      };
+      self
+        .show_status_message(prompt.render(self.strings().await), LOGIN_TIMEOUT.as_secs())
+        .await;
+      self.login_prompt = Some(prompt);
+      let login_app = Arc::clone(&self.app);
+      tokio::spawn(async move {
+        let finished = async {
+          let credentials = pending.finish().await?;
+          session::log_in(credentials)
+            .await
+            .map_err(|reason| anyhow::anyhow!(reason.message()))
+        };
+        let outcome = tokio::time::timeout(LOGIN_TIMEOUT, finished).await;
+        let strings = crate::infra::app_strings(&login_app).await;
+        let event = match outcome {
+          Ok(Ok(())) => IoEvent::CompleteSpotifyLogin,
+          Ok(Err(e)) => {
+            IoEvent::CancelSpotifyLogin(strings.status.infra.spotify_login_failed(&e.to_string()))
+          }
+          Err(_) => {
+            IoEvent::CancelSpotifyLogin(strings.status.infra.spotify_login_timeout.to_string())
+          }
+        };
+        let _ = io_tx.send(event);
+      });
+    }
+    #[cfg(not(feature = "spotify-session"))]
+    self
+      .show_status_message(
+        self
+          .strings()
+          .await
+          .status
+          .infra
+          .spotify_not_compiled
+          .to_string(),
+        6,
+      )
+      .await;
+  }
+
+  /// Finishes the in-app login: the session is live, so Spotify data loads now.
+  async fn complete_spotify_login(&mut self) {
+    self.login_prompt = None;
+    #[cfg(any(test, feature = "spotify-session"))]
+    {
+      self.spotify = Some(SpotifyLogin::new());
+    }
+    {
+      let mut app = self.app.lock().await;
+      app.spotify_connected = true;
+      // Spotify-only settings rows show now.
+      app.bump_display(crate::core::app::DisplayDomain::Settings);
+      // `LikedSongs.available` reads the flag; a page must learn it can fetch now.
+      app.bump_display(crate::core::app::DisplayDomain::LikedSongs);
+      app.bump_display(crate::core::app::DisplayDomain::Party);
+      if app.active_source == crate::core::source::Source::Spotify {
+        app.persist_active_source();
+      }
+      app.dispatch(IoEvent::GetUser);
+      app.dispatch(IoEvent::GetPlaylists);
+      app.dispatch(IoEvent::GetCurrentPlayback);
+      // An open Discover skipped its fetch without a session.
+      if app.get_current_route().id == crate::core::app::RouteId::Discover {
+        app.fetch_discover();
+      }
+    }
+    self
+      .show_status_message(
+        self
+          .strings()
+          .await
+          .status
+          .infra
+          .spotify_connected
+          .to_string(),
+        10,
+      )
+      .await;
+  }
+
+  /// Clears a failed in-app login so the user can try again.
+  async fn cancel_spotify_login(&mut self, reason: String) {
+    if self.login_prompt.take().is_some() {
+      self.show_status_message(reason, 8).await;
+    }
+  }
+  async fn start_party(&mut self, control_mode: sync::ControlMode) {
+    // The event bypasses the auth gate, so the handler carries the requirement
+    // itself: the relay drives Spotify playback, and opening the socket first
+    // would leave a live party the drain has to close again.
+    if self.spotify.is_none() {
+      self
+        .show_status_message(
+          self
+            .strings()
+            .await
+            .status
+            .infra
+            .spotify_not_connected
+            .to_string(),
+          6,
+        )
+        .await;
+      return;
+    }
+    {
+      let mut app = self.app.lock().await;
+      app.set_party_status(sync::PartyStatus::Connecting);
+    }
+
+    let relay_url = {
+      let app = self.app.lock().await;
+      app.user_config.behavior.relay_server_url.clone()
+    };
+
+    let mode_str = match &control_mode {
+      sync::ControlMode::HostOnly => "host_only",
+      sync::ControlMode::SharedControl => "shared_control",
+    };
+
+    match sync::connect_to_relay(&relay_url, "create", &[("control_mode", mode_str)]).await {
+      Ok((conn, read)) => {
+        let (incoming_tx, incoming_rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(sync::start_party_reader(read, incoming_tx));
+        self.party_connection = Some(conn);
+        self.party_incoming_rx = Some(incoming_rx);
+
+        let mut app = self.app.lock().await;
+        app.set_party_status(sync::PartyStatus::Hosting);
+        app.set_party_session(Some(sync::PartySession {
+          role: sync::PartyRole::Host,
+          code: String::new(),
+          guests: Vec::new(),
+          control_mode,
+          host_name: "Host".to_string(),
+        }));
+      }
+      Err(e) => {
+        let mut app = self.app.lock().await;
+        app.set_party_status(sync::PartyStatus::Disconnected);
+        {
+          let strings = app.strings();
+          app.handle_error_with_message(
+            anyhow!("Failed to start party: {}", e),
+            strings.status.infra.party_start_failed(&e.to_string()),
+          )
+        };
+      }
+    }
+  }
+
+  async fn join_party(&mut self, code: String, name: String) {
+    // Same requirement as `start_party`.
+    if self.spotify.is_none() {
+      self
+        .show_status_message(
+          self
+            .strings()
+            .await
+            .status
+            .infra
+            .spotify_not_connected
+            .to_string(),
+          6,
+        )
+        .await;
+      return;
+    }
+    {
+      let mut app = self.app.lock().await;
+      app.set_party_status(sync::PartyStatus::Connecting);
+    }
+
+    let relay_url = {
+      let app = self.app.lock().await;
+      app.user_config.behavior.relay_server_url.clone()
+    };
+
+    match sync::connect_to_relay(&relay_url, "join", &[("code", &code), ("name", &name)]).await {
+      Ok((conn, read)) => {
+        let (incoming_tx, incoming_rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(sync::start_party_reader(read, incoming_tx));
+        self.party_connection = Some(conn);
+        self.party_incoming_rx = Some(incoming_rx);
+
+        let mut app = self.app.lock().await;
+        app.set_party_status(sync::PartyStatus::Joined);
+        app.set_party_session(Some(sync::PartySession {
+          role: sync::PartyRole::Guest,
+          code: code.to_uppercase(),
+          guests: Vec::new(),
+          control_mode: sync::ControlMode::default(),
+          host_name: String::new(),
+        }));
+      }
+      Err(e) => {
+        let mut app = self.app.lock().await;
+        app.set_party_status(sync::PartyStatus::Disconnected);
+        {
+          let strings = app.strings();
+          app.handle_error_with_message(
+            anyhow!("Failed to join party: {}", e),
+            strings.status.infra.party_join_failed(&e.to_string()),
+          )
+        };
+      }
+    }
+  }
+
+  async fn leave_party(&mut self) {
+    if let Some(conn) = &mut self.party_connection {
+      conn.close().await;
+    }
+    self.party_connection = None;
+    self.party_incoming_rx = None;
+
+    let mut app = self.app.lock().await;
+    app.set_party_status(sync::PartyStatus::Disconnected);
+    app.set_party_session(None);
+  }
+
+  async fn sync_playback(&mut self) {
+    let sync_state = {
+      let app = self.app.lock().await;
+      let session = match app.party_session() {
+        Some(s) if s.role == sync::PartyRole::Host => s,
+        _ => return,
+      };
+      let _ = session;
+      // Publish only what a guest can follow: the same owner rule as the
+      // command relay, and a Spotify URI (a native `spotify:local:` track has none).
+      let followable = if party_yields_to_local_playback(&app) {
+        None
+      } else {
+        crate::infra::media_metadata::current_playback_snapshot(&app).and_then(|snapshot| {
+          let track_uri = snapshot
+            .item_uri
+            .and_then(|uri| ids::playable_id(&uri).map(|id| id.uri()))?;
+          Some(sync::SyncMessage::SyncState {
+            track_uri,
+            position_ms: snapshot.progress_ms as u64,
+            is_playing: snapshot.is_playing,
+            timestamp: sync::now_ms(),
+          })
+        })
+      };
+      // The relay closes a room after 5 minutes without a message, so a host
+      // playing nothing a guest can follow still keeps the room open.
+      followable.unwrap_or(sync::SyncMessage::Heartbeat)
+    };
+
+    if let Some(conn) = &mut self.party_connection {
+      if let Err(e) = conn.send(&sync_state).await {
+        log::error!("Failed to send sync state: {}", e);
+      }
+    }
+  }
+
+  async fn set_party_control_mode(&mut self, control_mode: sync::ControlMode) {
+    let control_mode = match control_mode {
+      sync::ControlMode::HostOnly => "host_only",
+      sync::ControlMode::SharedControl => "shared_control",
+    };
+
+    let msg = sync::SyncMessage::SetControlMode {
+      control_mode: control_mode.to_string(),
+    };
+
+    if let Some(conn) = &mut self.party_connection {
+      if let Err(e) = conn.send(&msg).await {
+        log::error!("Failed to send control mode update: {}", e);
+      }
+    }
+  }
+
+  async fn party_playback_command(&mut self, action: sync::PlaybackAction) {
+    let msg = sync::SyncMessage::PlaybackCommand { action, from: None };
+    if let Some(conn) = &mut self.party_connection {
+      if let Err(e) = conn.send(&msg).await {
+        log::error!("Failed to send playback command: {}", e);
+      }
+    }
+  }
+
+  pub async fn process_party_messages(&mut self) {
+    // Every relay handler below drives the Spotify client; without a session
+    // there is nothing to sync and `spotify()` would panic the pump. Close the
+    // party instead of returning, so an unread receiver cannot grow without a
+    // bound. The guard keeps the common no-party drain to one comparison.
+    if self.spotify.is_none() {
+      if self.party_connection.is_some() || self.party_incoming_rx.is_some() {
+        self.leave_party().await;
+        self
+          .show_status_message(
+            self
+              .strings()
+              .await
+              .status
+              .infra
+              .party_disconnected
+              .to_string(),
+            6,
+          )
+          .await;
+      }
+      return;
+    }
+    let messages: Vec<sync::SyncMessage> = {
+      match &mut self.party_incoming_rx {
+        Some(rx) => {
+          let mut msgs = Vec::new();
+          while let Ok(msg) = rx.try_recv() {
+            msgs.push(msg);
+          }
+          msgs
+        }
+        None => return,
+      }
+    };
+
+    let mut latest_state = None;
+    for msg in messages {
+      match msg {
+        sync::SyncMessage::RoomCreated { code, .. } => {
+          let mut app = self.app.lock().await;
+          if let Some(session) = app.party_session_mut() {
+            session.code = code;
+          }
+        }
+        sync::SyncMessage::JoinedRoom { host_name } => {
+          let mut app = self.app.lock().await;
+          if let Some(session) = app.party_session_mut() {
+            session.host_name = host_name;
+          }
+        }
+        sync::SyncMessage::GuestJoined { name } => {
+          let mut app = self.app.lock().await;
+          if let Some(session) = app.party_session_mut() {
+            if !session.guests.contains(&name) {
+              session.guests.push(name.clone());
+            }
+          }
+          let strings = app.strings();
+          app.set_status_message(strings.status.infra.party_joined(&name), 3);
+        }
+        sync::SyncMessage::GuestLeft { name } => {
+          let mut app = self.app.lock().await;
+          if let Some(session) = app.party_session_mut() {
+            if let Some(pos) = session.guests.iter().position(|g| g == &name) {
+              session.guests.remove(pos);
+            }
+          }
+          let strings = app.strings();
+          app.set_status_message(strings.status.infra.party_left(&name), 3);
+        }
+        sync::SyncMessage::SetControlMode { control_mode } => {
+          let mut app = self.app.lock().await;
+          if let Some(session) = app.party_session_mut() {
+            session.control_mode = match control_mode.as_str() {
+              "shared_control" => sync::ControlMode::SharedControl,
+              _ => sync::ControlMode::HostOnly,
+            };
+          }
+        }
+        // Only the newest host state in a drain counts: each earlier one
+        // would start the track again before the pump ran the first start.
+        state @ sync::SyncMessage::SyncState { .. } => latest_state = Some(state),
+        sync::SyncMessage::PlaybackCommand { action, .. } => {
+          self.handle_incoming_playback_command(action).await;
+        }
+        sync::SyncMessage::RoomClosed => {
+          self.party_connection = None;
+          let mut app = self.app.lock().await;
+          app.set_party_status(sync::PartyStatus::Disconnected);
+          app.set_party_session(None);
+          let strings = app.strings();
+          app.set_status_message(strings.status.infra.party_ended.to_string(), 5);
+        }
+        sync::SyncMessage::Error { message } => {
+          self.party_connection = None;
+          self.party_incoming_rx = None;
+          let mut app = self.app.lock().await;
+          app.set_party_status(sync::PartyStatus::Disconnected);
+          app.set_party_session(None);
+          {
+            let strings = app.strings();
+            app.handle_error_with_message(
+              anyhow!("Party: {}", message),
+              strings.status.infra.party_error(&message),
+            )
+          };
+        }
+        _ => {}
+      }
+    }
+    if let Some(sync::SyncMessage::SyncState {
+      track_uri,
+      position_ms,
+      is_playing,
+      timestamp,
+    }) = latest_state
+    {
+      self
+        .handle_incoming_sync_state(track_uri, position_ms, is_playing, timestamp)
+        .await;
+    }
+  }
+
+  async fn handle_incoming_sync_state(
+    &mut self,
+    track_uri: String,
+    position_ms: u64,
+    is_playing: bool,
+    timestamp: u64,
+  ) {
+    // The canonical URI: a bare id would compare unequal to the current
+    // track's URI and restart it on every state.
+    let Some(track_uri) = ids::playable_id(&track_uri).map(|id| id.uri()) else {
+      return;
+    };
+    let mut app = self.app.lock().await;
+    let follows_host = matches!(
+      app.party_session(),
+      Some(s) if s.role == sync::PartyRole::Guest
+    ) && !party_yields_to_local_playback(&app);
+    if !follows_host {
+      return;
+    }
+
+    // Latency compensation: estimate how much time passed since the host sent this state
+    let now = sync::now_ms();
+    let transit_ms = if now > timestamp {
+      (now - timestamp).min(5000) // cap at 5s to avoid wild jumps from clock skew
+    } else {
+      0
+    };
+    let compensated_position = if is_playing {
+      position_ms.saturating_add(transit_ms)
+    } else {
+      position_ms
+    };
+
+    let (current_uri, current_is_playing, current_progress) = {
+      let uri = match &app.current_playback_context {
+        Some(ctx) => match &ctx.item {
+          Some(rspotify::model::PlayableItem::Track(t)) => {
+            t.id.as_ref().map(|id| id.uri()).unwrap_or_default()
+          }
+          Some(rspotify::model::PlayableItem::Episode(e)) => e.id.uri(),
+          Some(_) | None => String::new(),
+        },
+        None => String::new(),
+      };
+      let playing = app
+        .current_playback_context
+        .as_ref()
+        .map(|c| c.is_playing)
+        .unwrap_or(false);
+      let progress = app.song_progress_ms as u64;
+      (uri, playing, progress)
+    };
+
+    // Track change takes priority
+    let switched_track = current_uri != track_uri;
+    if switched_track {
+      app.start_playback_uris(vec![track_uri], None);
+    }
+
+    // Play/pause sync
+    // After a track switch, explicitly apply host pause state since starting playback may
+    // begin playing even when host is paused.
+    if (switched_track && !is_playing) || (!switched_track && current_is_playing != is_playing) {
+      if is_playing {
+        app.dispatch(IoEvent::StartPlayback(None, None, None));
+      } else {
+        app.dispatch(IoEvent::PausePlayback);
+      }
+    }
+
+    // Position drift correction (>3s triggers seek)
+    let drift = current_progress.abs_diff(compensated_position);
+
+    if drift > 3000 && !switched_track {
+      if let Ok(position_ms) = u32::try_from(compensated_position) {
+        app.dispatch(IoEvent::Seek(position_ms));
+      }
+    }
+  }
+
+  async fn handle_incoming_playback_command(&mut self, action: sync::PlaybackAction) {
+    let mut app = self.app.lock().await;
+    let relays = matches!(
+      app.party_session(),
+      Some(s) if s.role == sync::PartyRole::Host
+    ) && !party_yields_to_local_playback(&app);
+    if !relays {
+      return;
+    }
+
+    // Plain Spotify events, not the `App` key chains: a host's Next through
+    // `App::next_track` would hand the sink to its own queue and lock the
+    // party out.
+    match action {
+      sync::PlaybackAction::Play => app.dispatch(IoEvent::StartPlayback(None, None, None)),
+      sync::PlaybackAction::Pause => app.dispatch(IoEvent::PausePlayback),
+      sync::PlaybackAction::NextTrack => app.dispatch(IoEvent::NextTrack),
+      sync::PlaybackAction::PrevTrack => app.dispatch(IoEvent::PreviousTrack),
+      sync::PlaybackAction::Seek { position_ms } => {
+        if let Ok(position_ms) = u32::try_from(position_ms) {
+          app.dispatch(IoEvent::Seek(position_ms));
+        }
+      }
+      sync::PlaybackAction::PlayTrack { uri } => {
+        if let Some(uri) = ids::playable_id(&uri).map(|id| id.uri()) {
+          app.start_playback_uris(vec![uri], None);
+        }
+      }
+    }
+
+    // Queued behind the command on the serial pump; the 2 s tick repeats it.
+    app.dispatch(IoEvent::SyncPlayback);
+  }
+}
+
+/// The party follows Spotify transport only. Coarser than the transport
+/// guard on purpose: a queued Spotify track keeps librespot, but a guest must
+/// not drive the host's queue slot. A parked native backend has no Spotify
+/// playback to relay or follow.
+fn party_yields_to_local_playback(app: &App) -> bool {
+  app.apple_music_owns_playback()
+    || app.playback_owner().owns_local_sink()
+    || app.native_parked_here()
+}
+
+/// Keep diagnostics and the CLI byte-identical while giving the UI a localized context.
+fn report_request_error(app: &mut App, error: anyhow::Error) {
+  let message = app
+    .strings()
+    .status
+    .infra
+    .network_error(&requests::error_text(&error, app.language()));
+  app.handle_error_with_message(error, message);
+}
+
+#[cfg(test)]
+mod tests {
+
+  #[tokio::test]
+  async fn speaker_errors_use_the_active_ui_language_without_losing_the_error_route() {
+    use crate::core::i18n::{Language, LocalizedMessage};
+    for language in [Language::En, Language::ZhHans, Language::ZhHant] {
+      let app = app_without_a_session();
+      {
+        let mut app = app.lock().await;
+        app.user_config.behavior.language = language;
+        app.refresh_language();
+      }
+      let mut network = Network::new(None, &app);
+      network
+        .handle_error(
+          LocalizedMessage::new(|s| s.status.infra.cast_no_reply("LAUNCH {name}")).into(),
+        )
+        .await;
+      let app = app.lock().await;
+      assert!(app.api_error().contains("LAUNCH {name}"));
+      assert_eq!(app.get_current_route().id, crate::core::app::RouteId::Error);
+      assert_eq!(
+        app.api_error(),
+        app
+          .strings()
+          .status
+          .infra
+          .network_error(&app.strings().status.infra.cast_no_reply("LAUNCH {name}"))
+      );
+    }
+  }
+
+  #[tokio::test]
+  async fn a_repeated_login_preserves_the_translated_pairing_prompt_and_literal_code() {
+    use crate::core::i18n::Language;
+    for language in [Language::ZhHans, Language::ZhHant] {
+      let app = app_without_a_session();
+      app.lock().await.user_config.behavior.language = language;
+      app.lock().await.refresh_language();
+      let prompt = app
+        .lock()
+        .await
+        .strings()
+        .status
+        .infra
+        .spotify_pair("https://spotify.com/pair", "A{url}B");
+      let mut network = Network::new(None, &app);
+      network.login_prompt = Some(SpotifyPairingPrompt {
+        url: "https://spotify.com/pair".into(),
+        code: "A{url}B".into(),
+      });
+      network
+        .handle_network_event(IoEvent::BeginSpotifyLogin)
+        .await;
+      assert_eq!(app.lock().await.status_message(), Some(prompt.as_str()));
+      assert!(prompt.contains("A{url}B"));
+    }
+  }
+  use super::*;
+  use crate::core::app::App;
+  use crate::core::user_config::UserConfig;
+  use std::time::{Duration, SystemTime};
+  #[test]
+  fn the_audio_analysis_fetch_starts_on_the_pump_behind_the_auth_gate() {
+    let event = IoEvent::GetAudioAnalysis(String::new());
+    assert!(!Network::runs_on_spotify_lane(&event));
+    assert!(!Network::runs_on_service_lane(&event));
+    assert!(!Network::event_bypasses_spotify_auth(&event));
+    assert!(!Network::event_is_transport(&event));
+  }
+
+  #[test]
+  fn every_service_lane_event_bypasses_spotify_auth() {
+    use crate::infra::history::RecapPeriod;
+    let events = [
+      IoEvent::FetchGlobalSongCount,
+      IoEvent::IncrementGlobalSongCount,
+      IoEvent::FetchAnnouncements,
+      IoEvent::GetLyrics(String::new(), Vec::new(), 0.0, None),
+      IoEvent::GetFriendCode,
+      IoEvent::GetFriends,
+      IoEvent::AddFriendByCode(String::new()),
+      IoEvent::AddFriendById(String::new()),
+      IoEvent::UnfollowFriend(String::new()),
+      IoEvent::SearchFriendUsers(String::new()),
+      IoEvent::LoadListeningStats(RecapPeriod::SevenDays),
+      IoEvent::GenerateRecap(RecapPeriod::SevenDays),
+    ];
+    for event in events {
+      assert!(Network::runs_on_service_lane(&event));
+      assert!(Network::event_bypasses_spotify_auth(&event));
+    }
+
+    // The DJ's two service-lane events, which the array above cannot hold: they
+    // only exist under `ai-dj`. They are the whole reason this drift matters —
+    // a brain call left on the serial pump blocks every other event for minutes.
+    #[cfg(feature = "ai-dj")]
+    for event in [
+      IoEvent::AskDj(Box::new(crate::infra::dj::AskDjRequest {
+        extra_instruction: None,
+        generation: 0,
+        must_act: false,
+        turn_seq: 0,
+        vibe_on_success: None,
+      })),
+      IoEvent::DjTopUp(0, 0),
+    ] {
+      assert!(Network::runs_on_service_lane(&event));
+      assert!(Network::event_bypasses_spotify_auth(&event));
+    }
+  }
+
+  /// The queue router normally consumes this event first. If that invariant is
+  /// ever broken, its network fallback is still a no-op and must not trigger a
+  /// token refresh or login prompt before being discarded.
+  #[cfg(feature = "streaming")]
+  #[test]
+  fn queue_slot_replay_fallback_bypasses_auth_but_stays_serial() {
+    let event = IoEvent::ReplayPublishedSpotifyQueueSlot;
+    assert!(Network::event_bypasses_spotify_auth(&event));
+    assert!(
+      !Network::runs_on_service_lane(&event),
+      "the queue router owns replay ordering on the serial event pump"
+    );
+  }
+
+  /// `DjToolCall` is the one event that bypasses the auth gate *without* moving
+  /// onto the service lane, so it gets its own assertion.
+  ///
+  /// Both halves matter. It must stay off the service lane because resolving a
+  /// track name needs the real Spotify client, and the service lane builds its
+  /// `Network` with `None` for it. It must bypass the gate so the handler can
+  /// answer an unauthenticated caller with a diagnosable message instead of
+  /// dropping the `oneshot`. Both front doors block on that channel: an MCP
+  /// client through the server, and the in-TUI DJ through its own tool loop.
+  #[cfg(any(feature = "mcp-server", feature = "ai-dj"))]
+  #[test]
+  fn dj_tool_calls_bypass_auth_and_run_on_the_spotify_lane() {
+    let (tx, _rx) = tokio::sync::oneshot::channel();
+    let event = IoEvent::DjToolCall(Box::new((
+      crate::infra::dj::tools::DjToolCall::GetNowPlaying,
+      tx,
+    )));
+    assert!(Network::event_bypasses_spotify_auth(&event));
+    assert!(
+      !Network::runs_on_service_lane(&event),
+      "the service lane has no Spotify client, so the resolver could not run there"
+    );
+    assert!(Network::runs_on_spotify_lane(&event));
+  }
+
+  /// The crawl and the tool calls share one ordered lane, and nothing on it is
+  /// a transport: the lane runs out of order with the pump.
+  #[cfg(any(feature = "mcp-server", feature = "ai-dj"))]
+  #[test]
+  fn the_spotify_lane_carries_the_crawl_and_no_transport() {
+    assert!(Network::runs_on_spotify_lane(&IoEvent::DjIndexLibrary));
+    assert!(!Network::runs_on_service_lane(&IoEvent::DjIndexLibrary));
+    assert!(!Network::event_is_transport(&IoEvent::DjIndexLibrary));
+    for event in [
+      IoEvent::NextTrack,
+      IoEvent::Seek(0),
+      IoEvent::CompleteSpotifyLogin,
+      IoEvent::UpdateSearchLimits(1, 1),
+    ] {
+      assert!(!Network::runs_on_spotify_lane(&event));
+    }
+  }
+
+  /// The queue router consumes both native-queue control events before the
+  /// network sees them, so neither is classified as a bypass or a lane move.
+  #[test]
+  fn native_queue_control_events_stay_serial_and_behind_the_auth_gate() {
+    for event in [IoEvent::AdvanceNativeQueue, IoEvent::FinishNativeQueue] {
+      assert!(!Network::runs_on_service_lane(&event));
+      assert!(!Network::event_bypasses_spotify_auth(&event));
+    }
+  }
+
+  #[test]
+  fn apple_music_volume_stays_serial_and_cannot_replay_to_another_owner() {
+    let event = IoEvent::AppleMusicVolume {
+      generation: 4,
+      volume: 73,
+    };
+    assert!(Network::event_bypasses_spotify_auth(&event));
+    assert!(!Network::runs_on_service_lane(&event));
+    // This targets one Music generation, not whoever owns the sink.
+    assert!(!Network::event_is_transport(&event));
+  }
+
+  #[test]
+  fn the_playlist_sync_events_bypass_auth_and_are_neither_service_lane_nor_transport() {
+    let master = crate::core::playlist_sync::Endpoint {
+      source: Source::Spotify,
+      playlist_uri: "spotify:playlist:1".to_string(),
+      name: "Road Trip".to_string(),
+    };
+    for event in [
+      IoEvent::RunPlaylistSync {
+        retry_unmatched: true,
+      },
+      IoEvent::LinkPlaylist(master, Source::Qobuz),
+      IoEvent::RemovePlaylistSyncLink("aaa".to_string()),
+    ] {
+      assert!(Network::event_bypasses_spotify_auth(&event));
+      assert!(
+        !Network::runs_on_service_lane(&event),
+        "the service lane builds its `Network` with no Spotify client to hand the run"
+      );
+      assert!(
+        !Network::event_is_transport(&event),
+        "a sync drives no sink, so it is never deferred or replayed"
+      );
+    }
+  }
+
+  #[tokio::test]
+  async fn a_playback_poll_dropped_at_the_auth_gate_lets_the_tick_poll_again() {
+    use std::time::Instant;
+    let (io_tx, io_rx) = std::sync::mpsc::channel();
+    let app = Arc::new(Mutex::new(App::new(
+      io_tx,
+      UserConfig::new(),
+      Some(SystemTime::now()),
+    )));
+    let tick_polls = |app: &mut App| {
+      app.instant_since_last_current_playback_poll = Instant::now() - Duration::from_secs(10);
+      app.update_on_tick(Duration::from_millis(250));
+      io_rx
+        .try_iter()
+        .any(|event| matches!(event, IoEvent::GetCurrentPlayback))
+    };
+    // The tick polls and latches until the poll's handler runs.
+    assert!(tick_polls(&mut *app.lock().await));
+    assert!(app.lock().await.is_fetching_current_playback);
+
+    let mut network = Network::new(None, &app);
+    network
+      .handle_network_event(IoEvent::GetCurrentPlayback)
+      .await;
+
+    let mut app = app.lock().await;
+    assert!(!app.is_fetching_current_playback);
+    assert!(tick_polls(&mut app), "the tick polls again after the drop");
+  }
+
+  #[tokio::test]
+  async fn a_made_for_you_fetch_dropped_at_the_auth_gate_can_be_asked_again() {
+    let (io_tx, io_rx) = std::sync::mpsc::channel();
+    let app = Arc::new(Mutex::new(App::new(
+      io_tx,
+      UserConfig::new(),
+      Some(SystemTime::now()),
+    )));
+    app.lock().await.fetch_discover();
+    assert!(app.lock().await.discover_loading());
+
+    Network::new(None, &app)
+      .handle_network_event(IoEvent::GetMadeForYou)
+      .await;
+
+    let mut app = app.lock().await;
+    assert!(!app.discover_loading());
+    app.fetch_discover();
+    assert_eq!(
+      io_rx
+        .try_iter()
+        .filter(|event| matches!(event, IoEvent::GetMadeForYou))
+        .count(),
+      2
+    );
+  }
+
+  #[tokio::test]
+  async fn a_finished_login_connects_and_loads_spotify() {
+    let (app, io_rx) = app_with_a_session_and_channel();
+    app.lock().await.spotify_connected = false;
+    let mut network = Network::new(None, &app);
+    network.login_prompt = Some(SpotifyPairingPrompt {
+      url: "https://spotify.com/pair".into(),
+      code: "ABCD".into(),
+    });
+
+    network
+      .handle_network_event(IoEvent::CompleteSpotifyLogin)
+      .await;
+
+    assert!(network.spotify.is_some());
+    assert!(network.login_prompt.is_none());
+    assert!(app.lock().await.spotify_connected);
+    let loaded: Vec<IoEvent> = io_rx.try_iter().collect();
+    assert!(loaded.iter().any(|event| matches!(event, IoEvent::GetUser)));
+    assert!(loaded
+      .iter()
+      .any(|event| matches!(event, IoEvent::GetPlaylists)));
+    assert!(!loaded
+      .iter()
+      .any(|event| matches!(event, IoEvent::GetMadeForYou)));
+  }
+
+  #[tokio::test]
+  async fn a_finished_login_loads_the_open_discover_page() {
+    let (app, io_rx) = app_with_a_session_and_channel();
+    {
+      let mut app = app.lock().await;
+      app.spotify_connected = false;
+      app.push_navigation_stack(
+        crate::core::app::RouteId::Discover,
+        crate::core::app::ActiveBlock::Discover,
+      );
+    }
+    Network::new(None, &app)
+      .handle_network_event(IoEvent::CompleteSpotifyLogin)
+      .await;
+
+    assert!(io_rx
+      .try_iter()
+      .any(|event| matches!(event, IoEvent::GetMadeForYou)));
+    assert!(app.lock().await.discover_loading());
+  }
+
+  #[tokio::test]
+  async fn a_failed_login_shows_its_reason_once() {
+    let app = app_without_a_session();
+    let mut network = Network::new(None, &app);
+    network.login_prompt = Some(SpotifyPairingPrompt {
+      url: "https://spotify.com/pair".into(),
+      code: "ABCD".into(),
+    });
+
+    network
+      .handle_network_event(IoEvent::CancelSpotifyLogin(
+        "Spotify login timed out".to_string(),
+      ))
+      .await;
+    assert!(network.login_prompt.is_none());
+    assert_eq!(
+      app.lock().await.status_message(),
+      Some("Spotify login timed out")
+    );
+
+    app.lock().await.set_status_message("other", 5);
+    network
+      .handle_network_event(IoEvent::CancelSpotifyLogin("late".to_string()))
+      .await;
+    assert_eq!(app.lock().await.status_message(), Some("other"));
+    assert!(network.spotify.is_none());
+  }
+
+  #[tokio::test]
+  async fn a_second_login_while_one_waits_shows_its_code_again() {
+    let app = app_without_a_session();
+    let mut network = Network::new(None, &app);
+    let prompt = "Log in to Spotify: open https://spotify.com/pair and confirm the code ABCD";
+    network.login_prompt = Some(SpotifyPairingPrompt {
+      url: "https://spotify.com/pair".into(),
+      code: "ABCD".into(),
+    });
+    app.lock().await.set_status_message("other", 5);
+
+    network
+      .handle_network_event(IoEvent::BeginSpotifyLogin)
+      .await;
+
+    assert_eq!(app.lock().await.status_message(), Some(prompt));
+    assert!(network.spotify.is_none());
+  }
+  #[tokio::test]
+  async fn auth_gate_clears_pending_playlist_open() {
+    let (io_tx, _io_rx) = std::sync::mpsc::channel();
+    let app = Arc::new(Mutex::new(App::new(
+      io_tx,
+      UserConfig::new(),
+      Some(SystemTime::now()),
+    )));
+    app.lock().await.pending_playlist_open = Some("playlist-id".to_string());
+    let mut network = Network::new(None, &app);
+
+    network
+      .handle_network_event(IoEvent::GetPlaylistItems("playlist-id".to_string(), 0))
+      .await;
+
+    assert!(app.lock().await.pending_playlist_open.is_none());
+  }
+
+  fn session_free_network(app: &Arc<Mutex<App>>) -> Network {
+    Network::new(None, app)
+  }
+
+  /// A pump-mode network with a session and a private, open rate-limit window.
+  async fn rate_limited_pump_network(app: &Arc<Mutex<App>>) -> Network {
+    let mut network = session_free_network(app);
+    network.spotify = Some(SpotifyLogin::new());
+    network.defers_rate_limited = true;
+    network.rate_gate = requests::RateLimitGate::default();
+    network
+      .rate_gate
+      .rate_limit_for(Duration::from_secs(30))
+      .await;
+    network
+  }
+
+  /// An app with a session whose pump channel the test can read.
+  fn app_with_a_session_and_channel() -> (Arc<Mutex<App>>, std::sync::mpsc::Receiver<IoEvent>) {
+    let (io_tx, io_rx) = std::sync::mpsc::channel();
+    let app = App::new(io_tx, UserConfig::new(), Some(SystemTime::now()));
+    (Arc::new(Mutex::new(app)), io_rx)
+  }
+
+  #[tokio::test]
+  async fn a_rate_limited_made_for_you_fetch_clears_loading_without_opening_an_error_route() {
+    let (app, _rx) = app_with_a_session_and_channel();
+    let mut network = rate_limited_pump_network(&app).await;
+    app.lock().await.fetch_discover();
+    assert!(app.lock().await.discover_loading());
+    let route = app.lock().await.get_current_route().id.clone();
+    network
+      .finish_made_for_you(Err(
+        requests::SpotifyApiError {
+          status: reqwest::StatusCode::TOO_MANY_REQUESTS,
+          body: "rate limited by Spotify, retry in 30s".into(),
+          localized_body: None,
+          detail: None,
+          endpoint: Some("GET /v1/views/made-for-x".into()),
+        }
+        .into(),
+      ))
+      .await;
+    let app = app.lock().await;
+    assert!(!app.discover_loading());
+    assert_eq!(app.get_current_route().id, route);
+    assert!(app.api_error().is_empty());
+    assert!(app.status_message_is_error());
+    assert!(app.status_message().unwrap().contains("429"));
+  }
+
+  #[tokio::test]
+  async fn a_rate_limited_made_for_you_fetch_keeps_the_cli_failure_signal() {
+    let (app, _rx) = app_with_a_session_and_channel();
+    let mut network = rate_limited_pump_network(&app).await;
+    network.defers_rate_limited = false;
+    network
+      .finish_made_for_you(Err(
+        requests::SpotifyApiError {
+          status: reqwest::StatusCode::TOO_MANY_REQUESTS,
+          body: "rate limited by Spotify, retry in 30s".into(),
+          localized_body: None,
+          detail: None,
+          endpoint: Some("GET /v1/views/made-for-x".into()),
+        }
+        .into(),
+      ))
+      .await;
+    let app = app.lock().await;
+    assert!(!app.api_error().is_empty());
+    assert_eq!(app.get_current_route().id, crate::core::app::RouteId::Error);
+  }
+
+  #[tokio::test]
+  async fn a_waiting_pairing_code_uses_the_language_selected_after_login_started() {
+    use crate::core::i18n::Language;
+    let app = app_without_a_session();
+    let mut network = Network::new(None, &app);
+    network.login_prompt = Some(SpotifyPairingPrompt {
+      url: "https://spotify.com/pair?literal={code}".into(),
+      code: "A{url}B".into(),
+    });
+    for language in [Language::En, Language::ZhHans, Language::ZhHant] {
+      let expected = {
+        let mut app = app.lock().await;
+        app.user_config.behavior.language = language;
+        app.refresh_language();
+        app
+          .strings()
+          .status
+          .infra
+          .spotify_pair("https://spotify.com/pair?literal={code}", "A{url}B")
+      };
+      network.begin_spotify_login().await;
+      assert_eq!(app.lock().await.status_message(), Some(expected.as_str()));
+    }
+  }
+
+  #[tokio::test]
+  async fn a_rate_limit_window_holds_spotify_bound_events_back_in_order() {
+    let (app, io_rx) = app_with_a_session_and_channel();
+    let mut network = rate_limited_pump_network(&app).await;
+
+    network.handle_network_event(IoEvent::GetPlaylists).await;
+    network.handle_network_event(IoEvent::GetUser).await;
+    assert!(network.deferred_deadline().await.is_some());
+    network.flush_deferred().await;
+
+    assert!(network.deferred.is_empty());
+    assert!(matches!(io_rx.try_recv(), Ok(IoEvent::GetPlaylists)));
+    assert!(matches!(io_rx.try_recv(), Ok(IoEvent::GetUser)));
+    assert!(io_rx.try_recv().is_err());
+    let app = app.lock().await;
+    assert!(app
+      .status_message()
+      .is_some_and(|m| m.contains("rate limit")));
+  }
+
+  #[cfg(feature = "streaming")]
+  #[tokio::test]
+  async fn a_held_back_transport_event_is_dropped_when_the_sink_changed_hands() {
+    let (app, io_rx) = app_with_a_session_and_channel();
+    let mut network = rate_limited_pump_network(&app).await;
+
+    network
+      .handle_network_event(IoEvent::StartPlayback(
+        Some("spotify:album:parked".to_string()),
+        None,
+        None,
+      ))
+      .await;
+    network.handle_network_event(IoEvent::Seek(5_000)).await;
+    network
+      .handle_network_event(IoEvent::ToggleSaveTrack("t".to_string()))
+      .await;
+    app.lock().await.queue_now = Some(crate::infra::queue::QueueNowPlaying::Spotify {
+      track: crate::core::test_helpers::queued_track("spotify:track:queued", "Queued"),
+    });
+    network.flush_deferred().await;
+
+    assert!(matches!(io_rx.try_recv(), Ok(IoEvent::ToggleSaveTrack(_))));
+    assert!(io_rx.try_recv().is_err());
+    assert!(!app.lock().await.is_loading);
+  }
+
+  #[cfg(feature = "streaming")]
+  #[tokio::test]
+  async fn a_dropped_volume_change_releases_the_volume_latches() {
+    let (app, io_rx) = app_with_a_session_and_channel();
+    let mut network = rate_limited_pump_network(&app).await;
+    {
+      let mut app = app.lock().await;
+      app.pending_volume = Some(50);
+      app.last_dispatched_volume = Some(50);
+      app.is_volume_change_in_flight = true;
+    }
+
+    network
+      .handle_network_event(IoEvent::ChangeVolume(50))
+      .await;
+    app.lock().await.queue_now = Some(crate::infra::queue::QueueNowPlaying::Spotify {
+      track: crate::core::test_helpers::queued_track("spotify:track:queued", "Queued"),
+    });
+    network.flush_deferred().await;
+
+    assert!(io_rx.try_recv().is_err());
+    let app = app.lock().await;
+    assert!(!app.is_volume_change_in_flight);
+    assert!(app.pending_volume.is_none());
+    assert!(app.last_dispatched_volume.is_none());
+  }
+
+  #[test]
+  fn librespot_and_an_external_device_are_one_spotify_owner_for_the_replay() {
+    use PlaybackOwner::{Decoded, NativeSpotify, Queue, Spotify};
+    assert!(owner_still_owns(Spotify, NativeSpotify));
+    assert!(owner_still_owns(NativeSpotify, Spotify));
+    assert!(owner_still_owns(Queue, Queue));
+    assert!(!owner_still_owns(Spotify, Queue));
+    assert!(!owner_still_owns(Spotify, Decoded));
+  }
+
+  #[tokio::test]
+  async fn a_rate_limit_error_under_the_pump_is_a_status_message_not_the_error_page() {
+    let app = app_without_a_session();
+    let mut network = rate_limited_pump_network(&app).await;
+
+    network
+      .handle_error(anyhow!(
+        "Spotify API 429 Too Many Requests failed: retry in 17s"
+      ))
+      .await;
+
+    let app = app.lock().await;
+    assert!(app.api_error().is_empty());
+    assert!(app.status_message_is_error());
+  }
+
+  #[tokio::test]
+  async fn a_rate_limit_error_without_the_pump_keeps_the_cli_exit_signal() {
+    let app = app_without_a_session();
+    let mut network = session_free_network(&app);
+
+    network
+      .handle_error(anyhow!(
+        "Spotify API 429 Too Many Requests failed: retry in 17s"
+      ))
+      .await;
+
+    assert!(!app.lock().await.api_error().is_empty());
+  }
+
+  fn app_without_a_session() -> Arc<Mutex<App>> {
+    let (io_tx, _io_rx) = std::sync::mpsc::channel();
+    Arc::new(Mutex::new(App::new(io_tx, UserConfig::new(), None)))
+  }
+
+  #[tokio::test]
+  async fn start_party_without_a_session_opens_no_relay() {
+    let app = app_without_a_session();
+    let mut network = session_free_network(&app);
+
+    network.start_party(sync::ControlMode::HostOnly).await;
+
+    assert!(network.party_connection.is_none());
+    assert!(network.party_incoming_rx.is_none());
+    let app = app.lock().await;
+    assert_eq!(*app.party_status(), sync::PartyStatus::Disconnected);
+    assert_eq!(app.status_message(), Some(SPOTIFY_NOT_CONNECTED_STATUS));
+  }
+
+  #[tokio::test]
+  async fn join_party_without_a_session_opens_no_relay() {
+    let app = app_without_a_session();
+    let mut network = session_free_network(&app);
+
+    network
+      .join_party("ABC123".to_string(), "Guest".to_string())
+      .await;
+
+    assert!(network.party_connection.is_none());
+    assert!(network.party_incoming_rx.is_none());
+    let app = app.lock().await;
+    assert_eq!(*app.party_status(), sync::PartyStatus::Disconnected);
+    assert_eq!(app.status_message(), Some(SPOTIFY_NOT_CONNECTED_STATUS));
+  }
+
+  #[tokio::test]
+  async fn process_party_messages_closes_a_party_that_outlived_its_session() {
+    let app = app_without_a_session();
+    let mut network = session_free_network(&app);
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    network.party_incoming_rx = Some(rx);
+    {
+      let mut app = app.lock().await;
+      app.set_party_status(sync::PartyStatus::Hosting);
+      app.set_party_session(Some(party_session(sync::PartyRole::Host)));
+    }
+
+    network.process_party_messages().await;
+
+    assert!(network.party_incoming_rx.is_none());
+    let app = app.lock().await;
+    assert_eq!(*app.party_status(), sync::PartyStatus::Disconnected);
+    assert!(app.party_session().is_none());
+  }
+
+  fn party_session(role: sync::PartyRole) -> sync::PartySession {
+    sync::PartySession {
+      role,
+      code: "ABC123".to_string(),
+      guests: Vec::new(),
+      control_mode: sync::ControlMode::HostOnly,
+      host_name: "Host".to_string(),
+    }
+  }
+
+  fn app_with_a_session() -> (Arc<Mutex<App>>, std::sync::mpsc::Receiver<IoEvent>) {
+    let (io_tx, io_rx) = std::sync::mpsc::channel();
+    let app = App::new(io_tx, UserConfig::new(), Some(SystemTime::now()));
+    (Arc::new(Mutex::new(app)), io_rx)
+  }
+
+  /// A party member whose Spotify client is never called: the relay dispatches.
+  async fn party_network(app: &Arc<Mutex<App>>, role: sync::PartyRole) -> Network {
+    let mut network = session_free_network(app);
+    network.spotify = Some(SpotifyLogin::new());
+    app
+      .lock()
+      .await
+      .set_party_session(Some(party_session(role)));
+    network
+  }
+
+  async fn relay(network: &mut Network, message: sync::SyncMessage) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    tx.send(message).unwrap();
+    network.party_incoming_rx = Some(rx);
+    network.process_party_messages().await;
+  }
+
+  const HOST_TRACK: &str = "spotify:track:0000000000000000000001";
+
+  fn host_state() -> sync::SyncMessage {
+    sync::SyncMessage::SyncState {
+      track_uri: HOST_TRACK.to_string(),
+      position_ms: 0,
+      is_playing: true,
+      timestamp: sync::now_ms(),
+    }
+  }
+
+  fn guest_pause() -> sync::SyncMessage {
+    sync::SyncMessage::PlaybackCommand {
+      action: sync::PlaybackAction::Pause,
+      from: None,
+    }
+  }
+
+  #[tokio::test]
+  async fn a_guest_follows_the_host_through_a_dispatched_start() {
+    let (app, rx) = app_with_a_session();
+    let mut network = party_network(&app, sync::PartyRole::Guest).await;
+
+    relay(&mut network, host_state()).await;
+
+    assert!(matches!(
+      rx.try_recv(),
+      Ok(IoEvent::StartPlayback(None, Some(uris), None)) if uris == [HOST_TRACK]
+    ));
+    assert!(rx.try_recv().is_err());
+  }
+
+  #[tokio::test]
+  async fn a_bare_track_id_from_the_host_starts_the_full_uri() {
+    let (app, rx) = app_with_a_session();
+    let mut network = party_network(&app, sync::PartyRole::Guest).await;
+
+    let mut state = host_state();
+    if let sync::SyncMessage::SyncState { track_uri, .. } = &mut state {
+      *track_uri = "0000000000000000000001".to_string();
+    }
+    relay(&mut network, state).await;
+
+    assert!(matches!(
+      rx.try_recv(),
+      Ok(IoEvent::StartPlayback(None, Some(uris), None)) if uris == [HOST_TRACK]
+    ));
+    assert!(rx.try_recv().is_err());
+  }
+
+  #[tokio::test]
+  async fn two_host_states_in_one_drain_start_the_track_once() {
+    let (app, rx) = app_with_a_session();
+    let mut network = party_network(&app, sync::PartyRole::Guest).await;
+
+    let (tx, incoming) = tokio::sync::mpsc::unbounded_channel();
+    tx.send(host_state()).unwrap();
+    let mut newest = host_state();
+    if let sync::SyncMessage::SyncState { track_uri, .. } = &mut newest {
+      *track_uri = "spotify:track:0000000000000000000002".to_string();
+    }
+    tx.send(newest).unwrap();
+    network.party_incoming_rx = Some(incoming);
+    network.process_party_messages().await;
+
+    assert!(matches!(
+      rx.try_recv(),
+      Ok(IoEvent::StartPlayback(None, Some(uris), None))
+        if uris == ["spotify:track:0000000000000000000002"]
+    ));
+    assert!(rx.try_recv().is_err());
+  }
+
+  #[tokio::test]
+  async fn a_guest_ignores_a_host_state_it_cannot_play() {
+    let (app, rx) = app_with_a_session();
+    let mut network = party_network(&app, sync::PartyRole::Guest).await;
+
+    let mut state = host_state();
+    if let sync::SyncMessage::SyncState { track_uri, .. } = &mut state {
+      *track_uri = "qobuz:track:1".to_string();
+    }
+    relay(&mut network, state).await;
+
+    assert!(rx.try_recv().is_err());
+  }
+
+  #[tokio::test]
+  async fn an_oversized_party_seek_is_dropped() {
+    let (app, rx) = app_with_a_session();
+    let mut network = party_network(&app, sync::PartyRole::Host).await;
+
+    relay(
+      &mut network,
+      sync::SyncMessage::PlaybackCommand {
+        action: sync::PlaybackAction::Seek {
+          position_ms: u64::MAX,
+        },
+        from: None,
+      },
+    )
+    .await;
+
+    assert!(matches!(rx.try_recv(), Ok(IoEvent::SyncPlayback)));
+    assert!(rx.try_recv().is_err());
+
+    app.lock().await.party_session_mut().unwrap().role = sync::PartyRole::Guest;
+    let mut state = host_state();
+    if let sync::SyncMessage::SyncState {
+      position_ms,
+      timestamp,
+      ..
+    } = &mut state
+    {
+      *position_ms = u64::MAX;
+      *timestamp = 0;
+    }
+    relay(&mut network, state).await;
+
+    assert!(matches!(
+      rx.try_recv(),
+      Ok(IoEvent::StartPlayback(None, Some(_), None))
+    ));
+    assert!(rx.try_recv().is_err());
+  }
+
+  #[tokio::test]
+  async fn a_host_relays_a_guest_command_then_broadcasts() {
+    let (app, rx) = app_with_a_session();
+    let mut network = party_network(&app, sync::PartyRole::Host).await;
+
+    relay(&mut network, guest_pause()).await;
+
+    assert!(matches!(rx.try_recv(), Ok(IoEvent::PausePlayback)));
+    assert!(matches!(rx.try_recv(), Ok(IoEvent::SyncPlayback)));
+    assert!(rx.try_recv().is_err());
+  }
+
+  #[cfg(feature = "streaming")]
+  #[tokio::test]
+  async fn the_relay_yields_to_the_native_queue_slot() {
+    let (app, rx) = app_with_a_session();
+    app.lock().await.queue_now = Some(crate::infra::queue::QueueNowPlaying::Spotify {
+      track: crate::core::test_helpers::queued_track("spotify:track:queued", "Queued"),
+    });
+    let mut network = party_network(&app, sync::PartyRole::Guest).await;
+
+    relay(&mut network, host_state()).await;
+    assert!(rx.try_recv().is_err());
+
+    app.lock().await.party_session_mut().unwrap().role = sync::PartyRole::Host;
+    relay(&mut network, guest_pause()).await;
+    assert!(rx.try_recv().is_err());
+  }
+
+  #[tokio::test]
+  async fn a_relayed_guest_join_bumps_the_party_revision() {
+    use crate::core::app::DisplayDomain;
+    let (app, _rx) = app_with_a_session();
+    let mut network = party_network(&app, sync::PartyRole::Host).await;
+    let before = app
+      .lock()
+      .await
+      .display_revisions()
+      .get(DisplayDomain::Party);
+
+    relay(
+      &mut network,
+      sync::SyncMessage::GuestJoined {
+        name: "Guest".to_string(),
+      },
+    )
+    .await;
+
+    let app = app.lock().await;
+    assert_eq!(
+      app.party_session().map(|s| s.guests.clone()),
+      Some(vec!["Guest".to_string()])
+    );
+    assert_eq!(
+      app.display_revisions().get(DisplayDomain::Party),
+      before + 1
+    );
+  }
+
+  #[tokio::test]
+  async fn party_auth_status_uses_app_language_without_holding_the_lock() {
+    use crate::core::i18n::Language;
+    let mut state = App::default();
+    state.user_config.behavior.language = Language::ZhHant;
+    state.refresh_language();
+    let app = Arc::new(Mutex::new(state));
+    let mut network = Network::new(None, &app);
+    tokio::time::timeout(
+      std::time::Duration::from_secs(2),
+      network.start_party(sync::ControlMode::HostOnly),
+    )
+    .await
+    .expect("reading the table must release the lock before writing status");
+    assert_eq!(
+      app.lock().await.status_message(),
+      Some(
+        crate::core::i18n::ZH_HANT
+          .status
+          .infra
+          .spotify_not_connected
+      )
+    );
+    {
+      let mut app = app.lock().await;
+      app.user_config.behavior.language = Language::ZhHans;
+      app.refresh_language();
+    }
+    network.start_party(sync::ControlMode::HostOnly).await;
+    assert_eq!(
+      app.lock().await.status_message(),
+      Some(
+        crate::core::i18n::ZH_HANS
+          .status
+          .infra
+          .spotify_not_connected
+      )
+    );
+    app.lock().await.use_english_messages();
+    network.start_party(sync::ControlMode::HostOnly).await;
+    assert_eq!(
+      app.lock().await.status_message(),
+      Some("Spotify not connected. Press `d` and pick Spotify to log in.")
+    );
+  }
+}

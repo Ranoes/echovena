@@ -1,0 +1,351 @@
+/* The Session screen: a line of past, now and next, then two lists. */
+.session {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 24px 24px 0;
+  overflow-y: auto;
+  outline: none;
+}
+
+.session-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.session h1 {
+  margin: 0;
+  font-size: 32px;
+  font-weight: 700;
+}
+
+.session-head > span {
+  color: var(--sub);
+}
+
+.session-head kbd {
+  margin-left: auto;
+  font-size: 11px;
+}
+
+.session .label {
+  color: var(--sub);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.timeline {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 220px minmax(0, 1fr);
+  gap: 24px;
+  margin-top: 24px;
+  padding: 20px;
+  border-radius: var(--radius);
+  background: #181818;
+}
+
+.lane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.lane.upcoming .label {
+  text-align: right;
+}
+
+.covers {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  /* The past runs up to now: an overflow drops the oldest covers, not the newest. */
+  justify-content: flex-end;
+  gap: 16px;
+  min-height: 150px;
+  padding-top: 20px;
+  overflow: hidden;
+}
+
+.lane.upcoming .covers {
+  justify-content: flex-start;
+}
+
+.covers .more {
+  align-self: center;
+  color: var(--quiet);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.cover-card {
+  display: flex;
+  flex-direction: column;
+  width: 96px;
+  flex-shrink: 0;
+}
+
+.cover-card img,
+.cover-card .tile,
+.now-block img,
+.now-block .tile {
+  display: block;
+  width: 96px;
+  height: 96px;
+  margin-bottom: 8px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--raised);
+}
+
+.cover-card > *:not(img):not(.tile),
+.now-block > b,
+.now-block > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cover-card b {
+  font-weight: 700;
+}
+
+.cover-card span,
+.now-block span {
+  color: var(--sub);
+  font-size: 13px;
+}
+
+.now-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.now-block img,
+.now-block .tile {
+  width: 200px;
+  height: 200px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 50%);
+}
+
+.now-block b {
+  margin-top: 8px;
+  color: var(--accent);
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.marker {
+  position: relative;
+  align-self: stretch;
+  width: 0;
+  padding: 0;
+  border: none;
+  border-left: 1px dashed var(--accent);
+  background: transparent;
+}
+
+.marker span {
+  position: absolute;
+  z-index: 1;
+  top: -18px;
+  left: -40px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--raised);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.marker::after {
+  content: "";
+  position: absolute;
+  left: -5px;
+  top: 64px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.marker.pause,
+.marker.gap {
+  border-left-color: var(--quiet);
+}
+
+.marker.pause span,
+.marker.gap span {
+  color: var(--sub);
+}
+
+.marker.pause::after,
+.marker.gap::after {
+  border: 1.5px solid var(--sub);
+  background: var(--panel);
+}
+
+.marker-dialog {
+  position: absolute;
+  top: 120px;
+  left: 150px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 300px;
+  padding: 16px;
+  border-radius: var(--radius);
+  background: var(--raised);
+  box-shadow: 0 16px 24px rgb(0 0 0 / 50%);
+}
+
+.marker-dialog .label {
+  color: var(--text);
+}
+
+.marker-dialog button {
+  align-self: flex-start;
+  height: 32px;
+  padding: 0 16px;
+  border: 1px solid var(--quiet);
+  border-radius: 999px;
+  background: transparent;
+  font-weight: 700;
+}
+
+.marker-dialog button:hover {
+  border-color: var(--text);
+}
+
+.session-lists {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 32px;
+  margin-top: 32px;
+}
+
+.session .section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding-bottom: 12px;
+}
+
+.session h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.session .section-head kbd {
+  font-size: 11px;
+}
+
+.session ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-radius: 4px;
+  outline: none;
+}
+
+.session ol:focus-visible {
+  outline: 1px solid var(--quiet);
+}
+
+.session li {
+  display: grid;
+  grid-template-columns: 52px 40px minmax(0, 1fr) auto;
+  column-gap: 12px;
+  align-items: center;
+  height: 56px;
+  padding: 0 12px 0 8px;
+  border-radius: 4px;
+}
+
+.session-lists section:last-child li {
+  grid-template-columns: 16px 64px 40px minmax(0, 1fr) auto;
+}
+
+.session li:hover {
+  background: var(--hover);
+}
+
+.session li[aria-selected="true"] {
+  background: var(--press);
+}
+
+.session .mirror {
+  opacity: 0.7;
+}
+
+.session .at,
+.session .grip {
+  color: var(--sub);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.session .name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.session .name > * {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session .name b {
+  font-size: 16px;
+  font-weight: 400;
+}
+
+.session .name span,
+.session .empty {
+  color: var(--sub);
+}
+
+.session .empty {
+  margin: 8px 0 0;
+}
+
+.session .keys {
+  margin-top: auto;
+  padding: 12px 0;
+  border-top: none;
+}
+
+@media (max-width: 1100px) {
+  .timeline {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .session-lists {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+  }
+}
+
+@media (max-width: 900px) {
+  .now-block img,
+  .now-block .tile {
+    width: 120px;
+    height: 120px;
+  }
+
+  .session-head kbd {
+    display: none;
+  }
+}

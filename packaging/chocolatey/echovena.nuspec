@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>echovena</id>
+    <version>1.0.0</version>
+    <packageSourceUrl>https://github.com/Ranoes/echovena/tree/main/packaging/chocolatey</packageSourceUrl>
+    <owners>Ranoes</owners>
+    <title>EchoVena</title>
+    <authors>Ranoes</authors>
+    <projectUrl>https://github.com/Ranoes/echovena</projectUrl>
+    <copyright>2026 Ranoes</copyright>
+    <licenseUrl>https://github.com/Ranoes/echovena/blob/main/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <projectSourceUrl>https://github.com/Ranoes/echovena</projectSourceUrl>
+    <docsUrl>https://github.com/Ranoes/echovena#readme</docsUrl>
+    <bugTrackerUrl>https://github.com/Ranoes/echovena/issues</bugTrackerUrl>
+    <tags>echovena music audio lossless flac hires tui terminal spotify youtube karaoke</tags>
+    <summary>Lossless Hi-Res FLAC Terminal Music Streamer, Multi-Platform Playlist Sync &amp; Live Karaoke TUI</summary>
+    <description>
+EchoVena is a lossless Hi-Res terminal music streamer, multi-platform (Spotify and YouTube) playlist sync engine, and 60 FPS real-time word-by-word karaoke TUI in Rust.
+
+### Key Features
+- Bit-perfect Lossless Relay Waterfall (Qobuz 24-bit/192kHz -&gt; Tidal Hi-Res -&gt; Tidal Lossy -&gt; YouTube Opus)
+- Multi-Platform Playlist Sync (Spotify &amp; YouTube)
+- 60 FPS live word-by-word Karaoke Stage View (TTML, RichSync, .elrc, .yrc)
+- Local FLAC + .elrc Archiver
+- Dynamic Provider Registry (~/.config/echovena/providers.json)
+    </description>
+    <releaseNotes>https://github.com/Ranoes/echovena/releases/tag/v1.0.0</releaseNotes>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

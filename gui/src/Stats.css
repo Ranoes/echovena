@@ -1,0 +1,292 @@
+/* The Stats screen: the plays row, three top lists, the week strip. */
+.stats {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 24px 24px 0;
+  overflow-y: auto;
+  outline: none;
+}
+
+.stats-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+}
+
+.stats h1 {
+  margin: 0;
+  font-size: 32px;
+  font-weight: 700;
+}
+
+.stats [role="tablist"] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.stats [role="tab"] {
+  height: 32px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 999px;
+  background: var(--raised);
+  font-size: 14px;
+}
+
+.stats [role="tab"]:hover {
+  background: var(--hover);
+}
+
+.stats [role="tab"][aria-selected="true"] {
+  background: var(--text);
+  color: var(--frame);
+}
+
+.stats-head kbd {
+  margin-left: auto;
+  font-size: 11px;
+}
+
+.stats .empty {
+  margin: 0;
+  padding: 24px 0;
+  color: var(--sub);
+}
+
+.stats-plays {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) 1.3fr;
+  align-items: end;
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.stats-plays > div:not(.movements) {
+  padding: 20px;
+  border-radius: var(--radius);
+  background: #181818;
+}
+
+.stats .big {
+  color: var(--sub);
+  font-size: 48px;
+  font-weight: 800;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats .big.current {
+  color: var(--text);
+}
+
+.stats-plays .label {
+  margin-top: 8px;
+  color: var(--sub);
+}
+
+.movements {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 16px;
+  line-height: 1.3;
+}
+
+.movements em {
+  font-style: normal;
+  font-weight: 700;
+}
+
+.stats h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.stats-lists {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 32px;
+  padding-top: 32px;
+}
+
+.list-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding-bottom: 12px;
+}
+
+.list-head span {
+  color: var(--sub);
+  font-size: 13px;
+}
+
+.stats [role="listbox"] {
+  border-radius: 4px;
+  outline: none;
+}
+
+.stats [role="listbox"]:focus-visible {
+  outline: 1px solid var(--quiet);
+}
+
+.stats .line {
+  display: grid;
+  align-items: center;
+  column-gap: 12px;
+  height: 48px;
+  padding: 0 12px 0 8px;
+  border-radius: 4px;
+}
+
+.stats .line:hover {
+  background: var(--hover);
+}
+
+.stats .line b {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 16px;
+  font-weight: 400;
+}
+
+.stats .line.artist {
+  grid-template-columns: 24px minmax(0, 1fr) 110px;
+}
+
+.stats .line.album {
+  grid-template-columns: 24px minmax(0, 1fr);
+}
+
+.stats .line.track {
+  grid-template-columns: 24px minmax(0, 1fr);
+  cursor: default;
+}
+
+.stats .line.track[aria-selected="true"] {
+  background: var(--press);
+}
+
+.stats .n {
+  color: var(--sub);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats .name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stats .name span {
+  color: var(--sub);
+}
+
+.move {
+  color: var(--quiet);
+  font-size: 13px;
+  text-align: right;
+}
+
+.move.up {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.move.down {
+  color: var(--sub);
+}
+
+.week {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 32px;
+}
+
+.week h2 {
+  grid-column: 1 / -1;
+}
+
+.week div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 16px;
+  border-radius: var(--radius);
+  background: #181818;
+}
+
+.week div:hover {
+  background: var(--raised);
+}
+
+.week div > * {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.week .rank {
+  font-size: 32px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.week b {
+  margin-top: 8px;
+  font-weight: 700;
+}
+
+.week div span:last-child {
+  color: var(--sub);
+  font-size: 13px;
+}
+
+.stats .keys {
+  margin-top: auto;
+  padding: 12px 0;
+  border-top: none;
+}
+
+@media (max-width: 1100px) {
+  .stats-plays {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .movements {
+    grid-column: 1 / -1;
+  }
+
+  .stats-lists {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+  }
+}
+
+@media (max-width: 900px) {
+  .stats .big {
+    font-size: 36px;
+  }
+
+  .stats-head kbd {
+    display: none;
+  }
+
+  .week {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.stats .line.track[aria-disabled="true"] .name b {
+  color: var(--sub);
+}

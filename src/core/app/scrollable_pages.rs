@@ -1,0 +1,375 @@
+use super::*;
+
+#[derive(Clone)]
+pub struct ScrollableResultPages<T> {
+  pub index: usize,
+  pub pages: Vec<T>,
+  /// Set when the cached pages were mutated underneath the reader (e.g. a
+  /// track was added to or removed from an open playlist). `is_complete`
+  /// honours it, so a search or sort walks Spotify again instead of reading
+  /// pages that no longer match what is on the server. Cleared by `clear()`.
+  pub stale: bool,
+}
+
+impl<T> ScrollableResultPages<T> {
+  pub fn new() -> ScrollableResultPages<T> {
+    ScrollableResultPages {
+      index: 0,
+      pages: vec![],
+      stale: false,
+    }
+  }
+
+  pub fn get_results(&self, at_index: Option<usize>) -> Option<&T> {
+    self.pages.get(at_index.unwrap_or(self.index))
+  }
+
+  pub fn get_mut_results(&mut self, at_index: Option<usize>) -> Option<&mut T> {
+    self.pages.get_mut(at_index.unwrap_or(self.index))
+  }
+
+  /// Mark the cached pages as stale (see the `stale` field).
+  pub fn mark_stale(&mut self) {
+    self.stale = true;
+  }
+
+  pub fn clear(&mut self) {
+    self.index = 0;
+    self.pages.clear();
+    self.stale = false;
+  }
+
+  /// Append a page and jump the visible index to it.
+  ///
+  /// Index-ordered caches only (saved albums/shows/artists, show episodes).
+  /// The **offset-keyed** caches (saved tracks, playlist tracks) must insert via
+  /// [`Self::upsert_page_by_offset`] instead: their lookups binary-search on
+  /// `Paged::offset`, and one out-of-order `add_pages` breaks the sorted
+  /// invariant they depend on — and this method also repoints the visible index
+  /// to the tail, clobbering the page the user is looking at.
+  pub fn add_pages(&mut self, new_pages: T) {
+    self.pages.push(new_pages);
+    // Whenever a new page is added, set the active index to the end of the vector
+    self.index = self.pages.len() - 1;
+  }
+}
+
+// Offset-keyed page caches are always kept sorted by `Paged::offset`, but the cache
+// can be sparse, so visible-page identity is derived from the offset, never raw
+// cache adjacency. There is no `DeserializeOwned` bound because `Paged` carries
+// already-mapped domain items.
+impl<T> ScrollableResultPages<Paged<T>> {
+  pub fn page_index_for_offset(&self, offset: u32) -> Option<usize> {
+    self
+      .pages
+      .binary_search_by_key(&offset, |page| page.offset)
+      .ok()
+  }
+
+  pub fn upsert_page_by_offset(&mut self, new_page: Paged<T>) -> usize {
+    let active_page_offset = self.pages.get(self.index).map(|page| page.offset);
+    let new_page_offset = new_page.offset;
+
+    match self
+      .pages
+      .binary_search_by_key(&new_page.offset, |page| page.offset)
+    {
+      Ok(index) => {
+        self.pages[index] = new_page;
+      }
+      Err(index) => {
+        self.pages.insert(index, new_page);
+      }
+    };
+
+    if let Some(active_page_offset) = active_page_offset {
+      if let Some(active_page_index) = self.page_index_for_offset(active_page_offset) {
+        self.index = active_page_index;
+      }
+    } else if !self.pages.is_empty() {
+      self.index = 0;
+    }
+
+    self
+      .page_index_for_offset(new_page_offset)
+      .expect("upserted page offset must exist in cache")
+  }
+
+  /// Returns `true` if all pages from offset 0 to the end of the collection
+  /// are cached contiguously with no missing gaps.
+  pub fn is_complete(&self) -> bool {
+    if self.stale || self.pages.is_empty() {
+      return false;
+    }
+
+    let mut expected_offset = 0;
+    for page in &self.pages {
+      if page.offset != expected_offset {
+        return false;
+      }
+      if page.next.is_none() {
+        return true;
+      }
+      expected_offset = page.offset + page.limit;
+    }
+
+    false
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::core::app::test_support::*;
+
+  fn saved_tracks_domain_page(
+    offset: u32,
+    total: u32,
+    ids: &[&str],
+    has_next: bool,
+  ) -> Paged<TrackInfo> {
+    crate::infra::network::mapping::map_page(
+      &saved_tracks_page(offset, total, ids, has_next),
+      |st| TrackInfo::from(&st.track),
+    )
+  }
+
+  #[test]
+  fn upsert_page_by_offset_preserves_active_index() {
+    let mut pages = ScrollableResultPages::new();
+    pages.upsert_page_by_offset(saved_tracks_domain_page(
+      0,
+      4,
+      &["0000000000000000000001", "0000000000000000000002"],
+      true,
+    ));
+
+    let inserted_index = pages.upsert_page_by_offset(saved_tracks_domain_page(
+      2,
+      4,
+      &["0000000000000000000003", "0000000000000000000004"],
+      false,
+    ));
+
+    assert_eq!(inserted_index, 1);
+    assert_eq!(pages.index, 0);
+    assert_eq!(pages.pages.len(), 2);
+  }
+
+  #[test]
+  fn upsert_page_by_offset_replaces_duplicate_page() {
+    let mut pages = ScrollableResultPages::new();
+    pages.upsert_page_by_offset(saved_tracks_domain_page(
+      0,
+      2,
+      &["0000000000000000000001", "0000000000000000000002"],
+      false,
+    ));
+
+    let replaced_index = pages.upsert_page_by_offset(saved_tracks_domain_page(
+      0,
+      2,
+      &["0000000000000000000003", "0000000000000000000004"],
+      false,
+    ));
+
+    assert_eq!(replaced_index, 0);
+    assert_eq!(pages.pages.len(), 1);
+    assert_eq!(
+      pages.pages[0].items[0].id.as_deref().unwrap(),
+      "0000000000000000000003"
+    );
+  }
+
+  #[test]
+  fn upsert_page_by_offset_keeps_active_page_when_inserting_before_it() {
+    let mut pages = ScrollableResultPages::new();
+    pages.upsert_page_by_offset(saved_tracks_domain_page(
+      0,
+      6,
+      &["0000000000000000000001", "0000000000000000000002"],
+      true,
+    ));
+    pages.upsert_page_by_offset(saved_tracks_domain_page(
+      4,
+      6,
+      &["0000000000000000000005", "0000000000000000000006"],
+      false,
+    ));
+    pages.index = 1;
+
+    let inserted_index = pages.upsert_page_by_offset(saved_tracks_domain_page(
+      2,
+      6,
+      &["0000000000000000000003", "0000000000000000000004"],
+      true,
+    ));
+
+    assert_eq!(inserted_index, 1);
+    assert_eq!(pages.index, 2);
+    assert_eq!(pages.pages[pages.index].offset, 4);
+  }
+
+  #[test]
+  fn out_of_order_upserts_keep_offset_lookups_correct() {
+    let mut pages = ScrollableResultPages::new();
+    pages.upsert_page_by_offset(saved_tracks_domain_page(
+      4,
+      6,
+      &["0000000000000000000005", "0000000000000000000006"],
+      false,
+    ));
+    pages.upsert_page_by_offset(saved_tracks_domain_page(
+      0,
+      6,
+      &["0000000000000000000001", "0000000000000000000002"],
+      true,
+    ));
+    pages.upsert_page_by_offset(saved_tracks_domain_page(
+      2,
+      6,
+      &["0000000000000000000003", "0000000000000000000004"],
+      true,
+    ));
+
+    // The cache is stored sorted by offset regardless of insertion order, so
+    // every offset lookup binary-searches to the right page.
+    assert!(pages.pages.windows(2).all(|w| w[0].offset < w[1].offset));
+    assert_eq!(pages.page_index_for_offset(0), Some(0));
+    assert_eq!(pages.page_index_for_offset(2), Some(1));
+    assert_eq!(pages.page_index_for_offset(4), Some(2));
+    assert_eq!(pages.page_index_for_offset(3), None);
+    assert_eq!(
+      pages.pages[pages.page_index_for_offset(2).unwrap()].items[0]
+        .id
+        .as_deref(),
+      Some("0000000000000000000003")
+    );
+  }
+
+  #[test]
+  fn is_complete_returns_false_when_empty() {
+    let cache: ScrollableResultPages<Paged<u32>> = ScrollableResultPages::new();
+    assert!(!cache.is_complete());
+  }
+
+  #[test]
+  fn is_complete_returns_true_for_single_terminal_page() {
+    let mut cache = ScrollableResultPages::new();
+    cache.upsert_page_by_offset(Paged {
+      items: vec![1, 2, 3],
+      offset: 0,
+      limit: 50,
+      total: 3,
+      next: None,
+      previous: None,
+    });
+    assert!(cache.is_complete());
+  }
+
+  #[test]
+  fn is_complete_returns_false_when_more_pages_exist() {
+    let mut cache = ScrollableResultPages::new();
+    cache.upsert_page_by_offset(Paged {
+      items: vec![1, 2],
+      offset: 0,
+      limit: 2,
+      total: 4,
+      next: Some("https://api.spotify.com/v1/playlists/1/tracks?offset=2".into()),
+      previous: None,
+    });
+    assert!(!cache.is_complete());
+  }
+
+  #[test]
+  fn is_complete_returns_true_for_contiguous_multipage() {
+    let mut cache = ScrollableResultPages::new();
+    cache.upsert_page_by_offset(Paged {
+      items: vec![1, 2],
+      offset: 0,
+      limit: 2,
+      total: 4,
+      next: Some("next_url".into()),
+      previous: None,
+    });
+    cache.upsert_page_by_offset(Paged {
+      items: vec![3, 4],
+      offset: 2,
+      limit: 2,
+      total: 4,
+      next: None,
+      previous: None,
+    });
+    assert!(cache.is_complete());
+  }
+
+  #[test]
+  fn is_complete_returns_false_when_there_is_a_gap() {
+    let mut cache = ScrollableResultPages::new();
+    cache.upsert_page_by_offset(Paged {
+      items: vec![1, 2],
+      offset: 0,
+      limit: 2,
+      total: 6,
+      next: Some("next_url".into()),
+      previous: None,
+    });
+    // Offset 2 is missing! Page at offset 4 inserted directly
+    cache.upsert_page_by_offset(Paged {
+      items: vec![5, 6],
+      offset: 4,
+      limit: 2,
+      total: 6,
+      next: None,
+      previous: None,
+    });
+    assert!(!cache.is_complete());
+  }
+
+  #[test]
+  fn is_complete_returns_false_when_offset_zero_is_missing() {
+    let mut cache = ScrollableResultPages::new();
+    // Cache has pages, but never fetched offset 0
+    cache.upsert_page_by_offset(Paged {
+      items: vec![3, 4],
+      offset: 2,
+      limit: 2,
+      total: 4,
+      next: None,
+      previous: None,
+    });
+    assert!(!cache.is_complete());
+  }
+
+  #[test]
+  fn is_complete_returns_false_after_mark_stale() {
+    // A complete, contiguous two-page cache: is_complete() is true.
+    let mut cache: ScrollableResultPages<Paged<u32>> = ScrollableResultPages::new();
+    cache.upsert_page_by_offset(Paged {
+      items: vec![1, 2],
+      offset: 0,
+      limit: 2,
+      total: 4,
+      next: Some("next_url".into()),
+      previous: None,
+    });
+    cache.upsert_page_by_offset(Paged {
+      items: vec![3, 4],
+      offset: 2,
+      limit: 2,
+      total: 4,
+      next: None,
+      previous: None,
+    });
+    assert!(cache.is_complete());
+
+    // Marking the pages stale makes the cache read incomplete, so the cached
+    // search/sort short-circuit is skipped and Spotify is walked again.
+    cache.mark_stale();
+    assert!(!cache.is_complete());
+
+    // `clear()` drops the mark along with the pages when the view resets.
+    cache.clear();
+    assert!(!cache.stale);
+  }
+}

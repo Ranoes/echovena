@@ -1,0 +1,506 @@
+//! The serial IoEvent pump: source routing by URI scheme, the service lane,
+//! and the party-relay drain. Every frontend drives `App` through this.
+
+#[cfg(test)]
+use crate::core::app::SPOTIFY_NOT_CONNECTED_STATUS;
+use crate::core::queue::{
+  missing_source_feature, queue_item_source, source_available, QueueItemSource,
+};
+use crate::infra::network::{IoEvent, Network};
+
+/// Signalled after the pump runs an event, so a frontend that pushes its
+/// changes (the GUI) does not wait for its next tick to show the result.
+#[cfg_attr(not(feature = "tui"), allow(dead_code))]
+pub(super) fn events_handled() -> &'static tokio::sync::Notify {
+  static HANDLED: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
+  HANDLED.get_or_init(tokio::sync::Notify::new)
+}
+
+/// The URI a `StartPlayback` addresses: the context, or the head of the list.
+#[cfg_attr(not(feature = "tui"), allow(dead_code))]
+fn start_playback_uri(event: &IoEvent) -> Option<&str> {
+  match event {
+    IoEvent::StartPlayback(Some(uri), _, _) => Some(uri),
+    IoEvent::StartPlayback(None, Some(uris), _) => uris.first().map(String::as_str),
+    _ => None,
+  }
+}
+
+/// Whether some router or the Spotify session will start `event`; a start
+/// nobody takes must not reach the routers, whose foreign-start arms tear the
+/// audible player down.
+#[cfg_attr(not(feature = "tui"), allow(dead_code))]
+fn start_playback_has_taker(event: &IoEvent, spotify_session: bool) -> bool {
+  match event {
+    IoEvent::StartPlayback(None, None, None) => true,
+    IoEvent::StartPlayback(..) => match start_playback_uri(event) {
+      // Radio is never queued, so `queue_item_source` does not know its scheme.
+      Some(uri) if uri.starts_with("radio:") => cfg!(feature = "internet-radio"),
+      Some(uri) => match queue_item_source(uri) {
+        QueueItemSource::Spotify => spotify_session,
+        source => source_available(source),
+      },
+      None => spotify_session,
+    },
+    _ => true,
+  }
+}
+
+/// Why the gate dropped a start: the source feature this build lacks, else
+/// the missing Spotify session.
+#[cfg_attr(not(feature = "tui"), allow(dead_code))]
+fn dropped_start_status(event: &IoEvent, strings: &crate::core::i18n::Strings) -> String {
+  if start_playback_uri(event).is_some_and(|uri| uri.starts_with("applemusic:"))
+    && !cfg!(target_os = "macos")
+  {
+    return strings.status.runtime.apple_music_needs_macos.to_string();
+  }
+  let missing_feature = match start_playback_uri(event) {
+    Some(uri) if uri.starts_with("radio:") => {
+      (!cfg!(feature = "internet-radio")).then_some("internet-radio")
+    }
+    Some(uri) => missing_source_feature(uri),
+    None => None,
+  };
+  match missing_feature {
+    Some(feature) => strings.status.runtime.feature_missing(feature),
+    None => strings.status.app.spotify_not_connected.to_string(),
+  }
+}
+
+/// The Spotify lane: one ordered worker, so a tool call behind a library crawl
+/// finds the index built, beside the pump instead of on it.
+#[cfg_attr(not(feature = "tui"), allow(dead_code))]
+async fn run_spotify_lane(mut lane_rx: tokio::sync::mpsc::UnboundedReceiver<(IoEvent, Network)>) {
+  while let Some((io_event, mut lane)) = lane_rx.recv().await {
+    lane.handle_network_event(io_event).await;
+    events_handled().notify_one();
+    // A window that opened on the way: the pump holds these back and flushes
+    // them to this lane again when it ends.
+    lane.flush_deferred().await;
+  }
+}
+
+// CLI mode never starts the pump; only a frontend launch does.
+#[cfg_attr(not(feature = "tui"), allow(dead_code))]
+pub(super) async fn start_tokio(io_rx: std::sync::mpsc::Receiver<IoEvent>, network: &mut Network) {
+  // Bridge the sync dispatch channel onto the async runtime: a dedicated
+  // thread does blocking recv() and forwards into a tokio channel the pump can
+  // await, replacing the old try_recv() + 5ms sleep poll (which added 0-5ms
+  // latency to every event and busy-woke the task while idle).
+  let (bridge_tx, mut bridge_rx) = tokio::sync::mpsc::unbounded_channel::<IoEvent>();
+  std::thread::spawn(move || {
+    while let Ok(io_event) = io_rx.recv() {
+      if bridge_tx.send(io_event).is_err() {
+        break;
+      }
+    }
+  });
+
+  // Party relay messages used to piggyback on the 5ms poll loop; with the pump
+  // parked on recv(), drain them on an interval instead.
+  let mut party_poll = tokio::time::interval(std::time::Duration::from_millis(25));
+  party_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+  // Spotify-bound events that meet a rate limit are held back on the
+  // `Network` and flushed here when the window ends, so the pump never sleeps.
+  network.defers_rate_limited = true;
+  // Music commands run on this router's own worker, never on the pump.
+  #[cfg(all(feature = "apple-music", target_os = "macos"))]
+  let apple_music = crate::infra::apple_music::dispatch::Router::new(&network.app);
+  let (lane_tx, lane_rx) = tokio::sync::mpsc::unbounded_channel();
+  tokio::spawn(run_spotify_lane(lane_rx));
+
+  loop {
+    let deferred_deadline = network.deferred_deadline().await;
+    let io_event = tokio::select! {
+      maybe_event = bridge_rx.recv() => match maybe_event {
+        Some(io_event) => io_event,
+        None => break,
+      },
+      _ = party_poll.tick(), if network.party_incoming_rx.is_some() => {
+        network.process_party_messages().await;
+        continue;
+      }
+      _ = tokio::time::sleep_until(tokio::time::Instant::from_std(
+        deferred_deadline.unwrap_or_else(std::time::Instant::now)
+      )), if deferred_deadline.is_some() => {
+        network.flush_deferred().await;
+        continue;
+      }
+    };
+
+    // Source-agnostic service events (lyrics, cover art, telemetry,
+    // announcements, friends, stats/recap) only touch `App` and their own HTTP
+    // clients — never the Spotify login or `Network` state — so they
+    // run concurrently on a detached task instead of queueing behind
+    // rate-limited Spotify calls on this serial pump (and vice versa). The one
+    // Spotify call here, the lyrics of a Spotify track, goes through the free
+    // request funnel, so it keeps the shared rate window and the deadline.
+    if Network::runs_on_service_lane(&io_event) {
+      let mut service_network = Network::new(None, &network.app);
+      tokio::spawn(async move {
+        service_network.handle_network_event(io_event).await;
+        events_handled().notify_one();
+      });
+      continue;
+    }
+
+    // Slow Spotify work that needs no order against transport events: a crawl
+    // or a catalogue lookup must not hold a Qobuz skip or a seek behind it. A
+    // rate-limit window holds it back here, so one flusher keeps the order.
+    if Network::runs_on_spotify_lane(&io_event) {
+      if let Some(io_event) = network.hold_back_if_rate_limited(io_event).await {
+        let _ = lane_tx.send((io_event, network.spotify_lane_network()));
+      }
+      continue;
+    }
+
+    {
+      if !start_playback_has_taker(&io_event, network.spotify.is_some()) {
+        let mut app = network.app.lock().await;
+        let message = dropped_start_status(&io_event, app.strings());
+        app.set_status_message(message, 6);
+        app.is_loading = false;
+        continue;
+      }
+      // The Apple Music router runs before every other router: while Music owns
+      // playback it takes the transport events, and it holds a start for
+      // another player back until Music acknowledges a pause or a failure
+      // proves that its Apple Event was not delivered. That start
+      // comes back here as `AppleMusicHandoff` and meets the claim gate again.
+      #[cfg(all(feature = "apple-music", target_os = "macos"))]
+      let io_event = {
+        let Some(io_event) = apple_music.route_apple_music_event(io_event).await else {
+          let mut app = network.app.lock().await;
+          app.is_loading = false;
+          app.note_display_changes();
+          continue;
+        };
+        if !start_playback_has_taker(&io_event, network.spotify.is_some()) {
+          let mut app = network.app.lock().await;
+          let message = dropped_start_status(&io_event, app.strings());
+          app.set_status_message(message, 6);
+          app.is_loading = false;
+          continue;
+        }
+        io_event
+      };
+      // The native queue router runs first: it owns `AdvanceNativeQueue` and
+      // the queue slot's transport controls, and relinquishes the slot on an
+      // unrelated `StartPlayback` (returning false so the per-source
+      // teardowns/starts still run). Compiled unconditionally.
+      let handled_queue =
+        crate::infra::queue::dispatch::route_queue_event(&network.app, &io_event).await;
+      // Local-file playback is intercepted before the Spotify network so the
+      // network stays Spotify-only (see infra::local::dispatch).
+      let handled_locally = !handled_queue && {
+        #[cfg(feature = "local-files")]
+        {
+          crate::infra::local::dispatch::route_local_event(&network.app, &io_event).await
+        }
+        #[cfg(not(feature = "local-files"))]
+        {
+          false
+        }
+      };
+      // Subsonic is intercepted after local and before the Spotify network. A
+      // `subsonic:` URI falls through the local dispatch (its `is_file_uri` is
+      // false) and is caught here (see infra::subsonic::dispatch). Skipped when
+      // local already consumed the event.
+      #[cfg(feature = "subsonic")]
+      let handled_subsonic = !handled_queue
+        && !handled_locally
+        && crate::infra::subsonic::dispatch::route_subsonic_event(&network.app, &io_event).await;
+      #[cfg(not(feature = "subsonic"))]
+      let handled_subsonic = false;
+      // Qobuz is intercepted after Subsonic. A `qobuz:` URI falls through the
+      // earlier dispatches and is caught here (see infra::qobuz::dispatch).
+      #[cfg(feature = "qobuz")]
+      let handled_qobuz = !handled_queue
+        && !handled_locally
+        && !handled_subsonic
+        && crate::infra::qobuz::dispatch::route_qobuz_event(&network.app, &io_event).await;
+      #[cfg(not(feature = "qobuz"))]
+      let handled_qobuz = false;
+      // Internet radio is intercepted last before the Spotify network. A
+      // `radio:` URI falls through both earlier dispatches and is caught here
+      // (see infra::radio::dispatch). Skipped when already consumed.
+      #[cfg(feature = "internet-radio")]
+      let handled_radio = !handled_queue
+        && !handled_locally
+        && !handled_subsonic
+        && !handled_qobuz
+        && crate::infra::radio::dispatch::route_radio_event(&network.app, &io_event).await;
+      #[cfg(not(feature = "internet-radio"))]
+      let handled_radio = false;
+      // YouTube is intercepted last before the Spotify network. A `youtube:`
+      // URI falls through the three earlier dispatches and is caught here
+      // (see infra::youtube::dispatch). Skipped when already consumed.
+      #[cfg(feature = "youtube")]
+      let handled_youtube = !handled_queue
+        && !handled_locally
+        && !handled_subsonic
+        && !handled_qobuz
+        && !handled_radio
+        && crate::infra::youtube::dispatch::route_youtube_event(&network.app, &io_event).await;
+      #[cfg(not(feature = "youtube"))]
+      let handled_youtube = false;
+      if !handled_queue
+        && !handled_locally
+        && !handled_subsonic
+        && !handled_qobuz
+        && !handled_radio
+        && !handled_youtube
+      {
+        network.handle_network_event(io_event).await;
+      } else {
+        // A source router consumed the event and returned without touching
+        // `is_loading`, which `App::dispatch` set to true. Only
+        // `handle_network_event` resets it, and we skipped that path, so clear
+        // it here — otherwise selecting/loading Local, Subsonic, Qobuz, Radio,
+        // or YouTube content leaves the UI stuck on the loading indicator.
+        let mut app = network.app.lock().await;
+        app.is_loading = false;
+        app.note_display_changes();
+      }
+    }
+    network.process_party_messages().await;
+    events_handled().notify_one();
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn a_bare_resume_always_has_a_taker() {
+    let resume = IoEvent::StartPlayback(None, None, None);
+
+    assert!(start_playback_has_taker(&resume, false));
+    assert!(start_playback_has_taker(&resume, true));
+  }
+
+  #[test]
+  fn a_spotify_start_needs_a_session() {
+    let start = IoEvent::StartPlayback(None, Some(vec!["spotify:track:x".to_string()]), Some(0));
+
+    assert!(start_playback_has_taker(&start, true));
+    assert!(!start_playback_has_taker(&start, false));
+  }
+
+  #[test]
+  fn an_empty_start_has_no_taker_without_a_session() {
+    let empty = IoEvent::StartPlayback(None, Some(vec![]), Some(0));
+
+    assert!(!start_playback_has_taker(&empty, false));
+  }
+
+  #[cfg(feature = "local-files")]
+  #[test]
+  fn a_local_start_has_a_taker_without_a_session() {
+    let list = IoEvent::StartPlayback(None, Some(vec!["file:///a.mp3".to_string()]), Some(0));
+    let context = IoEvent::StartPlayback(Some("file:///album".to_string()), None, None);
+
+    assert!(start_playback_has_taker(&list, false));
+    assert!(start_playback_has_taker(&context, false));
+  }
+
+  #[cfg(feature = "internet-radio")]
+  #[test]
+  fn a_radio_start_has_a_taker_without_a_session() {
+    let start = IoEvent::StartPlayback(Some("radio:https://x.example/s".to_string()), None, None);
+
+    assert!(start_playback_has_taker(&start, false));
+  }
+
+  #[cfg(not(feature = "local-files"))]
+  #[test]
+  fn a_compiled_out_source_has_no_taker_and_names_the_feature() {
+    let start = IoEvent::StartPlayback(None, Some(vec!["file:///a.mp3".to_string()]), Some(0));
+
+    assert!(!start_playback_has_taker(&start, true));
+    assert!(dropped_start_status(&start, &crate::core::i18n::EN).contains("`local-files`"));
+  }
+
+  #[test]
+  fn an_apple_music_start_never_needs_a_spotify_session() {
+    let start = IoEvent::StartPlayback(
+      None,
+      Some(vec!["applemusic:0123456789ABCDEF".to_string()]),
+      Some(0),
+    );
+    let available = cfg!(all(feature = "apple-music", target_os = "macos"));
+
+    assert_eq!(start_playback_has_taker(&start, false), available);
+    assert_eq!(start_playback_has_taker(&start, true), available);
+    if !cfg!(target_os = "macos") {
+      assert_eq!(
+        dropped_start_status(&start, &crate::core::i18n::EN),
+        "Apple Music playback needs macOS"
+      );
+    } else if !available {
+      assert!(dropped_start_status(&start, &crate::core::i18n::EN).contains("`apple-music`"));
+    }
+  }
+
+  #[test]
+  fn a_spotify_start_without_a_session_reports_the_missing_session() {
+    let start = IoEvent::StartPlayback(None, Some(vec!["spotify:track:x".to_string()]), Some(0));
+
+    assert_eq!(
+      dropped_start_status(&start, &crate::core::i18n::EN),
+      SPOTIFY_NOT_CONNECTED_STATUS
+    );
+  }
+
+  #[test]
+  fn a_non_start_event_always_has_a_taker() {
+    assert!(start_playback_has_taker(&IoEvent::NextTrack, false));
+  }
+
+  #[cfg(feature = "gui")]
+  #[tokio::test]
+  async fn a_spotify_start_without_a_session_pushes_the_status_channel() {
+    use crate::core::app::{App, SPOTIFY_NOT_CONNECTED_STATUS};
+    use crate::core::user_config::UserConfig;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    let (app_tx, _app_rx) = std::sync::mpsc::channel();
+    let app = App::new(app_tx, UserConfig::new(), None);
+    let before = app.display_revisions();
+    let app = Arc::new(Mutex::new(app));
+    let mut network = Network::new(None, &app);
+    let (pump_tx, pump_rx) = std::sync::mpsc::channel();
+    pump_tx
+      .send(IoEvent::StartPlayback(
+        None,
+        Some(vec!["spotify:track:x".to_string()]),
+        Some(0),
+      ))
+      .unwrap();
+    drop(pump_tx);
+
+    start_tokio(pump_rx, &mut network).await;
+
+    let app = app.lock().await;
+    let status = crate::gui::protocol::pushed(
+      &crate::gui::protocol::diff(&before, &app, crate::core::i18n::Language::En),
+      "status",
+    );
+    assert_eq!(status["payload"]["message"], SPOTIFY_NOT_CONNECTED_STATUS);
+    assert_eq!(status["payload"]["is_error"], false);
+  }
+
+  #[cfg(any(feature = "mcp-server", feature = "ai-dj"))]
+  #[tokio::test]
+  async fn a_routed_event_runs_while_the_dj_crawl_is_in_flight() {
+    use crate::core::app::{App, DisplayDomain};
+    use crate::core::user_config::UserConfig;
+    use crate::infra::network::metadata::tests::fake_spotify_login;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::Mutex;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v1/", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+      let (_stream, _) = listener.accept().await.unwrap();
+      tokio::time::sleep(Duration::from_secs(10)).await;
+    });
+    let (app_tx, _app_rx) = std::sync::mpsc::channel();
+    let mut app = App::new(
+      app_tx,
+      UserConfig::new(),
+      Some(std::time::SystemTime::now()),
+    );
+    app.is_streaming_active = true;
+    app.native_track_info = Some(crate::core::app::NativeTrackInfo {
+      name: "Suspended".to_string(),
+      ..Default::default()
+    });
+    app.claim_decoded_sink(crate::core::source::Source::Qobuz);
+    app.note_display_changes();
+    let seen = app.display_revisions().get(DisplayDomain::Playback);
+    let app = Arc::new(Mutex::new(app));
+    let (spotify, _fake) = fake_spotify_login(base_url);
+    let mut network = Network::new(Some(spotify), &app);
+    let (pump_tx, pump_rx) = std::sync::mpsc::channel();
+    pump_tx.send(IoEvent::DjIndexLibrary).unwrap();
+    pump_tx.send(IoEvent::FinishNativeQueue).unwrap();
+    drop(pump_tx);
+
+    tokio::time::timeout(Duration::from_secs(2), start_tokio(pump_rx, &mut network))
+      .await
+      .expect("the crawl must not hold the pump");
+
+    assert_eq!(
+      app
+        .lock()
+        .await
+        .display_revisions()
+        .get(DisplayDomain::Playback),
+      seen + 1
+    );
+    tokio::time::timeout(Duration::from_secs(2), async {
+      while !app.lock().await.dj.library_indexing {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+      }
+    })
+    .await
+    .expect("the crawl runs on the lane");
+    server.abort();
+  }
+
+  #[tokio::test]
+  async fn a_routed_event_that_returns_the_sink_moves_the_playback_revision() {
+    use crate::core::app::{App, DisplayDomain, NativeTrackInfo};
+    use crate::core::user_config::UserConfig;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    let (app_tx, _app_rx) = std::sync::mpsc::channel();
+    let mut app = App::new(
+      app_tx,
+      UserConfig::new(),
+      Some(std::time::SystemTime::now()),
+    );
+    app.is_streaming_active = true;
+    app.native_track_info = Some(NativeTrackInfo {
+      name: "Suspended".to_string(),
+      ..Default::default()
+    });
+    app.claim_decoded_sink(crate::core::source::Source::Qobuz);
+    app.note_display_changes();
+    let seen = app.display_revisions().get(DisplayDomain::Playback);
+    #[cfg(feature = "gui")]
+    let before = app.display_revisions();
+    let app = Arc::new(Mutex::new(app));
+    let mut network = Network::new(None, &app);
+    let (pump_tx, pump_rx) = std::sync::mpsc::channel();
+    pump_tx.send(IoEvent::FinishNativeQueue).unwrap();
+    drop(pump_tx);
+
+    start_tokio(pump_rx, &mut network).await;
+
+    let app = app.lock().await;
+    assert_eq!(
+      app.display_revisions().get(DisplayDomain::Playback),
+      seen + 1
+    );
+    assert_eq!(
+      crate::infra::media_metadata::current_playback_snapshot(&app).map(|s| s.metadata.title),
+      Some("Suspended".to_string())
+    );
+    #[cfg(feature = "gui")]
+    {
+      let playback = crate::gui::protocol::pushed(
+        &crate::gui::protocol::diff(&before, &app, crate::core::i18n::Language::En),
+        "playback",
+      );
+      assert_eq!(playback["payload"]["item"]["title"], "Suspended");
+    }
+  }
+}

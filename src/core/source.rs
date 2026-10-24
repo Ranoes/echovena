@@ -1,0 +1,333 @@
+//! Capability-based media-source traits — the seam for the multi-source refactor.
+//!
+//! A source is addressed by its URI **scheme** (`spotify:`, `file:`, `subsonic:`),
+//! mirroring Mopidy's proven dispatch model. [`MediaSource`] is the required
+//! minimum every source implements; the remaining traits are optional
+//! capabilities discovered at runtime, so the UI can light up per source (e.g.
+//! a source without [`LibraryProvider`] shows no "liked songs" tab).
+//!
+//! These are definitions only — implementations land in later slices
+//! (`SpotifySource` over the existing `Network`, then `infra/local/` and
+//! `infra/subsonic/`). All methods speak the domain types from
+//! [`crate::core::plugin_api`]; rspotify types never appear here.
+//!
+//! **Dispatch.** These use native `async fn` in traits (matching the existing
+//! `PlaybackNetwork` convention), which is *not* `dyn`-compatible. The planned
+//! by-scheme routing therefore dispatches over a **closed enum** of concrete
+//! sources (one variant per backend), matching on `scheme()` — not
+//! `Box<dyn MediaSource>`. If open/plugin-provided sources are ever needed, add
+//! the `async-trait` crate at that point rather than reaching for `dyn` here.
+
+// No implementors in the binary yet; the multi-source slices wire these up.
+#![allow(dead_code)]
+
+use crate::core::plugin_api::{AlbumInfo, ArtistInfo, PlaylistInfo, SearchResults, TrackInfo};
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
+
+/// The source the UI is currently scoped to: which catalog the sidebar, search
+/// and capability gating reflect.
+///
+/// This is a **browse-scope** marker only: it never changes playback routing
+/// (that stays URI-scheme driven via `route_local_event` + `App::local_playback`),
+/// so switching the active source never interrupts what is currently playing.
+///
+/// The enum is deliberately unconditional: every variant compiles in every
+/// build (including the slim `telemetry`-only CI build) so handlers and UI code
+/// never need `#[cfg]`. Only the per-source *data loading* is gated behind that
+/// source's feature (`local-files`, `subsonic`).
+///
+/// The serde derives are the action-vocabulary wire shape; the derived unit-
+/// variant strings coincide with the `to_config_str()` tokens, while the
+/// `state.yml` persistence keeps its own lenient hand-written helpers.
+pub type MusicSource = Source;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(all(test, feature = "gui"), derive(ts_rs::TS))]
+pub enum Source {
+  #[default]
+  LosslessRelay,
+  Spotify,
+  Local,
+  Subsonic,
+  Radio,
+  YouTube,
+  Qobuz,
+  /// macOS only: a remote for the Music app (feature `apple-music`).
+  AppleMusic,
+}
+
+impl Source {
+  /// Every source, in display order. Add new sources here.
+  pub const ALL: [Source; 8] = [
+    Source::LosslessRelay,
+    Source::Spotify,
+    Source::Local,
+    Source::Subsonic,
+    Source::Radio,
+    Source::YouTube,
+    Source::Qobuz,
+    Source::AppleMusic,
+  ];
+
+  /// The sources the `d` picker offers. Apple Music is listed only in a macOS
+  /// build with the `apple-music` feature: elsewhere nothing can reach Music.
+  pub fn picker_sources() -> &'static [Source] {
+    // Spelled out rather than sliced off `ALL`, so a source added after
+    // Apple Music is not the one that disappears.
+    const WITHOUT_APPLE_MUSIC: [Source; 7] = [
+      Source::LosslessRelay,
+      Source::Spotify,
+      Source::Local,
+      Source::Subsonic,
+      Source::Radio,
+      Source::YouTube,
+      Source::Qobuz,
+    ];
+    if cfg!(all(feature = "apple-music", target_os = "macos")) {
+      &Self::ALL
+    } else {
+      &WITHOUT_APPLE_MUSIC
+    }
+  }
+
+  /// Stable English name for CLI output, logs and protocol tokens.
+  /// Interfaces use the active table's `sidebar.source_label` instead.
+  pub fn label(&self) -> &'static str {
+    crate::core::i18n::EN.sidebar.source_label(*self)
+  }
+
+  /// English first-run note for fixtures; interfaces use the active onboarding table.
+  #[cfg(test)]
+  pub fn note(&self) -> &'static str {
+    crate::core::i18n::EN.onboarding.source_note(*self)
+  }
+
+  /// Config-file token used to persist the active source.
+  /// Distinct from `label()` so the config key stays stable even if the
+  /// display name changes.
+  pub fn to_config_str(self) -> &'static str {
+    match self {
+      Source::LosslessRelay => "LosslessRelay",
+      Source::Spotify => "Spotify",
+      Source::Local => "Local",
+      Source::Subsonic => "Subsonic",
+      Source::Radio => "Radio",
+      Source::YouTube => "YouTube",
+      Source::Qobuz => "Qobuz",
+      Source::AppleMusic => "AppleMusic",
+    }
+  }
+
+  /// Parse the config-file token back to a `Source`.
+  /// Unknown strings fall back to `Spotify` so old or hand-edited configs
+  /// never break startup.
+  pub fn from_config_str(s: &str) -> Self {
+    match s {
+      "LosslessRelay" => Source::LosslessRelay,
+      "Local" => Source::Local,
+      "Subsonic" => Source::Subsonic,
+      "Radio" => Source::Radio,
+      "YouTube" => Source::YouTube,
+      "Qobuz" => Source::Qobuz,
+      "AppleMusic" => Source::AppleMusic,
+      _ => Source::Spotify,
+    }
+  }
+
+  /// Whether this source can search its catalog (implements [`Searcher`]).
+  pub fn supports_search(&self) -> bool {
+    matches!(
+      self,
+      Source::LosslessRelay
+        | Source::Spotify
+        | Source::Subsonic
+        | Source::Radio
+        | Source::YouTube
+        | Source::Qobuz
+        | Source::AppleMusic
+    )
+  }
+
+  /// Whether this source exposes a saved library — liked songs, saved albums,
+  /// followed artists (implements [`LibraryProvider`]).
+  pub fn supports_library(&self) -> bool {
+    matches!(self, Source::Spotify | Source::LosslessRelay)
+  }
+
+  /// Whether this source can mutate playlists: Spotify through the Web API,
+  /// YouTube through its local playlist file.
+  pub fn supports_playlist_write(&self) -> bool {
+    matches!(self, Source::Spotify | Source::YouTube | Source::LosslessRelay)
+  }
+
+  /// Whether this source supports liking / saving the currently-playing track
+  /// (requires a [`LibraryProvider`] that can accept writes). Currently
+  /// equivalent to [`supports_library`](Self::supports_library).
+  pub fn supports_like(&self) -> bool {
+    matches!(self, Source::Spotify | Source::LosslessRelay)
+  }
+
+  /// Whether playlists of this source can take part in a cross-source mirror.
+  pub fn supports_playlist_sync(&self) -> bool {
+    matches!(
+      self,
+      Source::LosslessRelay
+        | Source::Spotify | Source::Subsonic | Source::YouTube | Source::Qobuz
+    )
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn serde_tokens_match_the_config_tokens() {
+    for source in Source::ALL {
+      let wire = serde_json::to_string(&source).unwrap();
+      assert_eq!(wire, format!("\"{}\"", source.to_config_str()));
+      assert_eq!(serde_json::from_str::<Source>(&wire).unwrap(), source);
+    }
+  }
+
+  #[test]
+  fn apple_music_is_offered_only_where_it_builds_and_only_searches() {
+    let apple_music = cfg!(all(feature = "apple-music", target_os = "macos"));
+    // The picker is every source, in order, minus Apple Music where it
+    // cannot work: never a source dropped by position.
+    let expected: Vec<Source> = Source::ALL
+      .into_iter()
+      .filter(|s| apple_music || *s != Source::AppleMusic)
+      .collect();
+    assert_eq!(Source::picker_sources(), expected.as_slice());
+    assert!(Source::AppleMusic.supports_search());
+    assert!(!Source::AppleMusic.supports_library());
+    assert!(!Source::AppleMusic.supports_playlist_write());
+    assert!(!Source::AppleMusic.supports_like());
+    assert!(!Source::AppleMusic.supports_playlist_sync());
+  }
+
+  #[test]
+  fn spotify_supports_all_capabilities() {
+    assert!(Source::Spotify.supports_search());
+    assert!(Source::Spotify.supports_library());
+    assert!(Source::Spotify.supports_playlist_write());
+    assert!(Source::Spotify.supports_like());
+  }
+
+  #[test]
+  fn local_supports_no_spotify_only_capabilities() {
+    assert!(!Source::Local.supports_search());
+    assert!(!Source::Local.supports_library());
+    assert!(!Source::Local.supports_playlist_write());
+    assert!(!Source::Local.supports_like());
+  }
+
+  #[test]
+  fn subsonic_supports_search_only() {
+    // Subsonic speaks `search3`, so search is on; library/playlist-write/like
+    // depend on `LibraryProvider`/`PlaylistWriter` impls that are deferred
+    // follow-ups, so they stay off for now.
+    assert!(Source::Subsonic.supports_search());
+    assert!(!Source::Subsonic.supports_library());
+    assert!(!Source::Subsonic.supports_playlist_write());
+    assert!(!Source::Subsonic.supports_like());
+  }
+
+  #[test]
+  fn radio_supports_search_only() {
+    // The radio-browser.info directory is searchable; there is no library,
+    // no playlists to write, and no like/star concept for a live stream.
+    assert!(Source::Radio.supports_search());
+    assert!(!Source::Radio.supports_library());
+    assert!(!Source::Radio.supports_playlist_write());
+    assert!(!Source::Radio.supports_like());
+  }
+
+  #[test]
+  fn youtube_supports_search_and_its_local_playlists() {
+    // yt-dlp searches the catalog and playlists live in a local file; there is
+    // no library and no like/star concept without a Google account.
+    assert!(Source::YouTube.supports_search());
+    assert!(!Source::YouTube.supports_library());
+    assert!(Source::YouTube.supports_playlist_write());
+    assert!(!Source::YouTube.supports_like());
+  }
+
+  #[test]
+  fn qobuz_supports_search_only() {
+    // `catalog/search` is searchable; favorites and playlists are read through
+    // the sidebar, and like/playlist writes are follow-ups.
+    assert!(Source::Qobuz.supports_search());
+    assert!(!Source::Qobuz.supports_library());
+    assert!(!Source::Qobuz.supports_playlist_write());
+    assert!(!Source::Qobuz.supports_like());
+  }
+
+  #[test]
+  fn playlist_sync_is_on_for_the_four_writable_sources() {
+    assert!(Source::Spotify.supports_playlist_sync());
+    assert!(Source::Subsonic.supports_playlist_sync());
+    assert!(Source::YouTube.supports_playlist_sync());
+    assert!(Source::Qobuz.supports_playlist_sync());
+    assert!(!Source::Local.supports_playlist_sync());
+    assert!(!Source::Radio.supports_playlist_sync());
+  }
+
+  #[test]
+  fn config_str_round_trips_every_source() {
+    for source in Source::ALL {
+      assert_eq!(Source::from_config_str(source.to_config_str()), source);
+    }
+  }
+}
+
+/// The required minimum every media source implements: browse playlists and the
+/// tracks within them.
+pub trait MediaSource {
+  /// Human-readable source name shown in the UI (e.g. `"Spotify"`, `"Navidrome"`).
+  fn name(&self) -> &str;
+
+  /// URI scheme this source owns, without the colon (e.g. `"spotify"`, `"file"`,
+  /// `"subsonic"`). Used to route a URI to the source that can handle it.
+  fn scheme(&self) -> &str;
+
+  /// The user's playlists for this source.
+  async fn playlists(&self) -> Result<Vec<PlaylistInfo>>;
+
+  /// The tracks of a playlist, identified by its source-native URI.
+  async fn tracks(&self, playlist_uri: &str) -> Result<Vec<TrackInfo>>;
+}
+
+/// Optional capability: search the source's catalog.
+pub trait Searcher {
+  async fn search(&self, query: &str) -> Result<SearchResults>;
+}
+
+/// Optional capability: the user's saved library (liked tracks, saved albums,
+/// followed artists).
+pub trait LibraryProvider {
+  async fn saved_tracks(&self) -> Result<Vec<TrackInfo>>;
+  async fn saved_albums(&self) -> Result<Vec<AlbumInfo>>;
+  async fn saved_artists(&self) -> Result<Vec<ArtistInfo>>;
+}
+
+/// Optional capability: mutate playlists (add/remove tracks by URI).
+pub trait PlaylistWriter {
+  async fn add_tracks(&self, playlist_uri: &str, track_uris: &[String]) -> Result<()>;
+  async fn remove_tracks(&self, playlist_uri: &str, track_uris: &[String]) -> Result<()>;
+}
+
+/// Optional capability: produce a playable audio stream for a URI and route it
+/// into the shared rodio sink (so the visualizer and volume control work
+/// uniformly across sources).
+///
+/// The concrete stream/handle return type is defined in the local-files slice
+/// (Phase 3), when the symphonia → rodio pipeline is wired. Until then this is
+/// the marker seam that lets the dispatch layer ask "can this source stream?".
+pub trait Streamer {
+  /// Begin streaming the given URI. Returns once playback has started (or
+  /// errors if the URI is not streamable by this source).
+  async fn stream(&self, uri: &str) -> Result<()>;
+}
