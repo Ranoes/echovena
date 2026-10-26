@@ -177,11 +177,10 @@ pub fn draw_search_results(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
     return;
   }
 
-  let [song_artist_area, albums_playlist_area, podcasts_area] =
+  let [song_artist_area, albums_playlist_area] =
     layout_chunk.layout(&Layout::vertical([
-      Constraint::Percentage(35),
-      Constraint::Percentage(35),
-      Constraint::Percentage(25),
+      Constraint::Percentage(50),
+      Constraint::Percentage(50),
     ]));
 
   {
@@ -348,35 +347,6 @@ pub fn draw_search_results(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
       );
     }
   }
-
-  {
-    draw_selectable_list(
-      f,
-      app,
-      podcasts_area,
-      app.strings().screens.podcasts,
-      &match &app.search_results().shows {
-        Some(podcasts) => podcasts
-          .items
-          .iter()
-          .map(|item| {
-            let mut show_name = String::new();
-            if let Some(ref id) = item.id {
-              if app.saved_show_ids_set().contains(id.as_str()) {
-                show_name.push_str(&app.user_config.padded_liked_icon());
-              }
-            }
-            show_name.push_str(&item.name);
-            show_name
-          })
-          .collect(),
-        None => vec![],
-      },
-      get_search_results_highlight_state(app, SearchResultBlock::ShowSearch),
-      app.view.search_selected_shows_index,
-      &app.view.search_shows_scroll_offset,
-    );
-  }
 }
 
 #[cfg(test)]
@@ -451,7 +421,7 @@ mod tests {
       content.contains("Groove Salad - ambient, chillout"),
       "station rows should show name and tags: {content}"
     );
-    for spotify_panel in ["Songs", "Artists", "Albums", "Playlists", "Podcasts"] {
+    for spotify_panel in ["Songs", "Artists", "Albums", "Playlists"] {
       assert!(
         !content.contains(spotify_panel),
         "{spotify_panel} panel must not render under Radio: {content}"
@@ -463,17 +433,21 @@ mod tests {
     );
   }
 
-  /// The Spotify layout is untouched for the default source.
+  /// The Spotify layout renders the active music search blocks (Songs, Artists, Albums, Playlists).
   #[test]
-  fn spotify_results_still_render_five_blocks() {
+  fn spotify_results_render_four_blocks() {
     let app = App::default();
     let content = rendered(&app, Rect::new(0, 0, 90, 30));
-    for spotify_panel in ["Songs", "Artists", "Albums", "Playlists", "Podcasts"] {
+    for spotify_panel in ["Songs", "Artists", "Albums", "Playlists"] {
       assert!(
         content.contains(spotify_panel),
         "{spotify_panel} panel should render under Spotify: {content}"
       );
     }
+    assert!(
+      !content.contains("Podcasts"),
+      "Podcasts panel must be removed from search: {content}"
+    );
   }
 
   #[test]

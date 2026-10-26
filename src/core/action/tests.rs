@@ -2251,6 +2251,7 @@ fn every_library_target_has_one_sidebar_row_with_a_distinct_label() {
     let expected = match target {
       LibraryTarget::LocalFiles => cfg!(feature = "local-files"),
       LibraryTarget::AiDj => cfg!(feature = "ai-dj"),
+      LibraryTarget::Podcasts => false,
       LibraryTarget::Discover
       | LibraryTarget::RecentlyPlayed
       | LibraryTarget::Friends
@@ -2258,8 +2259,7 @@ fn every_library_target_has_one_sidebar_row_with_a_distinct_label() {
       | LibraryTarget::PlaylistSync
       | LibraryTarget::LikedSongs
       | LibraryTarget::Albums
-      | LibraryTarget::Artists
-      | LibraryTarget::Podcasts => true,
+      | LibraryTarget::Artists => true,
     };
     assert_eq!(
       has_row(target),

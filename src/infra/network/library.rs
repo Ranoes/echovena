@@ -2483,6 +2483,7 @@ mod tests {
     let dir = tempfile::tempdir().unwrap();
     // Trigger conditions: Spotify source, flag false, toggle on, not following.
     let mut app = App::default();
+    app.active_source = Source::Spotify;
     app.state_path = Some(dir.path().join("state.yml"));
     assert!(app.active_source == Source::Spotify);
     assert!(app.user_config.behavior.pin_community_playlist);

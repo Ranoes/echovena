@@ -20,10 +20,6 @@ pub(crate) fn library_row_requirements() -> &'static [(LibraryTarget, Requiremen
     ),
     (LibraryTarget::Albums, Requirement::Source(Source::Spotify)),
     (LibraryTarget::Artists, Requirement::Source(Source::Spotify)),
-    (
-      LibraryTarget::Podcasts,
-      Requirement::Source(Source::Spotify),
-    ),
     #[cfg(feature = "local-files")]
     (LibraryTarget::LocalFiles, Requirement::None),
     #[cfg(feature = "ai-dj")]

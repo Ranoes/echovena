@@ -7,7 +7,7 @@ use crate::tui::theme::{EmphasisExt, ThemeExt};
 use ratatui::layout::Alignment;
 
 use crate::core::{
-  app::{ActiveBlock, App, SourceFocus},
+  app::{ActiveBlock, App},
   source::Source,
 };
 use crate::tui::layout::miniplayer_playbar_area;
@@ -1751,19 +1751,12 @@ pub fn draw_playbar(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
   }
 }
 
-/// The combined Source & Device picker (the `d` screen): a Source panel
-/// (Spotify / Local Files) stacked above the existing Spotify Connect device
-/// list. `Tab` toggles focus; the Devices panel is dimmed when Local is active.
+/// The Source picker (the `d` screen): select active music source.
 pub fn draw_device_list(f: &mut Frame<'_>, app: &App) {
-  // A small margin (rather than the device screen's old 5) keeps the fixed
-  // instructions + Source panel from squeezing the Devices list off-screen on
-  // shorter terminals: instructions(7) + source(4) + devices(>=3) fits from ~18
-  // rows up.
-  let [instructions_area, source_area, devices_area] = f.area().layout(
+  let [instructions_area, source_area] = f.area().layout(
     &Layout::vertical([
       Constraint::Length(7),
-      Constraint::Length(Source::picker_sources().len() as u16 + 2),
-      Constraint::Min(3),
+      Constraint::Min(Source::picker_sources().len() as u16 + 2),
     ])
     .margin(2),
   );
@@ -1798,12 +1791,7 @@ pub fn draw_device_list(f: &mut Frame<'_>, app: &App) {
   f.render_widget(instructions, instructions_area);
 
   // --- Source panel ---
-  let source_focused = app.view.source_device_focus == SourceFocus::Source;
-  let source_border = if source_focused {
-    app.user_config.theme.active
-  } else {
-    app.user_config.theme.inactive
-  };
+  let source_border = app.user_config.theme.active;
   let source_items: Vec<ListItem> = Source::picker_sources()
     .iter()
     .map(|s| {
@@ -1837,11 +1825,7 @@ pub fn draw_device_list(f: &mut Frame<'_>, app: &App) {
     })
     .collect();
   let mut source_state = ListState::default();
-  // Only the focused panel shows the moving cursor; the active source is always
-  // marked with `●` regardless of focus.
-  if source_focused {
-    source_state.select(Some(app.view.source_list_index));
-  }
+  source_state.select(Some(app.view.source_list_index));
   let source_list = List::new(source_items)
     .block(
       Block::default()
@@ -1864,64 +1848,6 @@ pub fn draw_device_list(f: &mut Frame<'_>, app: &App) {
       Line::from("▶ ").style(Style::default().fg(app.user_config.theme.active.into())),
     );
   f.render_stateful_widget(source_list, source_area, &mut source_state);
-
-  // --- Devices panel (Spotify Connect only) ---
-  // Dimmed under any non-Spotify source (Local, Subsonic): device transfer is a
-  // Spotify Connect feature.
-  let non_spotify_active = app.active_source != Source::Spotify;
-  let devices_focused = app.view.source_device_focus == SourceFocus::Devices && !non_spotify_active;
-  let devices_color = if devices_focused {
-    app.user_config.theme.active
-  } else {
-    app.user_config.theme.inactive
-  };
-  let devices_title = if non_spotify_active {
-    app.strings().screens.spotify_devices
-  } else {
-    app.strings().screens.devices
-  };
-  let device_text_style = if non_spotify_active {
-    Style::default().fg(app.user_config.theme.inactive.into())
-  } else {
-    app.user_config.theme.base_style()
-  };
-
-  let no_device_message = Span::raw(app.strings().screens.no_devices);
-  let items: Vec<ListItem> = match app.devices() {
-    Some(payload) if !payload.devices.is_empty() => payload
-      .devices
-      .iter()
-      .map(|device| ListItem::new(Span::raw(device.name.clone())))
-      .collect(),
-    _ => vec![ListItem::new(no_device_message)],
-  };
-
-  let mut state = ListState::default();
-  if devices_focused {
-    state.select(app.view.selected_device_index);
-  }
-  let device_list = List::new(items)
-    .block(
-      Block::default()
-        .title(Span::styled(
-          devices_title,
-          Style::default().fg(devices_color.into()),
-        ))
-        .borders(Borders::ALL)
-        .style(device_text_style)
-        .border_style(Style::default().fg(devices_color.into())),
-    )
-    .style(device_text_style)
-    .highlight_style(
-      Style::default()
-        .fg(app.user_config.theme.active.into())
-        .bg(app.user_config.theme.inactive.into())
-        .add_modifier(app.user_config.behavior.emphasis(Modifier::BOLD)),
-    )
-    .highlight_symbol(
-      Line::from("▶ ").style(Style::default().fg(app.user_config.theme.active.into())),
-    );
-  f.render_stateful_widget(device_list, devices_area, &mut state);
 }
 
 #[cfg(all(test, feature = "cover-art"))]
@@ -2540,21 +2466,21 @@ mod tests {
       content.contains("(active)"),
       "the active source should be marked: {content}"
     );
-    // Spotify active: the Devices panel is the normal, non-dimmed title.
+    // Spotify Connect devices panel is removed in EchoVena
     assert!(
-      !content.contains("Spotify only"),
-      "devices title should be plain when Spotify is active: {content}"
+      !content.contains("Devices"),
+      "devices panel should not be rendered: {content}"
     );
   }
 
   #[test]
-  fn source_picker_devices_title_notes_spotify_only_under_local() {
+  fn source_picker_omits_redundant_spotify_devices_panel() {
     let mut app = App::default();
     app.active_source = Source::Local;
     let content = render_picker(&app, 60, 28);
     assert!(
-      content.contains("Spotify only"),
-      "devices title should note Spotify-only when Local is active: {content}"
+      !content.contains("Devices"),
+      "devices panel should not be rendered in the source picker: {content}"
     );
   }
 

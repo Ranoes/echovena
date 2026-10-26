@@ -100,6 +100,9 @@ mod tests {
   ) -> (App, std::sync::mpsc::Receiver<IoEvent>) {
     let (tx, rx) = channel();
     let mut app = App::new(tx, UserConfig::new(), session);
+    if session.is_some() {
+      app.active_source = Source::Spotify;
+    }
     assert!(app.library_rows().contains(&target), "the row is offered");
     app.view.library_selected = target;
     (app, rx)
@@ -143,10 +146,10 @@ mod tests {
 
   #[test]
   fn a_hidden_selection_falls_back_to_the_top_row_and_returns_with_its_source() {
-    let (mut app, _rx) = app_selecting(LibraryTarget::Podcasts, Some(SystemTime::now()));
+    let (mut app, _rx) = app_selecting(LibraryTarget::LikedSongs, Some(SystemTime::now()));
     let _dir = seed_state_path(&mut app);
     app.apply(Action::SelectSource(Source::Local));
-    assert!(!app.library_rows().contains(&LibraryTarget::Podcasts));
+    assert!(!app.library_rows().contains(&LibraryTarget::LikedSongs));
     assert_eq!(app.library_cursor(), 0);
 
     handler(Key::Enter, &mut app);
@@ -155,7 +158,7 @@ mod tests {
     app.apply(Action::SelectSource(Source::Spotify));
     assert_eq!(
       app.library_rows()[app.library_cursor()],
-      LibraryTarget::Podcasts
+      LibraryTarget::LikedSongs
     );
   }
 

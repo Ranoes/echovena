@@ -1736,6 +1736,7 @@ mod tests {
   #[test]
   fn the_search_key_without_a_session_says_so_instead_of_opening_the_input() {
     let mut app = App::default();
+    app.active_source = Source::Spotify;
     app.set_current_route_state(Some(ActiveBlock::Empty), Some(ActiveBlock::Library));
 
     handle_app(app.user_config.keys.search, &mut app);

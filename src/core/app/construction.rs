@@ -273,6 +273,7 @@ impl App {
   #[cfg(test)]
   pub(crate) fn default_connected() -> App {
     App {
+      active_source: Source::Spotify,
       spotify_connected: true,
       ..App::default()
     }
