@@ -1,12 +1,12 @@
 [package]
 name = "echovena"
-description = "Lossless Hi-Res FLAC Terminal Music Streamer, Multi-Platform Playlist Sync & Live Karaoke TUI"
+description = "Fast Terminal Music Streamer, Offline Downloader, Bidirectional Playlist Sync & 60 FPS Live Karaoke TUI"
 homepage = "https://github.com/Ranoes/echovena"
 documentation = "https://github.com/Ranoes/echovena"
 repository = "https://github.com/Ranoes/echovena"
 keywords = ["music-player", "lossless", "karaoke", "terminal", "flac"]
 categories = ["command-line-utilities", "multimedia::audio"]
-version = "1.0.0"
+version = "1.1.0"
 authors = ["Ranoes"]
 edition = "2021"
 rust-version = "1.90"

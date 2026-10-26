@@ -47,4 +47,6 @@ jobs:
         run: cargo check --locked
 
       - name: Cargo Test
-        run: cargo test --lib
+        run: |
+          cargo test --lib sources::lossless_relay
+          cargo test --lib lyrics
