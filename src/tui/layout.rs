@@ -18,6 +18,7 @@ pub struct MainLayoutAreas {
   pub library: Rect,
   pub playlists: Rect,
   pub content: Rect,
+  pub action_bar: Rect,
 }
 
 pub fn small_terminal_width(behavior: &BehaviorConfig) -> u16 {
@@ -52,38 +53,50 @@ pub fn compute_main_layout(app: &App) -> Option<MainLayoutAreas> {
   let behavior = &app.user_config.behavior;
   let runtime_state = &app.runtime_state;
 
-  let (input_area, routes_area, playbar_area) = if wide_layout {
+  let (input_area, routes_area, playbar_area, action_bar_area) = if wide_layout {
     if behavior.playbar_position == "top" {
-      let [playbar_area, routes_area] = root.layout(
-        &Layout::vertical([playbar_constraint(runtime_state), Constraint::Min(1)]).margin(margin),
+      let [playbar_area, routes_area, action_bar_area] = root.layout(
+        &Layout::vertical([
+          playbar_constraint(runtime_state),
+          Constraint::Min(1),
+          Constraint::Length(1),
+        ])
+        .margin(margin),
       );
-      (None, routes_area, playbar_area)
+      (None, routes_area, playbar_area, action_bar_area)
     } else {
-      let [routes_area, playbar_area] = root.layout(
-        &Layout::vertical([Constraint::Min(1), playbar_constraint(runtime_state)]).margin(margin),
+      let [routes_area, playbar_area, action_bar_area] = root.layout(
+        &Layout::vertical([
+          Constraint::Min(1),
+          playbar_constraint(runtime_state),
+          Constraint::Length(1),
+        ])
+        .margin(margin),
       );
-      (None, routes_area, playbar_area)
+      (None, routes_area, playbar_area, action_bar_area)
     }
   } else if behavior.playbar_position == "top" {
-    let [playbar_area, input_area, routes_area] = root.layout(
+    let [playbar_area, input_area, routes_area, action_bar_area] = root.layout(
       &Layout::vertical([
         playbar_constraint(runtime_state),
         Constraint::Length(3),
         Constraint::Min(1),
+        Constraint::Length(1),
       ])
       .margin(margin),
     );
-    (Some(input_area), routes_area, playbar_area)
+    (Some(input_area), routes_area, playbar_area, action_bar_area)
   } else {
-    let [input_area, routes_area, playbar_area] = root.layout(
+    let [input_area, routes_area, playbar_area, action_bar_area] = root.layout(
       &Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(1),
         playbar_constraint(runtime_state),
+        Constraint::Length(1),
       ])
       .margin(margin),
     );
-    (Some(input_area), routes_area, playbar_area)
+    (Some(input_area), routes_area, playbar_area, action_bar_area)
   };
 
   let (user_area, content_area) = split_routes_area(app, routes_area);
@@ -130,6 +143,7 @@ pub fn compute_main_layout(app: &App) -> Option<MainLayoutAreas> {
     library: library_area,
     playlists: playlist_area,
     content: content_area,
+    action_bar: action_bar_area,
   })
 }
 

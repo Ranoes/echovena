@@ -64,6 +64,7 @@ pub fn draw_main_layout(f: &mut Frame<'_>, app: &App) {
     draw_user_block(f, app, areas.sidebar);
     draw_route_content(f, app, areas.content);
     draw_playbar(f, app, areas.playbar);
+    draw_action_bar(f, app, areas.action_bar);
   }
 
   // Possibly draw confirm dialog
@@ -158,6 +159,49 @@ fn draw_route_content(f: &mut Frame<'_>, app: &App, content_area: Rect) {
   };
 }
 
+/// Renders the permanent bottom action bar with live Vim hotkey hints.
+pub fn draw_action_bar(f: &mut Frame<'_>, _app: &App, area: Rect) {
+  if area.height == 0 || area.width == 0 {
+    return;
+  }
+
+  use ratatui::{
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Paragraph},
+  };
+
+  let key_style = Style::default()
+    .fg(Color::Cyan)
+    .add_modifier(Modifier::BOLD);
+  let label_style = Style::default().fg(Color::Gray);
+  let sep_style = Style::default().fg(Color::DarkGray);
+
+  let items = [
+    ("Space", "Play/Pause"),
+    ("Enter", "Play"),
+    ("/", "Search"),
+    ("p", "Paste URL"),
+    ("K", "Karaoke"),
+    ("s", "Download"),
+    ("d", "Sources"),
+    ("?", "Help"),
+    ("q", "Quit"),
+  ];
+
+  let mut spans = Vec::new();
+  for (i, (key, label)) in items.iter().enumerate() {
+    if i > 0 {
+      spans.push(Span::styled(" │ ", sep_style));
+    }
+    spans.push(Span::styled(format!("[{key}] "), key_style));
+    spans.push(Span::styled(*label, label_style));
+  }
+
+  let paragraph = Paragraph::new(Line::from(spans)).block(Block::default());
+  f.render_widget(paragraph, area);
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -245,6 +289,17 @@ mod tests {
       "missing selected period label"
     );
     assert!(all_text.contains("Top Tracks"), "missing Top Tracks panel");
+  }
+
+  #[test]
+  fn action_bar_renders_hints() {
+    let (app, buffer) = render(160, 50);
+    let areas = compute_main_layout(&app).expect("layout areas");
+    let bar_row = row_text(&buffer, areas.action_bar.y);
+    assert!(bar_row.contains("[Space]"), "missing [Space] in action bar: {bar_row}");
+    assert!(bar_row.contains("Play/Pause"), "missing Play/Pause in action bar: {bar_row}");
+    assert!(bar_row.contains("[p]"), "missing [p] in action bar: {bar_row}");
+    assert!(bar_row.contains("[K]"), "missing [K] in action bar: {bar_row}");
   }
 }
 
