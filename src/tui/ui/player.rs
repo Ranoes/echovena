@@ -904,11 +904,6 @@ fn extract_track_info(app: &App) -> (Option<String>, Option<String>) {
 /// Gated to every build that can render one: the decoded sources plus the
 /// native queue slot (`streaming` covers a queued Spotify track), and the
 /// Music app while it owns playback.
-#[cfg(any(
-  feature = "streaming",
-  feature = "audio-decode",
-  feature = "apple-music"
-))]
 struct LocalPlaybarView {
   /// Source name shown in the playbar title, e.g. `"Local"` or `"Subsonic"`.
   source_label: &'static str,
@@ -1098,11 +1093,6 @@ fn draw_radio_playbar(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
   render_local_playbar(f, app, layout_chunk, &view);
 }
 
-#[cfg(any(
-  feature = "streaming",
-  feature = "audio-decode",
-  feature = "apple-music"
-))]
 fn render_local_playbar(f: &mut Frame<'_>, app: &App, layout_chunk: Rect, view: &LocalPlaybarView) {
   let playbar_areas = playbar_layout_areas(app, layout_chunk);
 

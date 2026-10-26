@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -50,7 +51,12 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y -qq pkg-config libasound2-dev libssl-dev
+          sudo apt-get install -y -qq pkg-config libasound2-dev libssl-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - name: Install macOS dependencies
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          brew install openssl@3 portaudio
 
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }}
@@ -111,7 +117,6 @@ jobs:
     name: Publish Chocolatey Package
     needs: publish-github-release
     runs-on: windows-latest
-    if: ${{ secrets.CHOCOLATEY_API_KEY != '' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -126,6 +131,7 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}".TrimStart('v')
+          if (-not $version -or $version -eq 'main') { $version = "1.0.0" }
           $hash = (Get-FileHash -Algorithm SHA256 echovena-windows-x86_64.zip).Hash
 
           Write-Host "Updating Chocolatey manifests for version: $version with hash: $hash"
@@ -142,13 +148,19 @@ jobs:
           Set-Content -Path $installPs1Path -Value $installContent
 
       - name: Pack and Push Chocolatey Package
+        env:
+          CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
         shell: pwsh
         run: |
+          if (-not $env:CHOCOLATEY_API_KEY) {
+            Write-Host "CHOCOLATEY_API_KEY is not set. Skipping push to Chocolatey."
+            exit 0
+          }
           choco pack packaging/chocolatey/echovena.nuspec --outputdirectory packaging/chocolatey
           $nupkg = Get-ChildItem -Path packaging/chocolatey/*.nupkg | Select-Object -First 1
           if ($nupkg) {
             Write-Host "Pushing $($nupkg.FullName) to Chocolatey Community Repository..."
-            choco push $nupkg.FullName --source https://push.chocolatey.org/ --api-key ${{ secrets.CHOCOLATEY_API_KEY }}
+            choco push $nupkg.FullName --source https://push.chocolatey.org/ --api-key $env:CHOCOLATEY_API_KEY
           } else {
             throw "No .nupkg file found to publish."
           }

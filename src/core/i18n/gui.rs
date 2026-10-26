@@ -571,7 +571,7 @@ impl GuiStrings {
       Source::Subsonic => self.source_subsonic_note,
       Source::Qobuz => self.source_qobuz_note,
       Source::AppleMusic => self.source_apple_note,
-      Source::Radio | Source::Local => self.source_free,
+      Source::Radio | Source::Local | Source::LosslessRelay => self.source_free,
     }
   }
 }
