@@ -21,6 +21,16 @@ pub fn handler(key: Key, app: &mut App) {
       app.view.input_idx = 0;
       app.view.input_cursor_position = 0;
     }
+    Key::Ctrl('v') => {
+      if let Some(text) = app.get_clipboard_text() {
+        let trimmed = text.trim_matches(|c| c == '\r' || c == '\n').to_string();
+        for c in trimmed.chars() {
+          app.view.input.insert(app.view.input_idx, c);
+          app.view.input_idx += 1;
+          app.view.input_cursor_position += compute_character_width(c);
+        }
+      }
+    }
     Key::Ctrl('l') => {
       app.view.input = vec![];
       app.view.input_idx = 0;
@@ -235,7 +245,7 @@ fn attempt_process_uri(app: &mut App, input: &str, base: &str, sep: &str) -> boo
   false
 }
 
-fn compute_character_width(character: char) -> u16 {
+pub(crate) fn compute_character_width(character: char) -> u16 {
   UnicodeWidthChar::width(character)
     .unwrap()
     .try_into()

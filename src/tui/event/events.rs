@@ -35,6 +35,8 @@ impl Default for EventConfig {
 pub enum Event {
   /// An input event occurred.
   Input(Key),
+  /// A bracketed paste event occurred.
+  Paste(String),
   /// A mouse event occurred.
   Mouse(MouseEvent),
   /// A tick event occurred.
@@ -108,6 +110,11 @@ impl Events {
               if forwards_mouse(mouse.kind) && event_tx.send(Event::Mouse(mouse)).is_err() =>
             {
               break;
+            }
+            CrosstermEvent::Paste(text) => {
+              if event_tx.send(Event::Paste(text)).is_err() {
+                break;
+              }
             }
             _ => {}
           }

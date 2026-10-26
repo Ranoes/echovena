@@ -85,6 +85,55 @@ fn should_route_friends_before_globals(key: Key, app: &App) -> bool {
     )
 }
 
+/// Global handler for bracketed paste events delivered from the terminal.
+pub fn handle_paste(text: String, app: &mut App) {
+  let cleaned = text.trim_matches(|c| c == '\r' || c == '\n').to_string();
+  if cleaned.is_empty() {
+    return;
+  }
+
+  // 1. If URL Import modal is open, paste directly into it
+  if app.view.url_import_visible {
+    for c in cleaned.chars() {
+      app.view.url_import_input.push(c);
+    }
+    app.set_status_message("Pasted URL from clipboard. Press Enter to import.".to_string(), 4);
+    return;
+  }
+
+  // 2. If Search input is focused, paste directly into search buffer
+  if app.get_current_route().active_block == ActiveBlock::Input {
+    for c in cleaned.chars() {
+      app.view.input.insert(app.view.input_idx, c);
+      app.view.input_idx += 1;
+      app.view.input_cursor_position += input::compute_character_width(c);
+    }
+    return;
+  }
+
+  // 3. If in normal mode and text looks like a URL or Spotify/YouTube link:
+  let is_url = cleaned.starts_with("http://")
+    || cleaned.starts_with("https://")
+    || cleaned.starts_with("spotify:")
+    || cleaned.starts_with("www.")
+    || cleaned.contains("youtube.com")
+    || cleaned.contains("youtu.be")
+    || cleaned.contains("spotify.com");
+
+  if is_url {
+    app.view.url_import_visible = true;
+    app.view.url_import_input = cleaned.chars().collect();
+    app.set_status_message("Pasted music URL! Press Enter to import.".to_string(), 5);
+  } else {
+    // If it's plain text pasted on main screen, open search and fill it
+    focus_global_search(app);
+    app.view.input = cleaned.chars().collect();
+    app.view.input_idx = app.view.input.len();
+    app.view.input_cursor_position = cleaned.len() as u16;
+    app.set_status_message("Pasted search query! Press Enter to search.".to_string(), 4);
+  }
+}
+
 pub fn handle_app(key: Key, app: &mut App) {
   // Relay Health modal: intercept keys when visible.
   if app.view.relay_status_visible {
@@ -129,8 +178,25 @@ pub fn handle_app(key: Key, app: &mut App) {
       Key::Esc => {
         app.view.url_import_visible = false;
       }
-      k if k == app.user_config.keys.back && app.view.url_import_input.is_empty() => {
-        app.view.url_import_visible = false;
+      Key::Ctrl('v') => {
+        if let Some(text) = app.get_clipboard_text() {
+          let trimmed = text.trim_matches(|c| c == '\r' || c == '\n').to_string();
+          for c in trimmed.chars() {
+            app.view.url_import_input.push(c);
+          }
+          app.set_status_message("Pasted URL from clipboard. Press Enter to import.".to_string(), 4);
+        }
+      }
+      Key::Char('p') | Key::Char('P') if app.view.url_import_input.is_empty() => {
+        if let Some(text) = app.get_clipboard_text() {
+          let trimmed = text.trim_matches(|c| c == '\r' || c == '\n').to_string();
+          for c in trimmed.chars() {
+            app.view.url_import_input.push(c);
+          }
+          app.set_status_message("Vim 'p' pasted URL from clipboard! Press Enter to import.".to_string(), 4);
+        } else {
+          app.view.url_import_input.push('p');
+        }
       }
       Key::Backspace => {
         app.view.url_import_input.pop();
@@ -376,7 +442,32 @@ pub fn handle_app(key: Key, app: &mut App) {
       app.apply(Action::NextTrack);
     }
     _ if key == app.user_config.keys.previous_track => {
+      if let Some(clip) = app.get_clipboard_text() {
+        let trimmed = clip.trim_matches(|c| c == '\r' || c == '\n').to_string();
+        if trimmed.starts_with("http://")
+          || trimmed.starts_with("https://")
+          || trimmed.starts_with("spotify:")
+          || trimmed.contains("youtube.com")
+          || trimmed.contains("youtu.be")
+          || trimmed.contains("spotify.com")
+        {
+          app.view.url_import_visible = true;
+          app.view.url_import_input = trimmed.chars().collect();
+          app.set_status_message("Vim 'p' pasted playlist URL! Press Enter to import.".to_string(), 5);
+          return;
+        }
+      }
       app.apply(Action::PreviousTrack);
+    }
+    Key::Ctrl('v') => {
+      if is_input_mode(app) {
+        handle_block_events(key, app);
+      } else if let Some(clip) = app.get_clipboard_text() {
+        let trimmed = clip.trim_matches(|c| c == '\r' || c == '\n').to_string();
+        app.view.url_import_visible = true;
+        app.view.url_import_input = trimmed.chars().collect();
+        app.set_status_message("Pasted clipboard into URL import! Press Enter to import.".to_string(), 5);
+      }
     }
     _ if key == app.user_config.keys.force_previous_track => {
       app.apply(Action::ForcePreviousTrack);
@@ -1741,5 +1832,32 @@ mod tests {
 
     assert_eq!(app.get_current_route().id, RouteId::Home);
     assert_eq!(app.get_current_route().active_block, ActiveBlock::Empty);
+  }
+
+  #[test]
+  fn test_handle_paste_into_url_import_modal() {
+    let mut app = App::default();
+    app.view.url_import_visible = true;
+    app.view.url_import_input.clear();
+
+    let test_url = "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M?si=123q_y";
+    handle_paste(test_url.to_string(), &mut app);
+
+    assert!(app.view.url_import_visible, "modal must remain open after paste");
+    let input: String = app.view.url_import_input.iter().collect();
+    assert_eq!(input, test_url);
+  }
+
+  #[test]
+  fn test_handle_paste_from_normal_screen_opens_import_modal_for_url() {
+    let mut app = App::default();
+    app.view.url_import_visible = false;
+
+    let test_url = "https://www.youtube.com/playlist?list=PL12345";
+    handle_paste(test_url.to_string(), &mut app);
+
+    assert!(app.view.url_import_visible, "pasting a URL on normal screen should auto-open modal");
+    let input: String = app.view.url_import_input.iter().collect();
+    assert_eq!(input, test_url);
   }
 }

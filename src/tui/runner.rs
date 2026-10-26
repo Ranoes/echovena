@@ -8,8 +8,8 @@ use crate::tui::ui;
 use anyhow::Result;
 use crossterm::{
   event::{
-    DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
   },
   execute,
   terminal::{supports_keyboard_enhancement, SetTitle},
@@ -80,6 +80,9 @@ fn modal_captures_key_before_back(app: &App) -> bool {
 /// its route popped instead of receiving the key, however well its own handler
 /// copes with it.
 fn key_reaches_handlers_before_back(app: &App, key: Key) -> bool {
+  if app.view.url_import_visible || app.view.relay_status_visible || app.view.karaoke_stage_visible {
+    return true;
+  }
   if modal_captures_key_before_back(app) {
     return true;
   }
@@ -528,6 +531,7 @@ impl TerminalSession {
       let _ = execute!(stdout(), SetTitle(title));
     }
     let _ = execute!(stdout(), DisableMouseCapture);
+    let _ = execute!(stdout(), DisableBracketedPaste);
     if self.keyboard_enhancement_enabled {
       let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
     }
@@ -547,6 +551,7 @@ pub async fn start_ui(
   #[cfg(feature = "cover-art")]
   crate::tui::cover_art::init_renderer();
   execute!(stdout(), EnableMouseCapture)?;
+  let _ = execute!(stdout(), EnableBracketedPaste);
   let keyboard_enhancement_supported = supports_keyboard_enhancement().unwrap_or(false);
   let keyboard_enhancement_enabled = keyboard_enhancement_supported
     && execute!(
@@ -722,6 +727,10 @@ pub async fn start_ui(
           break;
         }
         driver.run_pending_script_commands(&mut app);
+      }
+      event::Event::Paste(text) => {
+        let mut app = app.lock().await;
+        handlers::handle_paste(text, &mut app);
       }
       event::Event::Snapshot(snapshot) => pending_snapshot = Some(snapshot),
       event::Event::Mouse(mouse) => {

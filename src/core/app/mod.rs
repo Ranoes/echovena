@@ -60,6 +60,11 @@ impl Clipboard {
   fn set_text(&mut self, _text: String) -> Result<(), std::convert::Infallible> {
     match *self {}
   }
+
+  #[allow(dead_code)]
+  fn get_text(&mut self) -> Result<String, ()> {
+    match *self {}
+  }
 }
 #[cfg(any(test, feature = "streaming"))]
 use chrono::Utc;
@@ -704,6 +709,25 @@ pub struct App {
 }
 
 impl App {
+  /// Fetch text from the system clipboard if available.
+  pub fn get_clipboard_text(&mut self) -> Option<String> {
+    #[cfg(not(target_os = "android"))]
+    {
+      if let Some(clipboard) = &mut self.clipboard {
+        clipboard.get_text().ok()
+      } else if let Ok(mut cb) = arboard::Clipboard::new() {
+        let text = cb.get_text().ok();
+        self.clipboard = Some(cb);
+        text
+      } else {
+        None
+      }
+    }
+    #[cfg(target_os = "android")]
+    {
+      None
+    }
+  }
   // Send a network event to the network thread
   /// Clone the IoEvent sender so a spawned task (e.g. the in-TUI Spotify login
   /// callback server) can dispatch events back into the pump without holding the
