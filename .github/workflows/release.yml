@@ -6,6 +6,10 @@ on:
       - "v*.*.*"
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -31,11 +35,6 @@ jobs:
             os: macos-latest
             target: aarch64-apple-darwin
             asset_name: echovena-macos-aarch64.tar.gz
-            binary_name: echovena
-          - name: macos-x86_64
-            os: macos-latest
-            target: x86_64-apple-darwin
-            asset_name: echovena-macos-x86_64.tar.gz
             binary_name: echovena
 
     steps:
@@ -153,7 +152,7 @@ jobs:
         shell: pwsh
         run: |
           if (-not $env:CHOCOLATEY_API_KEY) {
-            Write-Host "CHOCOLATEY_API_KEY is not set. Skipping push to Chocolatey."
+            Write-Host "CHOCOLATEY_API_KEY is not configured; skipping Chocolatey push."
             exit 0
           }
           choco pack packaging/chocolatey/echovena.nuspec --outputdirectory packaging/chocolatey
