@@ -235,31 +235,22 @@ pub struct Route {
 /// keyboard focus.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub enum SourceFocus {
-  Source,
   #[default]
+  StreamSource,
+  DownloadSource,
+  Source,
   Devices,
 }
 
 impl App {
-  /// Open the combined Source & Device picker. The picker opens immediately so
-  /// it is reachable offline or when Local is the active source. Initial focus
-  /// is the Source panel unless Spotify is active (devices are Spotify Connect
-  /// only), and only Spotify needs a `me/player/devices` fetch: an
-  /// unauthenticated or offline session must not surface a spurious error.
+  /// Open the combined Stream Source & Download Source picker.
   pub(crate) fn open_source_device_picker(&mut self) {
     self.view.source_list_index = Source::picker_sources()
       .iter()
       .position(|s| *s == self.active_source)
       .unwrap_or(0);
-    self.view.source_device_focus = if self.active_source == Source::Spotify {
-      SourceFocus::Devices
-    } else {
-      SourceFocus::Source
-    };
+    self.view.source_device_focus = SourceFocus::StreamSource;
     self.push_navigation_stack(RouteId::SelectedDevice, ActiveBlock::SelectDevice);
-    if self.active_source == Source::Spotify {
-      self.dispatch(IoEvent::GetDevices);
-    }
   }
 
   /// Switch the active browse source and mirror + persist the choice so the

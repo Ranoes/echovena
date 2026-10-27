@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 
-/// The community invite the Welcome page links to.
-pub const DISCORD_URL: &str = "https://echovena.com/discord";
+/// The canonical GitHub repository the Welcome page links to.
+pub const DISCORD_URL: &str = "https://github.com/Ranoes/echovena";
 
 static CHANGELOG: OnceLock<String> = OnceLock::new();
 
@@ -72,6 +72,6 @@ mod tests {
     ));
     assert!(!opens_link_in("https://github.com", SAMPLE));
     assert!(!opens_link_in("file:///etc/passwd", SAMPLE));
-    assert!(!opens_link_in("http://echovena.com/discord", SAMPLE));
+    assert!(!opens_link_in("http://github.com/Ranoes/echovena", SAMPLE));
   }
 }

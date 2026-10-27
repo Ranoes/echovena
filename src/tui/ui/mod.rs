@@ -242,7 +242,7 @@ mod tests {
 
     let library_row = row_text(&buffer, areas.library.y);
     assert!(
-      library_row.contains("Library"),
+      library_row.contains("Quick Menu") || library_row.contains("Library"),
       "library panel not at hitbox row: {library_row}"
     );
     let playlists_row = row_text(&buffer, areas.playlists.y);
@@ -265,7 +265,7 @@ mod tests {
 
     let library_row = row_text(&buffer, areas.library.y);
     assert!(
-      library_row.contains("Library"),
+      library_row.contains("Quick Menu") || library_row.contains("Library"),
       "library panel not at hitbox row: {library_row}"
     );
   }

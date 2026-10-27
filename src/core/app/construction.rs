@@ -43,6 +43,7 @@ impl Default for App {
       youtube_playlists: Vec::new(),
       youtube_open_playlist: None,
       active_source: Source::default(),
+      active_download_source: crate::core::source::DownloadSource::default(),
       artists: vec![],
       artist: None,
       user_config: UserConfig::new(),

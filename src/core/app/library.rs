@@ -3,23 +3,13 @@ use super::*;
 /// Every sidebar row with what it needs; `App::library_rows` is the filtered list.
 pub(crate) fn library_row_requirements() -> &'static [(LibraryTarget, Requirement)] {
   &[
-    (
-      LibraryTarget::Discover,
-      Requirement::Source(Source::Spotify),
-    ),
-    (
-      LibraryTarget::RecentlyPlayed,
-      Requirement::Source(Source::Spotify),
-    ),
-    (LibraryTarget::Friends, Requirement::None),
-    (LibraryTarget::Stats, Requirement::None),
+    (LibraryTarget::Discover, Requirement::None),
+    (LibraryTarget::RecentlyPlayed, Requirement::None),
+    (LibraryTarget::LikedSongs, Requirement::None),
+    (LibraryTarget::Albums, Requirement::None),
+    (LibraryTarget::Artists, Requirement::None),
     (LibraryTarget::PlaylistSync, Requirement::None),
-    (
-      LibraryTarget::LikedSongs,
-      Requirement::Source(Source::Spotify),
-    ),
-    (LibraryTarget::Albums, Requirement::Source(Source::Spotify)),
-    (LibraryTarget::Artists, Requirement::Source(Source::Spotify)),
+    (LibraryTarget::Stats, Requirement::None),
     #[cfg(feature = "local-files")]
     (LibraryTarget::LocalFiles, Requirement::None),
     #[cfg(feature = "ai-dj")]

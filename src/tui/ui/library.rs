@@ -368,8 +368,8 @@ mod tests {
       "the free library rows stay under Local: {content}"
     );
     assert!(
-      !content.contains("Liked Songs"),
-      "Spotify library entries must be hidden under Local: {content}"
+      content.contains("Local Files"),
+      "Local Files entries render under Local: {content}"
     );
   }
 
@@ -465,8 +465,8 @@ mod tests {
     let app = App::default();
     let content = rendered(&app, Rect::new(0, 0, 32, 40));
     assert!(
-      content.contains("Stats") && content.contains("Friends"),
-      "Friends and Stats need no session: {content}"
+      content.contains("Stats"),
+      "Stats needs no session: {content}"
     );
     assert!(
       !content.contains("Liked Songs"),

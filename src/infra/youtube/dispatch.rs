@@ -723,6 +723,8 @@ async fn start_youtube_queue(app: &Arc<Mutex<App>>, uris: &[String], start_idx: 
         apply_resolved(&mut tracks, index, &uri_for_video_id(&video_id), track);
       }
       let display = tracks[index].name.clone();
+      let artists = tracks[index].artists.join(", ");
+      let dur = tracks[index].duration_ms;
       let mut guard = app.lock().await;
       // Publish the session exactly once, now that the source is decoding.
       let mut state = YouTubePlaybackState {
@@ -744,6 +746,8 @@ async fn start_youtube_queue(app: &Arc<Mutex<App>>, uris: &[String], start_idx: 
       }
       guard.youtube_playback = Some(state);
       guard.set_status_message(format!("\u{266a} {display}"), 4);
+      drop(guard);
+      spawn_karaoke_lyrics_fetch(Arc::clone(app), display, artists, dur);
     }
     Ok(Err(e)) => set_error(app, decode_hint(app, e).await).await,
     Err(e) => {
@@ -988,7 +992,7 @@ async fn commit_index(
   resolved: Option<(String, TrackInfo)>,
 ) {
   let mut guard = app.lock().await;
-  let display = if let Some(s) = guard.youtube_playback.as_mut() {
+  let track_meta = if let Some(s) = guard.youtube_playback.as_mut() {
     s.index = target;
     s.advancing = false;
     s.tempfile = tmp;
@@ -998,13 +1002,72 @@ async fn commit_index(
     if let Some((uri, track)) = resolved {
       apply_resolved(&mut s.tracks, target, &uri, track);
     }
-    s.tracks.get(target).map(|t| t.name.clone())
+    s.tracks.get(target).map(|t| (t.name.clone(), t.artists.join(", "), t.duration_ms))
   } else {
     None
   };
-  if let Some(display) = display {
+  if let Some((display, artists, dur)) = track_meta {
     guard.set_status_message(format!("\u{266a} {display}"), 4);
+    drop(guard);
+    spawn_karaoke_lyrics_fetch(Arc::clone(app), display, artists, dur);
   }
+}
+
+pub(crate) fn spawn_karaoke_lyrics_fetch(
+  app: Arc<Mutex<App>>,
+  title: String,
+  artist: String,
+  duration_ms: u64,
+) {
+  tokio::spawn(async move {
+    let (clean_artist, clean_title) =
+      crate::sources::lossless_relay::youtube_importer::clean_youtube_title(&title, Some(&artist));
+    let dur_sec = if duration_ms > 0 { Some((duration_ms / 1000) as i64) } else { None };
+    let client = crate::lyrics::lrclib_elrc::LrclibClient::new("https://lrclib.net/api/get");
+
+    // 1. Check local SQLite lyrics cache
+    let cached_tl = if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+      let track_key = format!("{}:{}", clean_artist.to_lowercase(), clean_title.to_lowercase());
+      if let Ok(Some(entry)) = db.get_lyrics(&track_key) {
+        serde_json::from_str::<crate::lyrics::KaraokeTimeline>(&entry.timeline_json).ok()
+      } else {
+        None
+      }
+    } else {
+      None
+    };
+
+    let timeline = if let Some(tl) = cached_tl {
+      Some(tl)
+    } else if let Ok(tl) = client.fetch_lyrics(&clean_title, &clean_artist, None, dur_sec).await {
+      // Save to SQLite cache
+      if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+        let track_key = format!("{}:{}", clean_artist.to_lowercase(), clean_title.to_lowercase());
+        let json = serde_json::to_string(&tl).unwrap_or_default();
+        let entry = crate::sources::lossless_relay::db::LyricsEntry {
+          source_track_id: track_key,
+          isrc: None,
+          provider: "lrclib".into(),
+          sync_type: "SYLLABLE".into(),
+          timeline_json: json,
+          raw_elrc: tl.raw_elrc.clone(),
+          user_offset_ms: 0,
+          fetched_at: chrono::Utc::now().timestamp(),
+        };
+        db.upsert_lyrics(&entry).ok();
+      }
+      Some(tl)
+    } else {
+      None
+    };
+
+    if let Some(tl) = timeline {
+      let lines: Vec<(u128, String)> = tl.lines.iter().map(|l| (l.start_time_ms as u128, l.text.clone())).collect();
+      let mut guard = app.lock().await;
+      guard.view.active_karaoke_timeline = Some(tl);
+      guard.set_lyrics(crate::core::app::LyricsStatus::Found, Some(lines), true);
+    }
+  });
 }
 
 /// End the YouTube session, releasing the output device and cleaning up the

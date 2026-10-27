@@ -580,6 +580,38 @@ pub fn handle_app(key: Key, app: &mut App) {
         handle_block_events(key, app);
       } else {
         app.view.karaoke_stage_visible = !app.view.karaoke_stage_visible;
+        if app.view.karaoke_stage_visible && app.view.active_karaoke_timeline.is_none() {
+          #[cfg(feature = "youtube")]
+          if let Some(yt) = app.youtube_playback.as_ref() {
+            if let Some(track) = yt.current() {
+              let title = track.name.clone();
+              let artist = track.artists.join(", ");
+              let dur_sec = if track.duration_ms > 0 { Some((track.duration_ms / 1000) as i64) } else { None };
+              app.set_status_message(format!("Fetching synced lyrics for '{}'...", title), 3);
+              tokio::spawn(async move {
+                let (clean_artist, clean_title) = crate::sources::lossless_relay::youtube_importer::clean_youtube_title(&title, Some(&artist));
+                let client = crate::lyrics::lrclib_elrc::LrclibClient::new("https://lrclib.net/api/get");
+                if let Ok(tl) = client.fetch_lyrics(&clean_title, &clean_artist, None, dur_sec).await {
+                  if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+                    let track_key = format!("{}:{}", clean_artist.to_lowercase(), clean_title.to_lowercase());
+                    let json = serde_json::to_string(&tl).unwrap_or_default();
+                    let entry = crate::sources::lossless_relay::db::LyricsEntry {
+                      source_track_id: track_key,
+                      isrc: None,
+                      provider: "lrclib".into(),
+                      sync_type: "SYLLABLE".into(),
+                      timeline_json: json,
+                      raw_elrc: tl.raw_elrc.clone(),
+                      user_offset_ms: 0,
+                      fetched_at: chrono::Utc::now().timestamp(),
+                    };
+                    db.upsert_lyrics(&entry).ok();
+                  }
+                }
+              });
+            }
+          }
+        }
       }
     }
     Key::Char('[') => {
@@ -645,11 +677,12 @@ pub fn handle_app(key: Key, app: &mut App) {
 
         if let Some(track) = track_to_archive {
           let title = track.clean_title.clone();
-          app.set_status_message(format!("Archiving '{}' to ~/Music/EchoVena...", title), 4);
+          let dl_source = app.active_download_source;
+          app.set_status_message(format!("Archiving '{}' [{}] to ~/Music/EchoVena...", title, dl_source.label()), 4);
           tokio::spawn(async move {
             if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
               if let Some(root) = crate::core::paths::music_archive_dir() {
-                let _ = crate::sources::lossless_relay::archiver::resolve_and_archive_track(&db, &track, &root).await;
+                let _ = crate::sources::lossless_relay::archiver::resolve_and_archive_track_with_source(&db, &track, &root, dl_source).await;
               }
             }
           });
@@ -703,13 +736,14 @@ pub fn handle_app(key: Key, app: &mut App) {
         if !tracks_to_archive.is_empty() {
           let count = tracks_to_archive.len();
           let name_owned = playlist_name.clone();
-          app.set_status_message(format!("Batch archiving {} tracks from '{}' to ~/Music/EchoVena...", count, name_owned), 4);
+          let dl_source = app.active_download_source;
+          app.set_status_message(format!("Batch archiving {} tracks from '{}' [{}] to ~/Music/EchoVena...", count, name_owned, dl_source.label()), 4);
           tokio::spawn(async move {
             if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
               if let Some(root) = crate::core::paths::music_archive_dir() {
                 let mut archived_paths = Vec::new();
                 for trk in &tracks_to_archive {
-                  if let Ok(path) = crate::sources::lossless_relay::archiver::resolve_and_archive_track(&db, trk, &root).await {
+                  if let Ok(path) = crate::sources::lossless_relay::archiver::resolve_and_archive_track_with_source(&db, trk, &root, dl_source).await {
                     archived_paths.push(path);
                   }
                 }

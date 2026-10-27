@@ -202,6 +202,22 @@ fn process_input(app: &mut App, input: String) {
   // On searching for a track, clear the playlist selection
   app.view.selected_playlist_index = Some(0);
 
+  // 1. YouTube direct URL or video ID detection
+  if input.contains("youtube.com/watch")
+    || input.contains("youtu.be/")
+    || input.contains("music.youtube.com")
+    || input.starts_with("youtube:")
+  {
+    if let Some(video_id) = extract_youtube_video_id(&input) {
+      let uri = format!("youtube:video:{video_id}");
+      app.apply(Action::PlayUris { uris: vec![uri], offset: Some(0) });
+      app.set_status_message(format!("Playing YouTube video: {}", video_id), 4);
+      app.set_current_route_state(Some(ActiveBlock::PlayBar), Some(ActiveBlock::PlayBar));
+      return;
+    }
+  }
+
+  // 2. Spotify URL or URI
   if attempt_process_uri(app, &input, "https://open.spotify.com/", "/")
     || attempt_process_uri(app, &input, "spotify:", ":")
   {
@@ -314,6 +330,23 @@ fn attempt_process_uri(app: &mut App, input: &str, base: &str, sep: &str) -> boo
   }
 
   false
+}
+
+fn extract_youtube_video_id(url: &str) -> Option<String> {
+  if let Some(pos) = url.find("v=") {
+    let rest = &url[pos + 2..];
+    let end = rest.find('&').unwrap_or(rest.len());
+    return Some(rest[..end].to_string());
+  }
+  if let Some(pos) = url.find("youtu.be/") {
+    let rest = &url[pos + 9..];
+    let end = rest.find('?').unwrap_or(rest.len());
+    return Some(rest[..end].to_string());
+  }
+  if let Some(rest) = url.strip_prefix("youtube:video:") {
+    return Some(rest.to_string());
+  }
+  None
 }
 
 pub(crate) fn compute_character_width(character: char) -> u16 {

@@ -120,10 +120,6 @@ pub fn draw_home(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
     counter_message,
     counter_style,
   )]));
-  changelog_lines.push(Line::from(vec![Span::styled(
-    app.strings().screens.discord_community,
-    Style::default().fg(app.user_config.theme.active.into()),
-  )]));
   changelog_lines.push(Line::from(""));
 
   // The cached changelog lines are pre-wrapped to the area width (one line ==
@@ -305,6 +301,7 @@ struct StyledSegment {
   style: Style,
 }
 
+#[allow(dead_code)]
 fn parse_markdown_inline(text: &str, base_style: Style) -> Vec<StyledSegment> {
   let mut segments: Vec<StyledSegment> = Vec::new();
   let mut buffer = String::new();
@@ -549,7 +546,7 @@ mod tests {
 }
 
 fn build_changelog_lines(
-  changelog: &str,
+  _changelog: &str,
   theme: &crate::core::user_config::Theme,
   max_width: u16,
   log_path: &str,
@@ -589,48 +586,46 @@ fn build_changelog_lines(
   );
   lines.push(Line::from(""));
 
-  for line in changelog.lines() {
-    if line.starts_with("- ") {
-      let content = line.trim_start_matches("- ");
-      let segments = parse_markdown_inline(content, Style::default().fg(theme.text.into()));
-      let bullet_prefix = "  • ";
-      let indent = " ".repeat(UnicodeWidthStr::width(bullet_prefix));
-      lines.extend(wrap_segments_with_indent(
-        &segments,
-        max_width,
-        bullet_prefix,
-        Style::default().fg(theme.inactive.into()),
-        &indent,
-        Style::default().fg(theme.text.into()),
-      ));
-      continue;
-    }
+  push_wrapped(
+    &mut lines,
+    &[StyledSegment {
+      text: "EchoVena 2.0 — Fast Terminal Music Streamer, Offline Downloader & Karaoke".to_string(),
+      style: Style::default()
+        .fg(theme.banner.into())
+        .add_modifier(Modifier::BOLD),
+    }],
+  );
+  lines.push(Line::from(""));
 
-    if line.starts_with("# ") {
-      push_wrapped(
-        &mut lines,
-        &[StyledSegment {
-          text: line.trim_start_matches("# ").to_string(),
-          style: Style::default()
-            .fg(theme.banner.into())
-            .add_modifier(Modifier::BOLD),
-        }],
-      );
-    } else if line.starts_with("## [") {
-      push_wrapped(
-        &mut lines,
-        &[StyledSegment {
-          text: format!("═══ {} ═══", line.trim_start_matches("## ")),
-          style: Style::default()
-            .fg(theme.active.into())
-            .add_modifier(Modifier::BOLD),
-        }],
-      );
-    } else {
-      let segments = parse_markdown_inline(line, Style::default().fg(theme.text.into()));
-      push_wrapped(&mut lines, &segments);
-    }
+  push_wrapped(
+    &mut lines,
+    &[StyledSegment {
+      text: "═══ Essential Keyboard Controls ═══".to_string(),
+      style: Style::default()
+        .fg(theme.active.into())
+        .add_modifier(Modifier::BOLD),
+    }],
+  );
+
+  let shortcuts = [
+    ("  /            ", "Search tracks, artists, or paste any YouTube / Spotify URL"),
+    ("  Space        ", "Play / Pause active playback"),
+    ("  n / p        ", "Next / Previous track in queue"),
+    ("  K            ", "Toggle live 60 FPS syllable-by-syllable karaoke stage"),
+    ("  d            ", "Select audio stream source & download quality source"),
+    ("  s / S        ", "Offline archive (s: current track, S: full playlist with .elrc)"),
+    ("  Tab          ", "Cycle active panel focus (Quick Menu / Playlists / Main / Player)"),
+    ("  h / j / k / l", "Pure Vim navigation | p: paste clipboard text | ?: help"),
+    ("  Q            ", "Immediately quit EchoVena"),
+  ];
+
+  for (key, desc) in shortcuts {
+    lines.push(Line::from(vec![
+      Span::styled(key, Style::default().fg(theme.active.into()).add_modifier(Modifier::BOLD)),
+      Span::styled(desc, Style::default().fg(theme.text.into())),
+    ]));
   }
+  lines.push(Line::from(""));
 
   lines
 }

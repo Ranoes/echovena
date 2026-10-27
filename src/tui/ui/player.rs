@@ -1753,59 +1753,56 @@ pub fn draw_playbar(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
 
 /// The Source picker (the `d` screen): select active music source.
 pub fn draw_device_list(f: &mut Frame<'_>, app: &App) {
-  let [instructions_area, source_area] = f.area().layout(
+  let [instructions_area, panels_area] = f.area().layout(
     &Layout::vertical([
-      Constraint::Length(7),
+      Constraint::Length(6),
       Constraint::Min(Source::picker_sources().len() as u16 + 2),
     ])
     .margin(2),
   );
 
-  let move_instructions = app.strings().screens.device_navigation(
-    &app.user_config.keys.move_up.to_string(),
-    &app.user_config.keys.move_down.to_string(),
-  );
   let instructions_text: Vec<Line> = vec![
-    Line::from(Span::raw(app.strings().screens.choose_source_device)),
-    Line::from(Span::raw(move_instructions)),
-    Line::from(Span::raw(app.strings().screens.choices_cached)),
-    Line::from(Span::raw(
-      app
-        .strings()
-        .screens
-        .reopen_devices(&app.user_config.keys.manage_devices.to_string()),
+    Line::from(Span::styled(
+      "EchoVena Audio Source & Offline Downloader Configuration",
+      Style::default().fg(app.user_config.theme.active.into()).add_modifier(Modifier::BOLD),
+    )),
+    Line::from(Span::raw("Streaming Source (Left) selects the playback backend. Download Source (Right) targets the 1-key offline archiver ('s'/'S').")),
+    Line::from(Span::styled(
+      "[Tab / h / l] Switch Panel   |   [j / k] Move Cursor   |   [Enter] Select Active   |   [Esc / q] Close",
+      Style::default().fg(app.user_config.theme.hint.into()),
     )),
   ];
 
   let instructions = Paragraph::new(instructions_text)
     .style(Style::default().fg(app.user_config.theme.text.into()))
     .wrap(Wrap { trim: true })
-    .block(
-      Block::default().borders(Borders::NONE).title(Span::styled(
-        app.strings().screens.welcome_echovena,
-        Style::default()
-          .fg(app.user_config.theme.active.into())
-          .add_modifier(app.user_config.behavior.emphasis(Modifier::BOLD)),
-      )),
-    );
+    .block(Block::default().borders(Borders::NONE));
   f.render_widget(instructions, instructions_area);
 
-  // --- Source panel ---
-  let source_border = app.user_config.theme.active;
+  let [source_area, download_area] = panels_area.layout(
+    &Layout::horizontal([
+      Constraint::Percentage(50),
+      Constraint::Percentage(50),
+    ]),
+  );
+
+  let is_stream_focused = matches!(
+    app.view.source_device_focus,
+    crate::core::app::SourceFocus::StreamSource | crate::core::app::SourceFocus::Source
+  );
+
+  // --- 1. Streaming Source panel (Left) ---
+  let source_border = if is_stream_focused {
+    app.user_config.theme.active
+  } else {
+    app.user_config.theme.inactive
+  };
   let source_items: Vec<ListItem> = Source::picker_sources()
     .iter()
     .map(|s| {
       let is_active = *s == app.active_source;
-      let marker = if is_active {
-        app.user_config.behavior.active_source_icon.as_str()
-      } else {
-        " "
-      };
-      let suffix = if is_active {
-        app.strings().screens.source_active
-      } else {
-        ""
-      };
+      let marker = if is_active { "●" } else { " " };
+      let suffix = if is_active { " (Active Stream)" } else { "" };
       let style = if is_active {
         Style::default()
           .fg(app.user_config.theme.active.into())
@@ -1830,10 +1827,11 @@ pub fn draw_device_list(f: &mut Frame<'_>, app: &App) {
     .block(
       Block::default()
         .title(Span::styled(
-          app.strings().screens.source,
-          Style::default().fg(source_border.into()),
+          " 1. Streaming Source (Playback) ",
+          Style::default().fg(source_border.into()).add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
+        .border_type(if is_stream_focused { BorderType::Rounded } else { BorderType::Plain })
         .style(app.user_config.theme.base_style())
         .border_style(Style::default().fg(source_border.into())),
     )
@@ -1848,6 +1846,61 @@ pub fn draw_device_list(f: &mut Frame<'_>, app: &App) {
       Line::from("▶ ").style(Style::default().fg(app.user_config.theme.active.into())),
     );
   f.render_stateful_widget(source_list, source_area, &mut source_state);
+
+  // --- 2. Download Source panel (Right) ---
+  let is_download_focused = matches!(
+    app.view.source_device_focus,
+    crate::core::app::SourceFocus::DownloadSource
+  );
+  let download_border = if is_download_focused {
+    app.user_config.theme.active
+  } else {
+    app.user_config.theme.inactive
+  };
+  let download_items: Vec<ListItem> = crate::core::source::DownloadSource::ALL
+    .iter()
+    .map(|d| {
+      let is_active = *d == app.active_download_source;
+      let marker = if is_active { "●" } else { " " };
+      let suffix = if is_active { " (Active Downloader)" } else { "" };
+      let style = if is_active {
+        Style::default()
+          .fg(app.user_config.theme.active.into())
+          .add_modifier(app.user_config.behavior.emphasis(Modifier::BOLD))
+      } else {
+        app.user_config.theme.base_style()
+      };
+      ListItem::new(Span::styled(
+        format!("{} {}{}", marker, d.label(), suffix),
+        style,
+      ))
+    })
+    .collect();
+  let mut download_state = ListState::default();
+  download_state.select(Some(app.view.download_source_index));
+  let download_list = List::new(download_items)
+    .block(
+      Block::default()
+        .title(Span::styled(
+          " 2. Download Source (1-Key Archiver 's' / 'S') ",
+          Style::default().fg(download_border.into()).add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_type(if is_download_focused { BorderType::Rounded } else { BorderType::Plain })
+        .style(app.user_config.theme.base_style())
+        .border_style(Style::default().fg(download_border.into())),
+    )
+    .style(app.user_config.theme.base_style())
+    .highlight_style(
+      Style::default()
+        .fg(app.user_config.theme.active.into())
+        .bg(app.user_config.theme.inactive.into())
+        .add_modifier(app.user_config.behavior.emphasis(Modifier::BOLD)),
+    )
+    .highlight_symbol(
+      Line::from("▶ ").style(Style::default().fg(app.user_config.theme.active.into())),
+    );
+  f.render_stateful_widget(download_list, download_area, &mut download_state);
 }
 
 #[cfg(all(test, feature = "cover-art"))]

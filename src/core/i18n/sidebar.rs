@@ -41,7 +41,7 @@ pub struct SidebarStrings {
 }
 
 pub const EN: SidebarStrings = SidebarStrings {
-  library: "Library",
+  library: "Quick Menu",
   discover: "Discover",
   recently_played: "Recently Played",
   friends: "Friends",

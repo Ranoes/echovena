@@ -44,6 +44,31 @@ pub type MusicSource = Source;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(all(test, feature = "gui"), derive(ts_rs::TS))]
+pub enum DownloadSource {
+  #[default]
+  YouTubeOpus,
+  TidalFlac,
+  QobuzFlac,
+}
+
+impl DownloadSource {
+  pub const ALL: [DownloadSource; 3] = [
+    DownloadSource::YouTubeOpus,
+    DownloadSource::TidalFlac,
+    DownloadSource::QobuzFlac,
+  ];
+
+  pub fn label(&self) -> &'static str {
+    match self {
+      DownloadSource::YouTubeOpus => "YouTube Opus (160k Fast / Standard)",
+      DownloadSource::TidalFlac => "Tidal FLAC (Bit-Perfect Hi-Res Lossless)",
+      DownloadSource::QobuzFlac => "Qobuz FLAC (24-bit Studio Master Hi-Res)",
+    }
+  }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(all(test, feature = "gui"), derive(ts_rs::TS))]
 pub enum Source {
   #[default]
   LosslessRelay,

@@ -396,6 +396,7 @@ pub struct App {
   /// The source the UI is currently scoped to (sidebar, search, capability
   /// gating). Browse-scope only — never changes playback routing.
   pub active_source: Source,
+  pub active_download_source: crate::core::source::DownloadSource,
   pub clipboard: Option<Clipboard>,
   pub is_loading: bool,
   io_tx: Option<Sender<IoEvent>>,

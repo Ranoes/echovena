@@ -188,20 +188,33 @@ pub async fn resolve_and_archive_track(
     track: &PlaylistTrack,
     root: &Path,
 ) -> Result<PathBuf> {
-    // 1. Try Token-gated LosslessWaterfall (Tidal/Qobuz FLAC)
-    let registry = crate::config::providers::ProviderRegistry::load_or_create_default()
-        .unwrap_or_else(|_| crate::config::providers::ProviderRegistry::default_registry());
-    let waterfall = crate::sources::lossless_relay::waterfall::LosslessWaterfall::new(registry);
-    let resolved = crate::sources::lossless_relay::resolver::ResolvedTrack {
-        source_track_id: track.source_track_id.clone(),
-        isrc: track.isrc.clone(),
-        qobuz_id: None,
-        tidal_id: None,
-        resolution_method: "auto".to_string(),
-        match_confidence: 1.0,
-    };
+    resolve_and_archive_track_with_source(db, track, root, crate::core::source::DownloadSource::default()).await
+}
 
-    let stream_res = waterfall.resolve_stream(track, &resolved).await;
+/// Resolves audio honoring `download_source`, fetches cover art and lyrics, and writes the archived files to `root`.
+pub async fn resolve_and_archive_track_with_source(
+    db: &Database,
+    track: &PlaylistTrack,
+    root: &Path,
+    download_source: crate::core::source::DownloadSource,
+) -> Result<PathBuf> {
+    // 1. Try Token-gated LosslessWaterfall (Tidal/Qobuz FLAC) unless user specifically chose YouTubeOpus
+    let stream_res = if download_source == crate::core::source::DownloadSource::YouTubeOpus {
+        Err(anyhow!("YouTube Opus selected by user configuration"))
+    } else {
+        let registry = crate::config::providers::ProviderRegistry::load_or_create_default()
+            .unwrap_or_else(|_| crate::config::providers::ProviderRegistry::default_registry());
+        let waterfall = crate::sources::lossless_relay::waterfall::LosslessWaterfall::new(registry);
+        let resolved = crate::sources::lossless_relay::resolver::ResolvedTrack {
+            source_track_id: track.source_track_id.clone(),
+            isrc: track.isrc.clone(),
+            qobuz_id: None,
+            tidal_id: None,
+            resolution_method: "auto".to_string(),
+            match_confidence: 1.0,
+        };
+        waterfall.resolve_stream(track, &resolved).await
+    };
 
     let (audio_bytes, ext) = match stream_res {
         Ok(info) if info.format.starts_with("FLAC") && !info.stream_url.is_empty() => {

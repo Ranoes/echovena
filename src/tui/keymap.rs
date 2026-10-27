@@ -285,7 +285,11 @@ pub fn help_entries_for(strings: &crate::core::i18n::Strings) -> Vec<HelpEntry> 
       Literal("<Esc>"),
       help.context_selected_block,
     ),
-    row(help.save_track, Literal("s"), help.context_selected_block).needs(LIKE),
+    row("Live 60 FPS Karaoke Stage", Literal("K"), help.context_general),
+    row("Download Track to Offline Archive (.elrc)", Literal("s"), help.context_general),
+    row("Batch Download Playlist to Offline Archive", Literal("S"), help.context_general),
+    row("Paste URL or Search from Clipboard", Literal("p | <Ctrl+v>"), help.context_general),
+    row("Quit EchoVena Immediately", Literal("Q | <Ctrl+c> | <Ctrl+q>"), help.context_general),
     row(
       help.add_selected_to_playlist,
       Literal("w"),

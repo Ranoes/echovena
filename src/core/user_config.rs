@@ -1399,8 +1399,8 @@ impl UserConfig {
         sidebar_width_percent: None,
         playbar_height_rows: None,
         library_height_percent: None,
-        small_terminal_width: 150,
-        small_terminal_height: 45,
+        small_terminal_width: 80,
+        small_terminal_height: 24,
       },
       path_to_config: None,
       // Phase 4 / 5: parsed templates + resolved columns default to today's
