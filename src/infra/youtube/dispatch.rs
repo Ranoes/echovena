@@ -610,12 +610,19 @@ async fn start_youtube_queue(app: &Arc<Mutex<App>>, uris: &[String], start_idx: 
   // view the request came from.
   let mut tracks = {
     let guard = app.lock().await;
+    let live_tracks: Vec<TrackInfo> = guard
+      .live_search_items
+      .iter()
+      .map(|it| it.to_track_info())
+      .collect();
     let search = guard
       .search_results()
       .tracks
       .as_ref()
       .map(|p| p.items.as_slice());
-    snapshot_tracks(&guard.track_table.tracks, search, uris)
+    let mut all_pool = guard.track_table.tracks.clone();
+    all_pool.extend(live_tracks);
+    snapshot_tracks(&all_pool, search, uris)
   };
   if tracks.is_empty() {
     set_error(

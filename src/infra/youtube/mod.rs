@@ -52,9 +52,10 @@ const DEFAULT_YTDLP: &str = "yt-dlp";
 /// for yt-dlp, so this is also the dominant term in search latency (~3-6 s).
 const SEARCH_LIMIT: usize = 20;
 
-/// Audio format selector: itag 251 (Opus ~160 kbps) or itag 140 (AAC/M4A ~128 kbps),
-/// with best audio fallbacks.
-const FORMAT_SELECTOR: &str = "251/140/bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio";
+/// Audio format selector: itag 140 (AAC/M4A ~128 kbps) first — the format the
+/// bundled symphonia decoder is known to handle — then any m4a, then whatever
+/// audio exists.
+const FORMAT_SELECTOR: &str = "140/bestaudio[ext=m4a]/bestaudio";
 
 /// Extractor override for the download retry: YouTube's GVS PO-token
 /// enforcement 403s music-label content on the default player clients, while
@@ -221,7 +222,7 @@ pub fn uri_for_video_id(id: &str) -> String {
 /// Check if an audio file is cached on disk for `video_id`.
 pub fn cached_audio_path(video_id: &str) -> Option<std::path::PathBuf> {
   let cache_dir = crate::core::paths::audio_cache_dir()?;
-  let extensions = ["opus", "m4a", "webm", "mp3", "flac"];
+  let extensions = ["m4a", "mp3", "flac", "opus", "webm"];
   for ext in extensions {
     let candidate = cache_dir.join(format!("{video_id}.{ext}"));
     if candidate.is_file() {
@@ -472,6 +473,8 @@ fn download_args<'a>(dest: &'a str, url: &'a str, embedded_fallback: bool) -> Ve
     METADATA_TEMPLATE,
     "-f",
     FORMAT_SELECTOR,
+    "--concurrent-fragments",
+    "4",
     "--no-playlist",
     // The NamedTempFile already exists (0 bytes); overwrite it.
     "--force-overwrites",
