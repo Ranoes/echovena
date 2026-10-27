@@ -767,78 +767,7 @@ pub fn handle_app(key: Key, app: &mut App) {
       if is_input_mode(app) {
         handle_block_events(key, app);
       } else {
-        app.set_status_message("Starting playlist delta-sync...".to_string(), 3);
-        tokio::spawn(async move {
-          if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
-            if let Ok(playlists) = db.list_imported_playlists() {
-              let mut total_new = 0;
-              let scraper = crate::sources::lossless_relay::spotify_scraper::SpotifyScraper::new();
-              let yt_importer = crate::sources::lossless_relay::youtube_importer::YouTubeImporter::new();
-
-              for pl in &playlists {
-                let existing = db.get_playlist_tracks(&pl.id).unwrap_or_default();
-                let existing_ids: std::collections::HashSet<String> =
-                  existing.iter().map(|t| t.source_track_id.clone()).collect();
-
-                let new_tracks: Vec<crate::sources::lossless_relay::db::PlaylistTrack> = match pl.platform.as_str() {
-                  "spotify" => {
-                    if let Some(crate::sources::lossless_relay::spotify_scraper::SpotifyResource::Playlist(sp_id)) =
-                      crate::sources::lossless_relay::spotify_scraper::parse_spotify_url(&pl.source_url)
-                    {
-                      if let Ok((_, fetched)) = scraper.fetch_playlist(&sp_id).await {
-                        fetched
-                          .into_iter()
-                          .filter(|t| !existing_ids.contains(&t.source_track_id))
-                          .collect()
-                      } else {
-                        Vec::new()
-                      }
-                    } else {
-                      Vec::new()
-                    }
-                  }
-                  "youtube" => {
-                    if let Some(crate::sources::lossless_relay::youtube_importer::YouTubeResource::Playlist(yt_id)) =
-                      crate::sources::lossless_relay::youtube_importer::parse_youtube_url(&pl.source_url)
-                    {
-                      if let Ok((_, fetched)) = yt_importer.fetch_playlist(&yt_id).await {
-                        fetched
-                          .into_iter()
-                          .filter(|t| !existing_ids.contains(&t.source_track_id))
-                          .collect()
-                      } else {
-                        Vec::new()
-                      }
-                    } else {
-                      Vec::new()
-                    }
-                  }
-                  _ => Vec::new(),
-                };
-
-                if !new_tracks.is_empty() {
-                  total_new += new_tracks.len();
-                  let mut combined = existing;
-                  for mut t in new_tracks {
-                    t.position = combined.len() as i64;
-                    combined.push(t);
-                  }
-                  db.replace_playlist_tracks(&pl.id, &combined).ok();
-                  let mut updated_pl = pl.clone();
-                  updated_pl.track_count = combined.len() as i64;
-                  updated_pl.last_synced_at = chrono::Utc::now().timestamp();
-                  db.upsert_imported_playlist(&updated_pl).ok();
-                }
-              }
-              log::info!(
-                "Playlist delta-sync complete: {} new tracks added across {} playlists",
-                total_new,
-                playlists.len()
-              );
-            }
-          }
-        });
-        app.set_status_message("Playlist delta-sync triggered in background".to_string(), 5);
+        app.apply(Action::RunPlaylistSync);
       }
     }
     // Resize sidebar: { decreases, } increases width

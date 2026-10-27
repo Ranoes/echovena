@@ -237,7 +237,7 @@ impl SpotifyCookieSync {
             let page_items_count = page.items.len();
 
             for item in page.items {
-                let track = item.track;
+                let Some(track) = item.track else { continue };
                 if track.id.is_empty() {
                     continue;
                 }
@@ -344,21 +344,110 @@ impl SpotifyCookieSync {
         Ok(playlists)
     }
 
-    /// Synchronizes the personal library (Liked Songs) into the local SQLite database
+    /// Fetches all tracks for a specific Spotify playlist
+    pub async fn fetch_playlist_tracks(&self, raw_playlist_id: &str) -> Result<Vec<PlaylistTrack>> {
+        let clean_id = raw_playlist_id
+            .strip_prefix("spotify:playlist:")
+            .unwrap_or(raw_playlist_id);
+
+        let token = self.exchange_token().await?;
+        let canonical_pl_id = format!("spotify:playlist:{}", clean_id);
+
+        let mut tracks = Vec::new();
+        let mut offset = 0;
+        let limit = 100;
+
+        loop {
+            let url = format!(
+                "{}/playlists/{}/tracks?limit={}&offset={}",
+                SPOTIFY_API_BASE, clean_id, limit, offset
+            );
+
+            let resp = self
+                .client
+                .get(&url)
+                .headers(Self::auth_headers(&token.access_token))
+                .send()
+                .await
+                .context("failed querying /playlists/{id}/tracks endpoint")?;
+
+            if !resp.status().is_success() {
+                break;
+            }
+
+            let page: SavedTracksPage = resp
+                .json()
+                .await
+                .context("failed parsing playlist tracks page json")?;
+
+            let total = page.total;
+            let page_items_count = page.items.len();
+
+            for item in page.items {
+                let Some(track) = item.track else { continue };
+                if track.id.is_empty() {
+                    continue;
+                }
+
+                let artists = track
+                    .artists
+                    .iter()
+                    .map(|a| a.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let cover_art = track
+                    .album
+                    .as_ref()
+                    .and_then(|a| a.images.first().map(|img| img.url.clone()));
+                let album_name = track.album.as_ref().map(|a| a.name.clone());
+                let isrc = track.external_ids.and_then(|ids| ids.isrc);
+
+                tracks.push(PlaylistTrack {
+                    playlist_id: canonical_pl_id.clone(),
+                    position: tracks.len() as i64,
+                    source_track_id: format!("spotify:track:{}", track.id),
+                    raw_title: track.name.clone(),
+                    clean_title: track.name,
+                    artist: artists,
+                    album: album_name,
+                    duration_ms: track.duration_ms,
+                    isrc,
+                    cover_art_url: cover_art,
+                });
+            }
+
+            offset += page_items_count;
+            if page_items_count < limit || offset >= total {
+                break;
+            }
+        }
+
+        Ok(tracks)
+    }
+
+    /// Synchronizes personal library (Liked Songs) and user playlists into local SQLite
     pub async fn sync_to_db(&self, db: &Database) -> Result<(usize, usize)> {
         let (liked_playlist, liked_tracks) = self.fetch_liked_songs().await?;
-        let track_count = liked_tracks.len();
+        let liked_count = liked_tracks.len();
 
         db.upsert_imported_playlist(&liked_playlist)?;
         db.replace_playlist_tracks(&liked_playlist.id, &liked_tracks)?;
 
         let playlists = self.fetch_user_playlists().await.unwrap_or_default();
         let pl_count = playlists.len();
+        let mut total_tracks = liked_count;
+
         for pl in &playlists {
             let _ = db.upsert_imported_playlist(pl);
+            if let Ok(pl_tracks) = self.fetch_playlist_tracks(&pl.id).await {
+                if !pl_tracks.is_empty() {
+                    total_tracks += pl_tracks.len();
+                    let _ = db.replace_playlist_tracks(&pl.id, &pl_tracks);
+                }
+            }
         }
 
-        Ok((1 + pl_count, track_count))
+        Ok((1 + pl_count, total_tracks))
     }
 }
 
@@ -366,7 +455,8 @@ impl SpotifyCookieSync {
 
 #[derive(Debug, Deserialize)]
 struct SavedTrackItem {
-    track: RawTrack,
+    #[serde(default)]
+    track: Option<RawTrack>,
 }
 
 #[derive(Debug, Deserialize)]

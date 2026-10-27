@@ -218,6 +218,11 @@ impl YouTubeImporter {
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static(DEFAULT_USER_AGENT));
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        if let Some(cookie_str) = crate::sources::sync::auth::YouTubeAuthHandler::resolve_cookie_header() {
+            if let Ok(val) = HeaderValue::from_str(&cookie_str) {
+                headers.insert(reqwest::header::COOKIE, val);
+            }
+        }
 
         let payload = serde_json::json!({
             "context": {
@@ -381,10 +386,16 @@ impl YouTubeImporter {
     ) -> Result<(ImportedPlaylist, Vec<PlaylistTrack>)> {
         let url = format!("https://www.youtube.com/playlist?list={}", playlist_id);
 
-        let output = Command::new("yt-dlp")
-            .arg("--flat-playlist")
+        let mut cmd = Command::new("yt-dlp");
+        cmd.arg("--flat-playlist")
             .arg("--dump-json")
-            .arg("--no-warnings")
+            .arg("--no-warnings");
+
+        for arg in crate::sources::sync::auth::YouTubeAuthHandler::ytdlp_cookie_args() {
+            cmd.arg(arg);
+        }
+
+        let output = cmd
             .arg(&url)
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

@@ -1122,6 +1122,7 @@ impl Network {
       | IoEvent::AddTrackToYouTubePlaylist(..)
       | IoEvent::RemoveTrackFromYouTubePlaylist(..) => {}
       IoEvent::RunPlaylistSync { retry_unmatched } => {
+        crate::sources::sync::SyncWorker::spawn_background_sync(Arc::clone(&self.app));
         crate::infra::playlist_sync::spawn_run(
           self.spotify,
           Arc::clone(&self.app),
