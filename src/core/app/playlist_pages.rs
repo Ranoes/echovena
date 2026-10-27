@@ -266,6 +266,24 @@ impl App {
     self.live_search_items.get(self.live_search_selected_index)
   }
 
+  pub fn play_selected_live_search_item(&mut self) {
+    if let Some(item) = self.selected_live_search_item().cloned() {
+      let track = item.to_track_info();
+      let name = track.display_name(self.strings()).to_owned();
+      self.set_status_message(format!("Playing \"{}\"", name), 3);
+      let uris: Vec<String> = self.live_search_items.iter().filter_map(|it| it.to_track_info().uri).collect();
+      let offset = self.live_search_selected_index;
+      self.start_playback_uris(uris, Some(offset));
+    }
+  }
+
+  pub fn queue_selected_live_search_item(&mut self) {
+    if let Some(item) = self.selected_live_search_item().cloned() {
+      let track = item.to_track_info();
+      self.add_track_to_native_queue(track);
+    }
+  }
+
   pub fn reset_playlist_tracks_view(
     &mut self,
     playlist_id: PlaylistId<'static>,

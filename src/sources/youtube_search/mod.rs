@@ -384,4 +384,39 @@ mod tests {
         assert!(app.live_search_suggestions.is_empty());
         assert_eq!(app.live_search_selected_index, 0);
     }
+
+    #[test]
+    fn test_play_and_queue_selected_live_search_item() {
+        use crate::core::app::App;
+        let mut app = App::default();
+
+        app.live_search_items = vec![
+            SearchResultItem {
+                id: "yt:video:fJ9rUzIMcZQ".into(),
+                video_id: Some("fJ9rUzIMcZQ".into()),
+                playlist_id: None,
+                title: "Bohemian Rhapsody".into(),
+                artist: "Queen".into(),
+                album: Some("A Night at the Opera".into()),
+                duration_ms: 354_000,
+                duration_str: "5:54".into(),
+                badges: vec![SearchBadge::Official],
+                scope: SearchScope::Songs,
+                thumbnail_url: None,
+                is_playable: true,
+            },
+        ];
+        app.live_search_selected_index = 0;
+
+        // Test queueing on 'z'
+        assert!(app.native_queue.is_empty());
+        app.queue_selected_live_search_item();
+        assert_eq!(app.native_queue.len(), 1);
+        assert_eq!(app.native_queue[0].name, "Bohemian Rhapsody");
+        assert_eq!(app.native_queue[0].uri.as_deref(), Some("youtube:fJ9rUzIMcZQ"));
+
+        // Test instant playback on 'Enter'
+        app.play_selected_live_search_item();
+        assert!(app.status_message().is_some());
+    }
 }

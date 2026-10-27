@@ -548,6 +548,14 @@ pub fn handler(key: Key, app: &mut App) {
         app.view.search_selected_tracks_index = Some(app.live_search_selected_index);
         return;
       }
+      Key::Enter => {
+        app.play_selected_live_search_item();
+        return;
+      }
+      Key::Char('z') => {
+        app.queue_selected_live_search_item();
+        return;
+      }
       _ => {}
     }
   }
