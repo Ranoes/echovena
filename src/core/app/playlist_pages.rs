@@ -114,6 +114,43 @@ impl App {
       self.browse_apple_music(crate::infra::apple_music::Browse::Tracks(uri));
       return;
     }
+
+    // Check if this is an imported/synced SQLite playlist
+    if uri.starts_with("spotify:playlist:")
+      || uri.starts_with("spotify:personal:")
+      || uri.starts_with("sqlite:")
+      || uri.starts_with("relay:")
+      || uri.starts_with("yt:playlist:")
+    {
+      if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+        if let Ok(tracks) = db.get_playlist_tracks(&uri) {
+          if !tracks.is_empty() {
+            let track_infos: Vec<crate::core::plugin_api::TrackInfo> = tracks
+              .into_iter()
+              .map(|t| crate::core::plugin_api::TrackInfo {
+                uri: Some(t.source_track_id.clone()),
+                name: t.clean_title,
+                artists: vec![t.artist],
+                album: t.album.unwrap_or_default(),
+                duration_ms: t.duration_ms as u64,
+                id: Some(t.source_track_id),
+                album_id: None,
+                artist_refs: Vec::new(),
+                is_playable: true,
+                is_local: false,
+                track_number: t.position as u32 + 1,
+                explicit: false,
+                image_url: t.cover_art_url,
+                release_date: None,
+                generated_name: None,
+              })
+              .collect();
+            self.set_source_track_table(&uri, track_infos, TrackTableContext::YouTubePlaylist);
+            return;
+          }
+        }
+      }
+    }
     let (context, event) = if uri.starts_with("file:") {
       (
         TrackTableContext::LocalPlaylist,

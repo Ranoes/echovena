@@ -316,6 +316,50 @@ impl Database {
         Ok(tracks)
     }
 
+    pub fn add_playlist_track(&self, track: &PlaylistTrack) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO playlist_tracks (
+                playlist_id, position, source_track_id, raw_title, clean_title, artist, album, duration_ms, isrc, cover_art_url
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10);
+            "#,
+            params![
+                track.playlist_id,
+                track.position,
+                track.source_track_id,
+                track.raw_title,
+                track.clean_title,
+                track.artist,
+                track.album,
+                track.duration_ms,
+                track.isrc,
+                track.cover_art_url,
+            ],
+        )?;
+
+        // Update track_count in imported_playlists
+        let _ = conn.execute(
+            "UPDATE imported_playlists SET track_count = track_count + 1 WHERE id = ?1;",
+            params![track.playlist_id],
+        );
+        Ok(())
+    }
+
+    pub fn remove_playlist_track(&self, playlist_id: &str, source_track_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM playlist_tracks WHERE playlist_id = ?1 AND source_track_id = ?2;",
+            params![playlist_id, source_track_id],
+        )?;
+
+        let _ = conn.execute(
+            "UPDATE imported_playlists SET track_count = MAX(0, track_count - 1) WHERE id = ?1;",
+            params![playlist_id],
+        );
+        Ok(())
+    }
+
     pub fn upsert_resolution(&self, entry: &ResolutionEntry) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(

@@ -844,11 +844,22 @@ impl Network {
         }
       }
       IoEvent::AddTrackToPlaylist(playlist_id, track_id) => {
+        crate::sources::sync::WriteBackService::spawn_add_track(
+          Arc::clone(&self.app),
+          playlist_id.clone(),
+          track_id.clone(),
+        );
         if let (Some(pid), Some(tid)) = (ids::playlist_id(&playlist_id), ids::track_id(&track_id)) {
           self.add_track_to_playlist(pid, tid).await;
         }
       }
       IoEvent::RemoveTrackFromPlaylistAtPosition(playlist_id, track_id, position) => {
+        crate::sources::sync::WriteBackService::spawn_remove_track(
+          Arc::clone(&self.app),
+          playlist_id.clone(),
+          track_id.clone(),
+          position,
+        );
         if let (Some(pid), Some(tid)) = (ids::playlist_id(&playlist_id), ids::track_id(&track_id)) {
           self
             .remove_track_from_playlist_at_position(pid, tid, position)

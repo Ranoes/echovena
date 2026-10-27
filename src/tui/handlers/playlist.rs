@@ -17,7 +17,14 @@ pub(crate) fn total_display_count(app: &App) -> usize {
     // Local YouTube playlists + the "+ New Playlist" entry.
     Source::YouTube => app.youtube_playlists().len() + 1,
     Source::Qobuz => app.qobuz_playlists().len(),
-    Source::LosslessRelay | Source::Spotify => app.get_playlist_display_count() + 1,
+    Source::LosslessRelay => {
+      if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+        db.list_imported_playlists().map(|p| p.len() + 1).unwrap_or(1)
+      } else {
+        1
+      }
+    }
+    Source::Spotify => app.get_playlist_display_count() + 1,
     Source::AppleMusic => app.apple_music_playlists().len(),
   }
 }
@@ -79,6 +86,24 @@ fn open_youtube_playlist(app: &mut App) {
     .get(idx)
     .map(|playlist| playlist.uri.clone());
   open_source_playlist(app, uri);
+}
+
+/// Lossless Relay: open the highlighted imported SQLite playlist in the shared
+/// track table, or the URL import modal on the trailing "+ Import URL" entry.
+fn open_lossless_relay_playlist(app: &mut App) {
+  let Some(idx) = app.view.selected_playlist_index else {
+    return;
+  };
+  if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+    if let Ok(playlists) = db.list_imported_playlists() {
+      if idx < playlists.len() {
+        let uri = playlists[idx].id.clone();
+        open_source_playlist(app, Some(uri));
+      } else {
+        app.view.url_import_visible = true;
+      }
+    }
+  }
 }
 
 /// Internet Radio: play the highlighted station directly. A station is a leaf,
@@ -230,7 +255,8 @@ pub(super) fn activate_selected(app: &mut App) {
     Source::Radio => play_radio_station(app),
     Source::YouTube => open_youtube_playlist(app),
     Source::Qobuz => open_qobuz_folder(app),
-    Source::LosslessRelay | Source::Spotify => open_spotify_row(app),
+    Source::LosslessRelay => open_lossless_relay_playlist(app),
+    Source::Spotify => open_spotify_row(app),
     Source::AppleMusic => {
       let uri = app
         .view

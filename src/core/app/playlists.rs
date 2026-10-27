@@ -135,8 +135,14 @@ impl App {
   }
 
   pub fn playlist_is_editable(&self, playlist: &PlaylistInfo) -> bool {
+    if playlist.collaborative
+      || playlist.uri.starts_with(YOUTUBE_PLAYLIST_PREFIX)
+      || playlist.uri.starts_with("spotify:")
+    {
+      return true;
+    }
     let Some(user) = &self.user else {
-      return false;
+      return true;
     };
 
     playlist.owner_id.as_deref() == Some(user.id.as_str()) || playlist.collaborative
@@ -218,6 +224,44 @@ impl App {
         );
         return;
       }
+      self.clear_dialog_state();
+      self.pending_playlist_track_add = Some(PendingPlaylistTrackAdd {
+        track_id,
+        track_name,
+      });
+      self.push_navigation_stack(
+        RouteId::Dialog,
+        ActiveBlock::Dialog(DialogContext::AddTrackToPlaylistPicker),
+      );
+      return;
+    }
+
+    // Check local SQLite imported playlists when in LosslessRelay or when all_playlists is empty
+    if self.active_source == Source::LosslessRelay || self.all_playlists.is_empty() {
+      if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+        if let Ok(imported) = db.list_imported_playlists() {
+          if !imported.is_empty() {
+            self.all_playlists = imported
+              .into_iter()
+              .map(|p| crate::core::plugin_api::PlaylistInfo {
+                generated_name: None,
+                uri: p.id.clone(),
+                name: p.title,
+                owner: p.author.unwrap_or_else(|| "Synced".to_string()),
+                track_count: p.track_count as u32,
+                id: Some(p.id),
+                owner_id: None,
+                collaborative: true,
+                public: Some(false),
+                image_url: p.cover_art_url,
+              })
+              .collect();
+          }
+        }
+      }
+    }
+
+    if !self.all_playlists.is_empty() {
       self.clear_dialog_state();
       self.pending_playlist_track_add = Some(PendingPlaylistTrackAdd {
         track_id,
@@ -330,7 +374,18 @@ impl App {
         self.begin_add_track_to_playlist_flow(track_id, name);
       }
       PlayingItem::NotSpotify => {
-        self.set_status_message(self.strings().status.app.playlist_needs_spotify, 4);
+        if let Some(snapshot) = crate::infra::media_metadata::current_playback_snapshot(self) {
+          let title = snapshot.metadata.title;
+          let artists = snapshot.metadata.artists.join(", ");
+          let name = if artists.is_empty() {
+            title.clone()
+          } else {
+            format!("{} - {}", artists, title)
+          };
+          self.begin_add_track_to_playlist_flow(Some(name.clone()), name);
+        } else {
+          self.set_status_message(self.strings().status.app.no_current_track.to_string(), 4);
+        }
       }
       PlayingItem::Nothing => {
         self.set_status_message(self.strings().status.app.no_current_track.to_string(), 4);
