@@ -1371,7 +1371,7 @@ async fn resume_youtube(
     match guard.youtube_playback.as_mut() {
       Some(s) if index == s.index => {
         s.advancing = true;
-        Some((Arc::clone(&s.player), s.tempfile.path().to_path_buf()))
+        Some((Arc::clone(&s.player), s.audio_path.clone()))
       }
       Some(s) => {
         s.index = index;

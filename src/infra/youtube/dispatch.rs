@@ -568,16 +568,21 @@ async fn acquire_player(app: &Arc<Mutex<App>>) -> Option<Arc<LocalPlayer>> {
   }
 }
 
-/// Download a video's audio into a fresh tempfile, with the metadata yt-dlp
-/// printed for it when it could be read. Must be awaited **without** holding
-/// the `App` lock (this is the slowest download of any source).
+/// Download a video's audio into a fresh tempfile (or load from disk cache),
+/// with the metadata yt-dlp printed for it when it could be read. Must be awaited
+/// **without** holding the `App` lock (this is the slowest download of any source).
 async fn download_audio(
   source: &YouTubeSource,
   video_id: &str,
-) -> Result<(NamedTempFile, Option<TrackInfo>)> {
+) -> Result<(NamedTempFile, std::path::PathBuf, Option<TrackInfo>)> {
+  if let Some(cached) = super::cached_audio_path(video_id) {
+    let tmp = NamedTempFile::with_suffix(".m4a").context("creating temp file for YouTube audio")?;
+    return Ok((tmp, cached, None));
+  }
   let tmp = NamedTempFile::with_suffix(".m4a").context("creating temp file for YouTube audio")?;
   let resolved = source.download_audio(video_id, tmp.path()).await?;
-  Ok((tmp, resolved))
+  let path = tmp.path().to_path_buf();
+  Ok((tmp, path, resolved))
 }
 
 /// Download the audio for `uri` into a tempfile, for the native queue engine's
@@ -585,7 +590,7 @@ async fn download_audio(
 /// slot is still current before touching the shared player).
 pub(crate) async fn download_for_queue(source: &YouTubeSource, uri: &str) -> Result<NamedTempFile> {
   let video_id = video_id_from_uri(uri)?.to_string();
-  download_audio(source, &video_id).await.map(|(tmp, _)| tmp)
+  download_audio(source, &video_id).await.map(|(tmp, _, _)| tmp)
 }
 
 /// Decode-failure hint: without ffmpeg on `$PATH`, yt-dlp leaves the download
@@ -682,7 +687,7 @@ async fn start_youtube_queue(app: &Arc<Mutex<App>>, uris: &[String], start_idx: 
   }
 
   // Download off the lock, then decode on the blocking pool.
-  let (tmp, resolved) = match download_audio(&source, &video_id).await {
+  let (tmp, path, resolved) = match download_audio(&source, &video_id).await {
     Ok(t) => t,
     Err(e) => {
       set_error(
@@ -697,9 +702,9 @@ async fn start_youtube_queue(app: &Arc<Mutex<App>>, uris: &[String], start_idx: 
       return;
     }
   };
-  let path = tmp.path().to_path_buf();
+  let play_path = path.clone();
   let decode_player = Arc::clone(&player);
-  let result = tokio::task::spawn_blocking(move || decode_player.play_file(&path)).await;
+  let result = tokio::task::spawn_blocking(move || decode_player.play_file(&play_path)).await;
 
   match result {
     Ok(Ok(())) => {
@@ -720,8 +725,11 @@ async fn start_youtube_queue(app: &Arc<Mutex<App>>, uris: &[String], start_idx: 
         index,
         advancing: false,
         tempfile: tmp,
+        audio_path: path,
         shuffle_backup: None,
         resume_at: None,
+        prebuffering_id: None,
+        prebuffered_id: None,
       };
       // Honor the player-global decoded shuffle for the freshly-built queue.
       if guard.decoded_shuffle {
@@ -788,7 +796,7 @@ async fn replay_current(app: &Arc<Mutex<App>>) -> bool {
     s.advancing = true;
     (
       Arc::clone(&s.player),
-      s.tempfile.path().to_path_buf(),
+      s.audio_path.clone(),
       s.resume_at
         .take()
         .or(Some(crate::infra::queue::ResumePoint {
@@ -902,7 +910,7 @@ pub(crate) async fn play_index(app: &Arc<Mutex<App>>, target: usize) {
     };
   }
 
-  let (tmp, resolved) = match download_audio(&source, &video_id).await {
+  let (tmp, path, resolved) = match download_audio(&source, &video_id).await {
     Ok(t) => t,
     Err(e) => {
       teardown_youtube(app).await;
@@ -918,7 +926,7 @@ pub(crate) async fn play_index(app: &Arc<Mutex<App>>, target: usize) {
       return;
     }
   };
-  let path = tmp.path().to_path_buf();
+  let play_path = path.clone();
   // Taken after the download: a device recovery during it leaves the pause
   // to apply here.
   let resume = {
@@ -930,14 +938,14 @@ pub(crate) async fn play_index(app: &Arc<Mutex<App>>, target: usize) {
   };
   let decode_player = Arc::clone(&player);
   let result = tokio::task::spawn_blocking(move || {
-    crate::infra::queue::restage(&decode_player, &path, resume)
+    crate::infra::queue::restage(&decode_player, &play_path, resume)
   })
   .await;
 
   match result {
     Ok(Ok(())) => {
       let resolved = resolved.map(|track| (uri_for_video_id(&video_id), track));
-      commit_index(app, target, tmp, resolved).await
+      commit_index(app, target, tmp, path, resolved).await
     }
     Ok(Err(e)) => {
       teardown_youtube(app).await;
@@ -969,6 +977,7 @@ async fn commit_index(
   app: &Arc<Mutex<App>>,
   target: usize,
   tmp: NamedTempFile,
+  path: std::path::PathBuf,
   resolved: Option<(String, TrackInfo)>,
 ) {
   let mut guard = app.lock().await;
@@ -976,6 +985,9 @@ async fn commit_index(
     s.index = target;
     s.advancing = false;
     s.tempfile = tmp;
+    s.audio_path = path;
+    s.prebuffering_id = None;
+    s.prebuffered_id = None;
     if let Some((uri, track)) = resolved {
       apply_resolved(&mut s.tracks, target, &uri, track);
     }

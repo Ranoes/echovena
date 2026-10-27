@@ -52,11 +52,9 @@ const DEFAULT_YTDLP: &str = "yt-dlp";
 /// for yt-dlp, so this is also the dominant term in search latency (~3-6 s).
 const SEARCH_LIMIT: usize = 20;
 
-/// Audio format selector: itag 140 (AAC/M4A ~128 kbps) first — the format the
-/// bundled symphonia decoder is known to handle — then any m4a, then whatever
-/// audio exists (a webm/opus fallback will fail to decode, but a clear decode
-/// error beats no audio at all when 140 disappears someday).
-const FORMAT_SELECTOR: &str = "140/bestaudio[ext=m4a]/bestaudio";
+/// Audio format selector: itag 251 (Opus ~160 kbps) or itag 140 (AAC/M4A ~128 kbps),
+/// with best audio fallbacks.
+const FORMAT_SELECTOR: &str = "251/140/bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio";
 
 /// Extractor override for the download retry: YouTube's GVS PO-token
 /// enforcement 403s music-label content on the default player clients, while
@@ -108,6 +106,8 @@ pub struct YouTubePlaybackState {
   pub advancing: bool,
   /// The downloaded audio for the current track, kept alive while it plays.
   pub tempfile: tempfile::NamedTempFile,
+  /// Path to the playing audio file on disk (persisted cache or tempfile).
+  pub audio_path: std::path::PathBuf,
   /// Backup of the pre-shuffle track order while shuffle is on (`None` in natural
   /// order). Set by [`set_shuffle(true)`](Self::set_shuffle); restored exactly by
   /// `set_shuffle(false)`.
@@ -115,6 +115,10 @@ pub struct YouTubePlaybackState {
   /// A seek and pause to apply when the next track is staged (device
   /// recovery, the native queue's resume).
   pub resume_at: Option<crate::infra::queue::ResumePoint>,
+  /// Video id currently being prebuffered in the background (if any).
+  pub prebuffering_id: Option<String>,
+  /// Video id successfully prebuffered in the background (if any).
+  pub prebuffered_id: Option<String>,
 }
 
 impl YouTubePlaybackState {
@@ -122,6 +126,50 @@ impl YouTubePlaybackState {
   #[cfg(feature = "tui")]
   pub fn current(&self) -> Option<&TrackInfo> {
     self.tracks.get(self.index)
+  }
+
+  /// Trigger 20-second next-track pre-buffering if within the threshold.
+  pub fn maybe_prebuffer_next(&mut self) {
+    if self.advancing {
+      return;
+    }
+    let Some(current_track) = self.tracks.get(self.index) else {
+      return;
+    };
+    let duration_ms = current_track.duration_ms;
+    if duration_ms == 0 {
+      return;
+    }
+    let position_ms = self.player.position().as_millis() as u64;
+    let remaining_ms = duration_ms.saturating_sub(position_ms);
+    if remaining_ms > 20_000 {
+      return;
+    }
+    let next_idx = self.index + 1;
+    let Some(next_track) = self.tracks.get(next_idx) else {
+      return;
+    };
+    let Some(Ok(next_video_id)) = next_track.uri.as_deref().map(video_id_from_uri) else {
+      return;
+    };
+
+    if self.prebuffering_id.as_deref() == Some(next_video_id)
+      || self.prebuffered_id.as_deref() == Some(next_video_id)
+    {
+      return;
+    }
+
+    if cached_audio_path(next_video_id).is_some() {
+      self.prebuffered_id = Some(next_video_id.to_string());
+      return;
+    }
+
+    self.prebuffering_id = Some(next_video_id.to_string());
+    let source = Arc::clone(&self.source);
+    let vid = next_video_id.to_string();
+    tokio::spawn(async move {
+      let _ = source.prefetch_to_cache(&vid).await;
+    });
   }
 
   /// Turn in-place shuffle on or off — see
@@ -168,6 +216,23 @@ pub fn video_id_from_uri(uri: &str) -> Result<&str> {
 /// Build the `youtube:` URI for a video id.
 pub fn uri_for_video_id(id: &str) -> String {
   format!("{YOUTUBE_PREFIX}{id}")
+}
+
+/// Check if an audio file is cached on disk for `video_id`.
+pub fn cached_audio_path(video_id: &str) -> Option<std::path::PathBuf> {
+  let cache_dir = crate::core::paths::audio_cache_dir()?;
+  let extensions = ["opus", "m4a", "webm", "mp3", "flac"];
+  for ext in extensions {
+    let candidate = cache_dir.join(format!("{video_id}.{ext}"));
+    if candidate.is_file() {
+      if let Ok(meta) = std::fs::metadata(&candidate) {
+        if meta.len() > 1024 {
+          return Some(candidate);
+        }
+      }
+    }
+  }
+  None
 }
 
 // ---------------------------------------------------------------------------
@@ -247,17 +312,60 @@ impl YouTubeSource {
     {
       bail!("Invalid YouTube video id: {video_id:?}");
     }
-    let dest = dest
+
+    if let Some(cached) = cached_audio_path(video_id) {
+      if cached != dest {
+        let _ = std::fs::copy(&cached, dest);
+      }
+      return Ok(None);
+    }
+
+    let dest_str = dest
       .to_str()
       .ok_or_else(|| anyhow!("Non-UTF-8 tempfile path"))?;
     let url = format!("https://www.youtube.com/watch?v={video_id}");
 
     let stdout = run_with_embedded_fallback(|embedded| {
-      let args = download_args(dest, &url, embedded);
+      let args = download_args(dest_str, &url, embedded);
       async move { self.run(&args, DOWNLOAD_TIMEOUT).await }
     })
     .await?;
+
+    if let Some(cache_dir) = crate::core::paths::audio_cache_dir() {
+      let _ = std::fs::create_dir_all(&cache_dir);
+      let target_path = cache_dir.join(format!("{video_id}.m4a"));
+      let _ = std::fs::copy(dest, &target_path);
+    }
+
     Ok(track_from_download_output(&stdout, video_id))
+  }
+
+  /// Prefetch a video's audio to the local cache directory (~/.cache/echovena/audio/).
+  pub async fn prefetch_to_cache(&self, video_id: &str) -> Result<std::path::PathBuf> {
+    if let Some(cached) = cached_audio_path(video_id) {
+      return Ok(cached);
+    }
+    let cache_dir = crate::core::paths::audio_cache_dir()
+      .ok_or_else(|| anyhow!("Audio cache directory not available"))?;
+    std::fs::create_dir_all(&cache_dir)?;
+
+    let target_path = cache_dir.join(format!("{video_id}.m4a"));
+    let part_path = cache_dir.join(format!("{video_id}.part"));
+    let part_str = part_path
+      .to_str()
+      .ok_or_else(|| anyhow!("Non-UTF8 cache path"))?;
+    let url = format!("https://www.youtube.com/watch?v={video_id}");
+
+    let _ = run_with_embedded_fallback(|embedded| {
+      let args = download_args(part_str, &url, embedded);
+      async move { self.run(&args, DOWNLOAD_TIMEOUT).await }
+    })
+    .await?;
+
+    if part_path.exists() {
+      std::fs::rename(&part_path, &target_path)?;
+    }
+    Ok(target_path)
   }
 
   /// Run `yt-dlp` with `args`, returning stdout. Fails with the tail of
@@ -762,5 +870,92 @@ mod tests {
       player.position()
     );
     player.stop();
+  }
+
+  #[test]
+  fn test_cached_audio_path_returns_none_for_nonexistent() {
+    assert!(cached_audio_path("non_existent_id_12345").is_none());
+  }
+
+  #[test]
+  fn test_cached_audio_path_finds_valid_cache_file() {
+    if let Some(dir) = crate::core::paths::audio_cache_dir() {
+      let _ = std::fs::create_dir_all(&dir);
+      let test_file = dir.join("test_dummy_id_abc.m4a");
+      let data = vec![0u8; 2048]; // > 1024 bytes
+      std::fs::write(&test_file, &data).unwrap();
+
+      let found = cached_audio_path("test_dummy_id_abc");
+      assert!(found.is_some());
+      assert_eq!(found.unwrap(), test_file);
+
+      let _ = std::fs::remove_file(test_file);
+    }
+  }
+
+  #[tokio::test]
+  async fn test_maybe_prebuffer_triggers_within_20s() {
+    let source = Arc::new(YouTubeSource::new(None));
+    let tmp = match tempfile::NamedTempFile::new() {
+      Ok(t) => t,
+      Err(_) => return,
+    };
+    let path = tmp.path().to_path_buf();
+    let player = match LocalPlayer::new() {
+      Ok(p) => Arc::new(p),
+      Err(_) => return, // Skip on headless environments without audio device
+    };
+
+    let mut state = YouTubePlaybackState {
+      player,
+      source,
+      tracks: vec![
+        TrackInfo {
+          generated_name: None,
+          uri: Some("youtube:track1".into()),
+          name: "Track 1".into(),
+          artists: vec![],
+          album: "".into(),
+          duration_ms: 10_000,
+          id: None,
+          album_id: None,
+          artist_refs: vec![],
+          is_playable: true,
+          is_local: false,
+          track_number: 1,
+          explicit: false,
+          image_url: None,
+          release_date: None,
+        },
+        TrackInfo {
+          generated_name: None,
+          uri: Some("youtube:track2".into()),
+          name: "Track 2".into(),
+          artists: vec![],
+          album: "".into(),
+          duration_ms: 60_000,
+          id: None,
+          album_id: None,
+          artist_refs: vec![],
+          is_playable: true,
+          is_local: false,
+          track_number: 2,
+          explicit: false,
+          image_url: None,
+          release_date: None,
+        },
+      ],
+      index: 0,
+      advancing: false,
+      tempfile: tmp,
+      audio_path: path,
+      shuffle_backup: None,
+      resume_at: None,
+      prebuffering_id: None,
+      prebuffered_id: None,
+    };
+
+    state.maybe_prebuffer_next();
+    assert_eq!(state.prebuffering_id.as_deref(), Some("track2"));
   }
 }

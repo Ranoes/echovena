@@ -778,10 +778,11 @@ impl Driver {
     }
     #[cfg(feature = "youtube")]
     if !spotify_queue_slot {
-      if let Some(youtube) = app.youtube_playback.as_ref() {
+      if let Some(youtube) = app.youtube_playback.as_mut() {
         source_owns_playback = true;
         let position_ms = youtube.player.position().as_millis();
         app.song_progress_ms = position_ms;
+        youtube.maybe_prebuffer_next();
       }
     }
 

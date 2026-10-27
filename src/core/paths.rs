@@ -40,6 +40,12 @@ pub fn streaming_cache_dir() -> Option<PathBuf> {
   app_cache_dir().map(|p| p.join("streaming_cache"))
 }
 
+/// Persistent audio cache directory (~/.cache/echovena/audio).
+#[allow(dead_code)]
+pub fn audio_cache_dir() -> Option<PathBuf> {
+  app_cache_dir().map(|p| p.join("audio"))
+}
+
 /// Archive directory for saved lossless audio (~/Music/EchoVena).
 pub fn music_archive_dir() -> Option<PathBuf> {
   dirs::audio_dir()
@@ -249,5 +255,12 @@ mod tests {
       app_dir_from(None, Some(home.clone()), &FALLBACK_STATE_DIR,),
       Some(home.join(".local").join("state").join(APP_DIR))
     );
+  }
+
+  #[test]
+  fn audio_cache_dir_resolves_under_cache_dir() {
+    let audio_cache = audio_cache_dir();
+    let app_cache = app_cache_dir();
+    assert_eq!(audio_cache, app_cache.map(|p| p.join("audio")));
   }
 }
