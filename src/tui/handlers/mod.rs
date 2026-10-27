@@ -608,22 +608,53 @@ pub fn handle_app(key: Key, app: &mut App) {
         handle_block_events(key, app);
       } else {
         // Single track archiving
-        if let Some(lossless) = app.lossless_playback.as_ref() {
-          if let Some(track) = lossless.current_track.clone() {
-            app.set_status_message(format!("Archiving track '{}'...", track.clean_title), 3);
-            let t_clone = track.clone();
-            tokio::spawn(async move {
-              if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
-                let dummy_audio = b"fLaC\x00\x00\x00\x22lossless_archived_audio";
-                crate::sources::lossless_relay::archiver::archive_single_track(&db, &t_clone, dummy_audio, None, None).await.ok();
-              }
-            });
-            app.set_status_message(format!("Archived '{}' to ~/Music/EchoVena", track.clean_title), 5);
-          } else {
-            app.set_status_message("No active track to archive".to_string(), 4);
-          }
+        #[cfg(feature = "youtube")]
+        let yt_track = app.youtube_playback.as_ref().and_then(|yt| {
+          yt.current().map(|t| {
+            crate::sources::lossless_relay::archiver::track_info_to_playlist_track(t, 0, "youtube_playback")
+          })
+        });
+        #[cfg(not(feature = "youtube"))]
+        let yt_track = None;
+
+        let track_to_archive = if let Some(t) = yt_track {
+          Some(t)
+        } else if let Some(lossless) = app.lossless_playback.as_ref() {
+          lossless.current_track.clone()
+        } else if let Some(snapshot) = crate::infra::media_metadata::tracking_playback_snapshot(app) {
+          Some(crate::sources::lossless_relay::db::PlaylistTrack {
+            playlist_id: "now_playing".to_string(),
+            position: 0,
+            source_track_id: snapshot.item_uri.clone().unwrap_or_else(|| format!("track:{}", snapshot.metadata.title)),
+            raw_title: snapshot.metadata.title.clone(),
+            clean_title: snapshot.metadata.title.clone(),
+            artist: snapshot.primary_artist(),
+            album: if snapshot.metadata.album.is_empty() { None } else { Some(snapshot.metadata.album) },
+            duration_ms: snapshot.metadata.duration_ms as i64,
+            isrc: None,
+            cover_art_url: snapshot.metadata.image_url,
+          })
+        } else if let Some(t) = app.track_table.tracks.get(app.view.track_table_index) {
+          Some(crate::sources::lossless_relay::archiver::track_info_to_playlist_track(t, app.view.track_table_index, "library"))
+        } else if let Some(item) = app.selected_live_search_item() {
+          let t = item.to_track_info();
+          Some(crate::sources::lossless_relay::archiver::track_info_to_playlist_track(&t, 0, "search"))
         } else {
-          app.set_status_message("No active LosslessRelay playback to archive".to_string(), 4);
+          None
+        };
+
+        if let Some(track) = track_to_archive {
+          let title = track.clean_title.clone();
+          app.set_status_message(format!("Archiving '{}' to ~/Music/EchoVena...", title), 4);
+          tokio::spawn(async move {
+            if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+              if let Some(root) = crate::core::paths::music_archive_dir() {
+                let _ = crate::sources::lossless_relay::archiver::resolve_and_archive_track(&db, &track, &root).await;
+              }
+            }
+          });
+        } else {
+          app.set_status_message("No track playing or selected to archive".to_string(), 4);
         }
       }
     }
@@ -632,29 +663,62 @@ pub fn handle_app(key: Key, app: &mut App) {
         handle_block_events(key, app);
       } else {
         // Full playlist batch archiving
-        let target_playlist_id = app.lossless_playback.as_ref()
-          .and_then(|lp| lp.current_track.as_ref())
-          .map(|t| t.playlist_id.clone());
+        #[cfg(feature = "youtube")]
+        let yt_open = app.youtube_open_playlist.as_ref().map(|u| {
+          u.strip_prefix("youtube:playlist:").unwrap_or(u).to_string()
+        });
+        #[cfg(not(feature = "youtube"))]
+        let yt_open: Option<String> = None;
 
-        if let Some(pl_id) = target_playlist_id {
-          app.set_status_message(format!("Archiving playlist '{}'...", pl_id), 3);
-          tokio::spawn(async move {
-            if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
-              crate::sources::lossless_relay::archiver::archive_playlist(&db, &pl_id).await.ok();
-            }
-          });
-          app.set_status_message("Batch archived playlist + .elrc + .m3u8 to ~/Music/EchoVena".to_string(), 5);
+        let playlist_name = if let Some(open_uri) = yt_open {
+          open_uri
+        } else if let Some(name) = app.playlists().as_ref().and_then(|p| {
+          let idx = app.view.selected_playlist_index?;
+          p.items.get(idx).map(|pl| pl.name.clone())
+        }) {
+          name
         } else {
+          "EchoVena Playlist".to_string()
+        };
+
+        #[cfg(feature = "youtube")]
+        let yt_tracks = app.youtube_playback.as_ref().map(|yt| {
+          yt.tracks.iter().enumerate().map(|(pos, t)| {
+            crate::sources::lossless_relay::archiver::track_info_to_playlist_track(t, pos, "youtube_queue")
+          }).collect::<Vec<_>>()
+        });
+        #[cfg(not(feature = "youtube"))]
+        let yt_tracks: Option<Vec<crate::sources::lossless_relay::db::PlaylistTrack>> = None;
+
+        let tracks_to_archive: Vec<crate::sources::lossless_relay::db::PlaylistTrack> = if !app.track_table.tracks.is_empty() {
+          app.track_table.tracks.iter().enumerate().map(|(pos, t)| {
+            crate::sources::lossless_relay::archiver::track_info_to_playlist_track(t, pos, &playlist_name)
+          }).collect()
+        } else if let Some(tracks) = yt_tracks {
+          tracks
+        } else {
+          Vec::new()
+        };
+
+        if !tracks_to_archive.is_empty() {
+          let count = tracks_to_archive.len();
+          let name_owned = playlist_name.clone();
+          app.set_status_message(format!("Batch archiving {} tracks from '{}' to ~/Music/EchoVena...", count, name_owned), 4);
           tokio::spawn(async move {
             if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
-              if let Ok(playlists) = db.list_imported_playlists() {
-                if let Some(first_pl) = playlists.first() {
-                  crate::sources::lossless_relay::archiver::archive_playlist(&db, &first_pl.id).await.ok();
+              if let Some(root) = crate::core::paths::music_archive_dir() {
+                let mut archived_paths = Vec::new();
+                for trk in &tracks_to_archive {
+                  if let Ok(path) = crate::sources::lossless_relay::archiver::resolve_and_archive_track(&db, trk, &root).await {
+                    archived_paths.push(path);
+                  }
                 }
+                let _ = crate::sources::lossless_relay::archiver::generate_m3u8_playlist_to(&name_owned, &tracks_to_archive, &archived_paths, &root);
               }
             }
           });
-          app.set_status_message("Batch archiving playlist to ~/Music/EchoVena...".to_string(), 5);
+        } else {
+          app.set_status_message("No playlist or track list open to batch archive".to_string(), 4);
         }
       }
     }

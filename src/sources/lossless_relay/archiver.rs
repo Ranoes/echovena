@@ -1,6 +1,7 @@
 use crate::core::paths::music_archive_dir;
+use crate::core::plugin_api::TrackInfo;
 use crate::lyrics::KaraokeTimeline;
-use crate::sources::lossless_relay::db::{Database, PlaylistTrack};
+use crate::sources::lossless_relay::db::{Database, PlaylistTrack, ResolutionEntry};
 use anyhow::{anyhow, Context, Result};
 use lofty::config::WriteOptions;
 use lofty::file::TaggedFileExt;
@@ -72,11 +73,38 @@ pub fn tag_flac_file(
     Ok(())
 }
 
-/// Archives a single audio track to a designated root directory
-pub async fn archive_single_track_to(
+/// Convert a [`TrackInfo`] into a [`PlaylistTrack`] for archiving or syncing
+pub fn track_info_to_playlist_track(t: &TrackInfo, position: usize, playlist_id: &str) -> PlaylistTrack {
+    let artist = if t.artists.is_empty() {
+        "Unknown Artist".to_string()
+    } else {
+        t.artists.join(", ")
+    };
+    let source_id = t.uri.clone().unwrap_or_else(|| format!("custom:{}", t.name));
+    PlaylistTrack {
+        playlist_id: playlist_id.to_string(),
+        position: position as i64,
+        source_track_id: source_id,
+        raw_title: t.name.clone(),
+        clean_title: t.name.clone(),
+        artist,
+        album: if t.album.is_empty() {
+            None
+        } else {
+            Some(t.album.clone())
+        },
+        duration_ms: t.duration_ms as i64,
+        isrc: None,
+        cover_art_url: t.image_url.clone(),
+    }
+}
+
+/// Archives a single audio track with a custom extension ("flac" or "opus")
+pub async fn archive_single_track_with_ext_to(
     db: &Database,
     track: &PlaylistTrack,
     audio_data: &[u8],
+    audio_ext: &str,
     timeline: Option<&KaraokeTimeline>,
     cover_jpeg: Option<&[u8]>,
     root: &Path,
@@ -94,11 +122,12 @@ pub async fn archive_single_track_to(
         sanitize_filename(&track.clean_title)
     );
 
-    let audio_path = target_dir.join(format!("{}.flac", file_stem));
+    let ext = if audio_ext.is_empty() { "flac" } else { audio_ext };
+    let audio_path = target_dir.join(format!("{}.{}", file_stem, ext));
     fs::write(&audio_path, audio_data)
         .with_context(|| format!("failed writing audio file {}", audio_path.display()))?;
 
-    // Tag FLAC file (Vorbis Comments + Cover art)
+    // Tag audio file (Vorbis Comments + Cover art)
     let track_num = (track.position + 1) as u32;
     tag_flac_file(
         &audio_path,
@@ -119,12 +148,174 @@ pub async fn archive_single_track_to(
     }
 
     // Update SQLite resolution_cache with local_archive_path
-    if let Ok(Some(mut res)) = db.get_resolution(&track.source_track_id) {
-        res.local_archive_path = Some(audio_path.to_string_lossy().to_string());
-        db.upsert_resolution(&res).ok();
-    }
+    let entry = match db.get_resolution(&track.source_track_id) {
+        Ok(Some(mut res)) => {
+            res.local_archive_path = Some(audio_path.to_string_lossy().to_string());
+            res
+        }
+        _ => ResolutionEntry {
+            source_track_id: track.source_track_id.clone(),
+            isrc: track.isrc.clone(),
+            qobuz_id: None,
+            tidal_id: None,
+            resolution_method: "local_archive".into(),
+            match_confidence: 1.0,
+            local_archive_path: Some(audio_path.to_string_lossy().to_string()),
+            resolved_at: chrono::Utc::now().timestamp(),
+        },
+    };
+    db.upsert_resolution(&entry).ok();
 
     Ok(audio_path)
+}
+
+/// Archives a single audio track to a designated root directory (defaults to FLAC)
+pub async fn archive_single_track_to(
+    db: &Database,
+    track: &PlaylistTrack,
+    audio_data: &[u8],
+    timeline: Option<&KaraokeTimeline>,
+    cover_jpeg: Option<&[u8]>,
+    root: &Path,
+) -> Result<PathBuf> {
+    archive_single_track_with_ext_to(db, track, audio_data, "flac", timeline, cover_jpeg, root).await
+}
+
+/// Resolves audio via waterfall (Tidal/Qobuz FLAC if token present, else YouTube Opus),
+/// fetches cover art and lyrics, and writes the archived files to `root`.
+pub async fn resolve_and_archive_track(
+    db: &Database,
+    track: &PlaylistTrack,
+    root: &Path,
+) -> Result<PathBuf> {
+    // 1. Try Token-gated LosslessWaterfall (Tidal/Qobuz FLAC)
+    let registry = crate::config::providers::ProviderRegistry::load_or_create_default()
+        .unwrap_or_else(|_| crate::config::providers::ProviderRegistry::default_registry());
+    let waterfall = crate::sources::lossless_relay::waterfall::LosslessWaterfall::new(registry);
+    let resolved = crate::sources::lossless_relay::resolver::ResolvedTrack {
+        source_track_id: track.source_track_id.clone(),
+        isrc: track.isrc.clone(),
+        qobuz_id: None,
+        tidal_id: None,
+        resolution_method: "auto".to_string(),
+        match_confidence: 1.0,
+    };
+
+    let stream_res = waterfall.resolve_stream(track, &resolved).await;
+
+    let (audio_bytes, ext) = match stream_res {
+        Ok(info) if info.format.starts_with("FLAC") && !info.stream_url.is_empty() => {
+            log::info!("Downloading FLAC stream from {}", info.provider_id);
+            let bytes = reqwest::get(&info.stream_url).await?.bytes().await?.to_vec();
+            (bytes, "flac".to_string())
+        }
+        _ => {
+            // Fallback to local audio cache or yt-dlp Opus
+            let video_id = if let Some(vid) = track.source_track_id.strip_prefix("yt:video:") {
+                Some(vid)
+            } else if let Some(vid) = track.source_track_id.strip_prefix("youtube:") {
+                Some(vid)
+            } else {
+                None
+            };
+
+            #[cfg(feature = "youtube")]
+            let cached = video_id.and_then(crate::infra::youtube::cached_audio_path);
+            #[cfg(not(feature = "youtube"))]
+            let cached: Option<PathBuf> = None;
+
+            if let Some(cached_path) = cached {
+                let bytes = fs::read(&cached_path)?;
+                let ext = cached_path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("opus")
+                    .to_string();
+                (bytes, ext)
+            } else {
+                // Download with yt-dlp
+                let query = if let Some(vid) = video_id {
+                    format!("https://www.youtube.com/watch?v={vid}")
+                } else {
+                    format!("ytsearch1:{} {}", track.artist, track.clean_title)
+                };
+
+                let tmp_dir = std::env::temp_dir().join(format!("echovena_dl_{}_{}", std::process::id(), track.position));
+                let _ = fs::create_dir_all(&tmp_dir);
+                let tmp_file = tmp_dir.join("download.opus");
+                let tmp_str = tmp_file.to_str().unwrap_or("download.opus");
+
+                let mut cmd = tokio::process::Command::new("yt-dlp");
+                #[cfg(all(windows, feature = "youtube"))]
+                cmd.creation_flags(crate::infra::youtube::CREATE_NO_WINDOW);
+                #[cfg(all(windows, not(feature = "youtube")))]
+                cmd.creation_flags(0x0800_0000);
+                cmd.args(&[
+                    "-f",
+                    "251/140/bestaudio",
+                    "-x",
+                    "--audio-format",
+                    "opus",
+                    "--no-playlist",
+                    "--no-warnings",
+                    "-o",
+                    tmp_str,
+                    &query,
+                ]);
+
+                let _ = cmd.output().await?;
+                let downloaded = if tmp_file.exists() {
+                    let bytes = fs::read(&tmp_file)?;
+                    Some((bytes, "opus".to_string()))
+                } else {
+                    let mut found_bytes = None;
+                    if let Ok(entries) = fs::read_dir(&tmp_dir) {
+                        for entry in entries.flatten() {
+                            if let Ok(b) = fs::read(entry.path()) {
+                                if b.len() > 1024 {
+                                    found_bytes = Some(b);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    found_bytes.map(|bytes| (bytes, "opus".to_string()))
+                };
+                let _ = fs::remove_dir_all(&tmp_dir);
+                downloaded.ok_or_else(|| {
+                    anyhow!("yt-dlp failed to download audio for {}", track.clean_title)
+                })?
+            }
+        }
+    };
+
+    // Cover art fetch
+    let mut cover_bytes = None;
+    if let Some(ref url) = track.cover_art_url {
+        if let Ok(resp) = reqwest::get(url).await {
+            if let Ok(b) = resp.bytes().await {
+                cover_bytes = Some(b.to_vec());
+            }
+        }
+    }
+
+    // Lyrics timeline
+    let timeline = if let Ok(Some(lyrics)) = db.get_lyrics(&track.source_track_id) {
+        serde_json::from_str::<KaraokeTimeline>(&lyrics.timeline_json).ok()
+    } else {
+        None
+    };
+
+    archive_single_track_with_ext_to(
+        db,
+        track,
+        &audio_bytes,
+        &ext,
+        timeline.as_ref(),
+        cover_bytes.as_deref(),
+        root,
+    )
+    .await
 }
 
 /// Archives a single audio track to ~/Music/EchoVena
@@ -208,14 +399,7 @@ pub async fn archive_playlist_to(
         let final_path = match existing_path {
             Some(p) => p,
             None => {
-                let timeline = if let Ok(Some(lyrics)) = db.get_lyrics(&track.source_track_id) {
-                    serde_json::from_str::<KaraokeTimeline>(&lyrics.timeline_json).ok()
-                } else {
-                    None
-                };
-
-                let dummy_audio = b"fLaC\x00\x00\x00\x22dummy_flac_content";
-                archive_single_track_to(db, track, dummy_audio, timeline.as_ref(), None, root).await?
+                resolve_and_archive_track(db, track, root).await?
             }
         };
 
@@ -341,6 +525,20 @@ mod tests {
         assert!(flac_path.exists());
         assert!(flac_path.ends_with("01 - Back in Black.flac"));
 
+        let opus_path = archive_single_track_with_ext_to(
+            &db,
+            &track,
+            b"test_opus_data",
+            "opus",
+            None,
+            None,
+            &archive_root,
+        )
+        .await
+        .unwrap();
+        assert!(opus_path.exists());
+        assert!(opus_path.ends_with("01 - Back in Black.opus"));
+
         // Batch playlist archive
         let m3u8_file = archive_playlist_to(&db, "pl_test", &archive_root).await.unwrap();
         assert!(m3u8_file.exists());
@@ -348,5 +546,32 @@ mod tests {
 
         let m3u8_content = fs::read_to_string(&m3u8_file).unwrap();
         assert!(m3u8_content.contains("AC/DC - Back in Black"));
+    }
+
+    #[test]
+    fn test_track_info_to_playlist_track() {
+        let t = TrackInfo {
+            generated_name: None,
+            uri: Some("youtube:abc123xyz".to_string()),
+            name: "Harder, Better, Faster, Stronger".to_string(),
+            artists: vec!["Daft Punk".to_string()],
+            album: "Discovery".to_string(),
+            duration_ms: 224_000,
+            id: None,
+            album_id: None,
+            artist_refs: vec![],
+            is_playable: true,
+            is_local: false,
+            track_number: 4,
+            explicit: false,
+            image_url: Some("https://example.com/art.jpg".to_string()),
+            release_date: None,
+        };
+        let pl_track = track_info_to_playlist_track(&t, 3, "my_pl");
+        assert_eq!(pl_track.clean_title, "Harder, Better, Faster, Stronger");
+        assert_eq!(pl_track.artist, "Daft Punk");
+        assert_eq!(pl_track.album.as_deref(), Some("Discovery"));
+        assert_eq!(pl_track.position, 3);
+        assert_eq!(pl_track.source_track_id, "youtube:abc123xyz");
     }
 }
