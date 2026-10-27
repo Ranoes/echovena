@@ -191,6 +191,81 @@ impl App {
     self.view.search_selected_block = SearchResultBlock::Empty;
   }
 
+  pub fn cycle_search_scope(&mut self) {
+    self.search_scope = self.search_scope.cycle();
+    self.trigger_live_search();
+  }
+
+  pub fn cycle_search_scope_back(&mut self) {
+    self.search_scope = self.search_scope.cycle_back();
+    self.trigger_live_search();
+  }
+
+  pub fn trigger_live_search(&mut self) {
+    let query: String = self.view.input.iter().collect();
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+      self.clear_live_search();
+    } else {
+      self.live_search_loading = true;
+      crate::sources::youtube_search::trigger_query(trimmed, self.search_scope);
+    }
+  }
+
+  pub fn clear_live_search(&mut self) {
+    self.live_search_items.clear();
+    self.live_search_suggestions.clear();
+    self.live_search_loading = false;
+    self.live_search_selected_index = 0;
+    crate::sources::youtube_search::clear_query();
+  }
+
+  pub fn set_live_search_response(&mut self, response: crate::sources::youtube_search::SearchResponse) {
+    let current_input: String = self.view.input.iter().collect();
+    if current_input.trim().eq_ignore_ascii_case(response.query.trim()) {
+      self.live_search_loading = false;
+      self.live_search_suggestions = response.suggestions;
+
+      let tracks: Vec<crate::core::plugin_api::TrackInfo> = response.items.iter().map(|item| item.to_track_info()).collect();
+      let total = tracks.len() as u32;
+      self.search_results.tracks = Some(crate::core::pagination::Paged {
+        items: tracks,
+        total,
+        limit: total,
+        offset: 0,
+        next: None,
+        previous: None,
+      });
+      self.search_results.query = Some(response.query.clone());
+
+      self.live_search_items = response.items;
+      if self.live_search_selected_index >= self.live_search_items.len() {
+        self.live_search_selected_index = 0;
+      }
+      self.display_revisions.bump(crate::core::app::DisplayDomain::Search);
+    }
+  }
+
+  pub fn move_live_search_down(&mut self) {
+    if !self.live_search_items.is_empty() {
+      self.live_search_selected_index = (self.live_search_selected_index + 1) % self.live_search_items.len();
+    }
+  }
+
+  pub fn move_live_search_up(&mut self) {
+    if !self.live_search_items.is_empty() {
+      if self.live_search_selected_index == 0 {
+        self.live_search_selected_index = self.live_search_items.len() - 1;
+      } else {
+        self.live_search_selected_index -= 1;
+      }
+    }
+  }
+
+  pub fn selected_live_search_item(&self) -> Option<&crate::sources::youtube_search::SearchResultItem> {
+    self.live_search_items.get(self.live_search_selected_index)
+  }
+
   pub fn reset_playlist_tracks_view(
     &mut self,
     playlist_id: PlaylistId<'static>,

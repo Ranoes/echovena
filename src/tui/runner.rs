@@ -573,6 +573,9 @@ pub async fn start_ui(
     app.view.terminal_input_caps.ctrl_punct_reliable = app::CapabilityState::Unknown;
   }
 
+  // Initialize debounced live search for YouTube InnerTube
+  crate::sources::youtube_search::init_live_search(Arc::clone(app));
+
   let events = event::Events::new(user_config.behavior.tick_rate_milliseconds);
   let inspector = crate::tui::dev_inspect::Inspector::from_env(events.sender());
   let mut pending_snapshot = None;

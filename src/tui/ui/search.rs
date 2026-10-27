@@ -1,10 +1,11 @@
 use crate::core::app::{ActiveBlock, App, InputContext, SearchResultBlock};
+use crate::sources::youtube_search::{SearchBadge, SearchScope};
 use crate::tui::layout::COMPACT_TOP_ROW_THRESHOLD;
 use crate::tui::theme::ThemeExt;
 use ratatui::{
   layout::{Constraint, Layout, Rect},
-  style::Style,
-  text::{Span, Text},
+  style::{Color, Modifier, Style},
+  text::{Line, Span, Text},
   widgets::{Block, BorderType, Borders, Paragraph, Wrap},
   Frame,
 };
@@ -39,7 +40,8 @@ pub fn draw_input_and_help_box(
     current_route.hovered_block == ActiveBlock::Input,
   );
 
-  let show_loading = app.is_loading && app.user_config.behavior.show_loading_indicator;
+  let show_loading = app.live_search_loading
+    || (app.is_loading && app.user_config.behavior.show_loading_indicator);
   let border_type = if show_loading {
     BorderType::Double
   } else {
@@ -61,7 +63,13 @@ pub fn draw_input_and_help_box(
   let input_title = match app.view.input_context {
     InputContext::PlaylistTrackSearch => app.strings().screens.search_playlist,
     InputContext::SavedTrackSearch => app.strings().screens.search_liked,
-    InputContext::GlobalSearch => app.strings().screens.search,
+    InputContext::GlobalSearch => {
+      if app.live_search_loading {
+        " Searching YouTube InnerTube... "
+      } else {
+        " Search YouTube & YT Music (Live InnerTube) "
+      }
+    }
   };
 
   let input = Paragraph::new(lines).scroll((0, scroll_offset)).block(
@@ -171,9 +179,330 @@ fn draw_radio_station_results(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) 
   );
 }
 
+pub fn draw_live_youtube_search(f: &mut Frame<'_>, app: &App, area: Rect) {
+  let [scope_area, content_area] = area.layout(&Layout::vertical([
+    Constraint::Length(3),
+    Constraint::Min(4),
+  ]));
+
+  // 1. Scope Filter Bar
+  let mut scope_spans = vec![
+    Span::styled(" [Tab: Scope]  ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+  ];
+
+  let scopes = [
+    (SearchScope::All, "All"),
+    (SearchScope::Songs, "Songs"),
+    (SearchScope::Albums, "Albums"),
+    (SearchScope::Playlists, "Playlists"),
+  ];
+
+  for (scope, label) in scopes {
+    if app.search_scope == scope {
+      scope_spans.push(Span::styled(
+        format!(" ● [ {} ] ", label),
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+      ));
+    } else {
+      scope_spans.push(Span::styled(
+        format!(" ○ {}  ", label),
+        Style::default().fg(app.user_config.theme.inactive.into()),
+      ));
+    }
+  }
+
+  if app.live_search_loading {
+    scope_spans.push(Span::styled(
+      "  ⟳ [Searching InnerTube...]",
+      Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+    ));
+  } else {
+    scope_spans.push(Span::styled(
+      "  (Zero API Keys)",
+      Style::default().fg(app.user_config.theme.hint.into()),
+    ));
+  }
+
+  let scope_bar = Paragraph::new(Line::from(scope_spans)).block(
+    Block::default()
+      .borders(Borders::ALL)
+      .border_type(BorderType::Rounded)
+      .border_style(Style::default().fg(app.user_config.theme.inactive.into()))
+      .title(Span::styled(" Filter Scope ", Style::default().fg(app.user_config.theme.hint.into()))),
+  );
+  f.render_widget(scope_bar, scope_area);
+
+  // 2. Suggestions + Results split
+  let (suggestions_area, results_area) = if !app.live_search_suggestions.is_empty() && content_area.width > 70 {
+    let [s_area, r_area] = content_area.layout(&Layout::horizontal([
+      Constraint::Length(26),
+      Constraint::Min(30),
+    ]));
+    (Some(s_area), r_area)
+  } else {
+    (None, content_area)
+  };
+
+  // Render Autocomplete Suggestions if present
+  if let Some(s_area) = suggestions_area {
+    let mut suggestion_lines = Vec::new();
+    for (idx, suggestion) in app.live_search_suggestions.iter().enumerate() {
+      if idx == 0 {
+        suggestion_lines.push(Line::from(vec![
+          Span::styled("→ ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+          Span::styled(suggestion, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        ]));
+      } else {
+        suggestion_lines.push(Line::from(vec![
+          Span::styled("  ", Style::default().fg(app.user_config.theme.inactive.into())),
+          Span::styled(suggestion, Style::default().fg(app.user_config.theme.inactive.into())),
+        ]));
+      }
+    }
+
+    let suggestions_widget = Paragraph::new(suggestion_lines).block(
+      Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(app.user_config.theme.inactive.into()))
+        .title(Span::styled(" Suggestions (→) ", Style::default().fg(Color::Cyan))),
+    );
+    f.render_widget(suggestions_widget, s_area);
+  }
+
+  // Render Live Search Results Table
+  let is_search_focused = app.get_current_route().active_block == ActiveBlock::SearchResultBlock;
+  let results_border_color = if is_search_focused {
+    app.user_config.theme.selected
+  } else {
+    app.user_config.theme.inactive
+  };
+
+  let results_title = if app.live_search_items.is_empty() {
+    " YouTube InnerTube Search ".to_string()
+  } else {
+    format!(
+      " YouTube Results [Scope: {}] ({} items) ",
+      app.search_scope.as_str(),
+      app.live_search_items.len()
+    )
+  };
+
+  if app.live_search_items.is_empty() {
+    let empty_text = if app.live_search_loading {
+      vec![
+        Line::from(""),
+        Line::from(Span::styled(
+          "    ⟳ Querying YouTube InnerTube search endpoint...",
+          Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+          "    Debouncing 250ms with zero Google API keys required.",
+          Style::default().fg(app.user_config.theme.hint.into()),
+        )),
+      ]
+    } else {
+      let query_str: String = app.view.input.iter().collect();
+      if query_str.trim().is_empty() {
+        vec![
+          Line::from(""),
+          Line::from(Span::styled(
+            "    EchoVena 2.0 Live YouTube & YouTube Music Search",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+          )),
+          Line::from(""),
+          Line::from(Span::styled(
+            "    • Type any song title, artist, album, or playlist to search in real-time",
+            Style::default().fg(Color::White),
+          )),
+          Line::from(Span::styled(
+            "    • [Tab] / [Shift+Tab]   : Cycle scopes (All | Songs | Albums | Playlists)",
+            Style::default().fg(app.user_config.theme.hint.into()),
+          )),
+          Line::from(Span::styled(
+            "    • [↓] / [↑] or [j] / [k] : Highlight results live",
+            Style::default().fg(app.user_config.theme.hint.into()),
+          )),
+          Line::from(Span::styled(
+            "    • [Enter]               : Select result / instant playback",
+            Style::default().fg(app.user_config.theme.hint.into()),
+          )),
+          Line::from(Span::styled(
+            "    • [z]                   : Add track to queue",
+            Style::default().fg(app.user_config.theme.hint.into()),
+          )),
+          Line::from(Span::styled(
+            "    • [Ctrl+v] / [p]        : Paste clipboard text into search bar",
+            Style::default().fg(app.user_config.theme.hint.into()),
+          )),
+          Line::from(Span::styled(
+            "    • [Esc]                 : Clear query or exit search",
+            Style::default().fg(app.user_config.theme.hint.into()),
+          )),
+        ]
+      } else {
+        vec![
+          Line::from(""),
+          Line::from(Span::styled(
+            format!("    No YouTube results found for: \"{}\"", query_str.trim()),
+            Style::default().fg(Color::Yellow),
+          )),
+          Line::from(""),
+          Line::from(Span::styled(
+            "    Try pressing [Tab] to cycle scope (All / Songs / Albums / Playlists) or refine terms.",
+            Style::default().fg(app.user_config.theme.hint.into()),
+          )),
+        ]
+      }
+    };
+
+    let empty_widget = Paragraph::new(empty_text).block(
+      Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(results_border_color.into()))
+        .title(Span::styled(results_title, Style::default().fg(Color::Cyan))),
+    );
+    f.render_widget(empty_widget, results_area);
+    return;
+  }
+
+  // Calculate scrolling for results list
+  let inner_height = results_area.height.saturating_sub(2) as usize;
+  let mut scroll_offset = app.view.live_search_scroll_offset.get();
+
+  if app.live_search_selected_index < scroll_offset {
+    scroll_offset = app.live_search_selected_index;
+  } else if inner_height > 0 && app.live_search_selected_index >= scroll_offset + inner_height {
+    scroll_offset = app.live_search_selected_index.saturating_sub(inner_height) + 1;
+  }
+  app.view.live_search_scroll_offset.set(scroll_offset);
+
+  let visible_items = app
+    .live_search_items
+    .iter()
+    .enumerate()
+    .skip(scroll_offset)
+    .take(inner_height);
+
+  let mut rows = Vec::new();
+  for (idx, item) in visible_items {
+    let is_selected = idx == app.live_search_selected_index;
+    let mut row_spans = Vec::new();
+
+    // Selection pointer
+    if is_selected {
+      row_spans.push(Span::styled(
+        "▶ ",
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+      ));
+    } else {
+      row_spans.push(Span::styled("  ", Style::default()));
+    }
+
+    // Badges
+    for badge in &item.badges {
+      match badge {
+        SearchBadge::Official => {
+          row_spans.push(Span::styled(
+            "[OFFICIAL] ",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+          ));
+        }
+        SearchBadge::Explicit => {
+          row_spans.push(Span::styled(
+            "[EXPLICIT] ",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+          ));
+        }
+        SearchBadge::Remaster => {
+          row_spans.push(Span::styled(
+            "[REMASTER] ",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+          ));
+        }
+        SearchBadge::Live => {
+          row_spans.push(Span::styled(
+            "[LIVE] ",
+            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+          ));
+        }
+        SearchBadge::Custom(label) => {
+          row_spans.push(Span::styled(
+            format!("[{}] ", label.to_uppercase()),
+            Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+          ));
+        }
+      }
+    }
+
+    // Title
+    let title_style = if is_selected {
+      Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+    } else {
+      Style::default().fg(Color::White)
+    };
+    row_spans.push(Span::styled(&item.title, title_style));
+
+    // Artist
+    let artist_style = if is_selected {
+      Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+    } else {
+      Style::default().fg(Color::LightCyan)
+    };
+    row_spans.push(Span::styled(format!(" - {}", item.artist), artist_style));
+
+    // Album if present
+    if let Some(album) = &item.album {
+      row_spans.push(Span::styled(
+        format!("  ({})", album),
+        Style::default().fg(app.user_config.theme.hint.into()),
+      ));
+    }
+
+    // Duration if present
+    if !item.duration_str.is_empty() {
+      row_spans.push(Span::styled(
+        format!("  [{}]", item.duration_str),
+        Style::default().fg(Color::DarkGray),
+      ));
+    } else if item.duration_ms > 0 {
+      let secs = item.duration_ms / 1000;
+      let min = secs / 60;
+      let s = secs % 60;
+      row_spans.push(Span::styled(
+        format!("  [{}:{:02}]", min, s),
+        Style::default().fg(Color::DarkGray),
+      ));
+    }
+
+    rows.push(Line::from(row_spans));
+  }
+
+  let results_widget = Paragraph::new(rows).block(
+    Block::default()
+      .borders(Borders::ALL)
+      .border_type(BorderType::Rounded)
+      .border_style(Style::default().fg(results_border_color.into()))
+      .title(Span::styled(results_title, Style::default().fg(Color::Cyan))),
+  );
+  f.render_widget(results_widget, results_area);
+}
+
 pub fn draw_search_results(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
   if app.active_source == crate::core::source::Source::Radio {
     draw_radio_station_results(f, app, layout_chunk);
+    return;
+  }
+
+  // Draw real-time YouTube InnerTube search when active, loading, results exist, or YouTube source is active
+  if app.active_source == crate::core::source::Source::YouTube
+    || !app.live_search_items.is_empty()
+    || app.live_search_loading
+    || !app.live_search_suggestions.is_empty()
+  {
+    draw_live_youtube_search(f, app, layout_chunk);
     return;
   }
 
@@ -533,5 +862,51 @@ mod tests {
       !content.contains("Search Playlist"),
       "the saved-track search is not the playlist one: {content}"
     );
+  }
+
+  #[test]
+  fn youtube_live_search_renders_scope_badges_and_results() {
+    let mut app = App::default();
+    app.active_source = crate::core::source::Source::YouTube;
+    app.search_scope = SearchScope::Songs;
+    app.live_search_suggestions = vec!["bohemian rhapsody".into()];
+    app.live_search_items = vec![
+      crate::sources::youtube_search::SearchResultItem {
+        id: "yt:video:1".into(),
+        video_id: Some("1".into()),
+        playlist_id: None,
+        title: "Bohemian Rhapsody".into(),
+        artist: "Queen".into(),
+        album: Some("A Night at the Opera".into()),
+        duration_ms: 354_000,
+        duration_str: "5:54".into(),
+        badges: vec![SearchBadge::Official, SearchBadge::Remaster],
+        scope: SearchScope::Songs,
+        thumbnail_url: None,
+        is_playable: true,
+      },
+    ];
+
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal
+      .draw(|frame| draw_search_results(frame, &app, frame.area()))
+      .unwrap();
+    let buffer = terminal.backend().buffer();
+    let mut text = String::new();
+    for y in 0..30 {
+      for x in 0..120 {
+        text.push_str(buffer[(x, y)].symbol());
+      }
+    }
+
+    assert!(text.contains("Filter Scope"), "Scope bar: {text}");
+    assert!(text.contains("[ Songs ]"), "Active Songs scope: {text}");
+    assert!(text.contains("Suggestions"), "Suggestions panel: {text}");
+    assert!(text.contains("bohemian rhapsody"), "Autocomplete suggestion: {text}");
+    assert!(text.contains("Bohemian Rhapsody"), "Track title: {text}");
+    assert!(text.contains("Queen"), "Artist name: {text}");
+    assert!(text.contains("[OFFICIAL]"), "Official badge: {text}");
+    assert!(text.contains("[REMASTER]"), "Remaster badge: {text}");
+    assert!(text.contains("[5:54]"), "Duration string: {text}");
   }
 }

@@ -222,6 +222,7 @@ pub struct ViewState {
   pub search_albums_scroll_offset: Cell<usize>,
   pub search_playlists_scroll_offset: Cell<usize>,
   pub search_shows_scroll_offset: Cell<usize>,
+  pub live_search_scroll_offset: Cell<usize>,
   pub library_scroll_offset: Cell<usize>,
   pub playlist_scroll_offset: Cell<usize>,
   pub local_files_scroll_offset: Cell<usize>,

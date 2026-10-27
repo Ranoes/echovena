@@ -41,6 +41,11 @@ impl SearchScope {
         }
     }
 
+    /// Alias for cycle_next
+    pub fn cycle(&self) -> Self {
+        self.cycle_next()
+    }
+
     /// Cycles backward to the previous scope (e.g. on Shift+Tab)
     pub fn cycle_prev(&self) -> Self {
         match self {
@@ -49,6 +54,11 @@ impl SearchScope {
             Self::Albums => Self::Songs,
             Self::Songs => Self::All,
         }
+    }
+
+    /// Alias for cycle_prev
+    pub fn cycle_back(&self) -> Self {
+        self.cycle_prev()
     }
 }
 

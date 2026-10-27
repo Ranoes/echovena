@@ -519,6 +519,38 @@ pub fn handler(key: Key, app: &mut App) {
     handle_radio_key(key, app);
     return;
   }
+  if !app.live_search_items.is_empty() {
+    match key {
+      Key::Esc | Key::Char('q') => {
+        app.view.search_selected_block = SearchResultBlock::Empty;
+        app.set_current_route_state(Some(ActiveBlock::Input), Some(ActiveBlock::Input));
+        return;
+      }
+      Key::Char('/') | Key::Char('i') => {
+        app.set_current_route_state(Some(ActiveBlock::Input), Some(ActiveBlock::Input));
+        return;
+      }
+      Key::Tab => {
+        app.cycle_search_scope();
+        return;
+      }
+      Key::BackTab => {
+        app.cycle_search_scope_back();
+        return;
+      }
+      k if common_key_events::down_event(k, &app.user_config.keys) => {
+        app.move_live_search_down();
+        app.view.search_selected_tracks_index = Some(app.live_search_selected_index);
+        return;
+      }
+      k if common_key_events::up_event(k, &app.user_config.keys) => {
+        app.move_live_search_up();
+        app.view.search_selected_tracks_index = Some(app.live_search_selected_index);
+        return;
+      }
+      _ => {}
+    }
+  }
   match key {
     Key::Esc => {
       app.view.search_selected_block = SearchResultBlock::Empty;

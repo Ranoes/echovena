@@ -3,7 +3,9 @@ pub mod debouncer;
 pub mod types;
 
 pub use client::InnerTubeClient;
-pub use debouncer::{DebouncedSearcher, DEFAULT_DEBOUNCE_MS};
+pub use debouncer::{
+    clear_query, init_live_search, trigger_query, DebouncedSearcher, DEFAULT_DEBOUNCE_MS,
+};
 pub use types::{SearchBadge, SearchResponse, SearchResultItem, SearchScope};
 
 #[cfg(test)]
@@ -237,5 +239,149 @@ mod tests {
         // Ensure nothing was dispatched
         let timeout_res = tokio::time::timeout(Duration::from_millis(80), rx.recv()).await;
         assert!(timeout_res.is_err(), "Should have received nothing because it was cleared before debounce finished");
+    }
+
+    #[test]
+    fn test_app_live_search_navigation_and_scoping() {
+        use crate::core::app::App;
+        let mut app = App::default();
+
+        // Initial scope
+        assert_eq!(app.search_scope, SearchScope::All);
+
+        // Forward cycling
+        app.cycle_search_scope();
+        assert_eq!(app.search_scope, SearchScope::Songs);
+        app.cycle_search_scope();
+        assert_eq!(app.search_scope, SearchScope::Albums);
+        app.cycle_search_scope();
+        assert_eq!(app.search_scope, SearchScope::Playlists);
+        app.cycle_search_scope();
+        assert_eq!(app.search_scope, SearchScope::All);
+
+        // Backward cycling
+        app.cycle_search_scope_back();
+        assert_eq!(app.search_scope, SearchScope::Playlists);
+        app.cycle_search_scope_back();
+        assert_eq!(app.search_scope, SearchScope::Albums);
+
+        // Add mock items to live search
+        app.live_search_items = vec![
+            SearchResultItem {
+                id: "yt:video:1".into(),
+                video_id: Some("1".into()),
+                playlist_id: None,
+                title: "Track 1".into(),
+                artist: "Artist 1".into(),
+                album: None,
+                duration_ms: 180_000,
+                duration_str: "3:00".into(),
+                badges: vec![SearchBadge::Official],
+                scope: SearchScope::Songs,
+                thumbnail_url: None,
+                is_playable: true,
+            },
+            SearchResultItem {
+                id: "yt:video:2".into(),
+                video_id: Some("2".into()),
+                playlist_id: None,
+                title: "Track 2".into(),
+                artist: "Artist 2".into(),
+                album: Some("Album 2".into()),
+                duration_ms: 210_000,
+                duration_str: "3:30".into(),
+                badges: vec![SearchBadge::Explicit],
+                scope: SearchScope::Songs,
+                thumbnail_url: None,
+                is_playable: true,
+            },
+            SearchResultItem {
+                id: "yt:video:3".into(),
+                video_id: Some("3".into()),
+                playlist_id: None,
+                title: "Track 3".into(),
+                artist: "Artist 3".into(),
+                album: None,
+                duration_ms: 240_000,
+                duration_str: "4:00".into(),
+                badges: vec![SearchBadge::Remaster],
+                scope: SearchScope::Songs,
+                thumbnail_url: None,
+                is_playable: true,
+            },
+        ];
+
+        assert_eq!(app.live_search_selected_index, 0);
+        assert_eq!(app.selected_live_search_item().unwrap().title, "Track 1");
+
+        // Move down
+        app.move_live_search_down();
+        assert_eq!(app.live_search_selected_index, 1);
+        assert_eq!(app.selected_live_search_item().unwrap().title, "Track 2");
+
+        app.move_live_search_down();
+        assert_eq!(app.live_search_selected_index, 2);
+
+        // Wrap around down
+        app.move_live_search_down();
+        assert_eq!(app.live_search_selected_index, 0);
+
+        // Move up wrap around
+        app.move_live_search_up();
+        assert_eq!(app.live_search_selected_index, 2);
+        assert_eq!(app.selected_live_search_item().unwrap().title, "Track 3");
+
+        app.move_live_search_up();
+        assert_eq!(app.live_search_selected_index, 1);
+    }
+
+    #[test]
+    fn test_app_live_search_response_and_clearing() {
+        use crate::core::app::App;
+        let mut app = App::default();
+
+        // Simulate typing "bohemian" into input
+        app.view.input = "bohemian".chars().collect();
+
+        let response = SearchResponse {
+            query: "bohemian".to_string(),
+            scope: SearchScope::Songs,
+            items: vec![SearchResultItem {
+                id: "yt:video:fJ9rUzIMcZQ".into(),
+                video_id: Some("fJ9rUzIMcZQ".into()),
+                playlist_id: None,
+                title: "Bohemian Rhapsody".into(),
+                artist: "Queen".into(),
+                album: Some("A Night at the Opera".into()),
+                duration_ms: 354_000,
+                duration_str: "5:54".into(),
+                badges: vec![SearchBadge::Official, SearchBadge::Remaster],
+                scope: SearchScope::Songs,
+                thumbnail_url: None,
+                is_playable: true,
+            }],
+            suggestions: vec!["bohemian rhapsody".into(), "bohemian rhapsody queen".into()],
+        };
+
+        app.set_live_search_response(response);
+
+        assert_eq!(app.live_search_items.len(), 1);
+        assert_eq!(app.live_search_suggestions.len(), 2);
+        assert_eq!(app.live_search_suggestions[0], "bohemian rhapsody");
+        assert_eq!(app.selected_live_search_item().unwrap().title, "Bohemian Rhapsody");
+        assert_eq!(app.selected_live_search_item().unwrap().badges.len(), 2);
+
+        // Check compatibility with search_results.tracks
+        let legacy_tracks = app.search_results().tracks.as_ref().unwrap();
+        assert_eq!(legacy_tracks.items.len(), 1);
+        assert_eq!(legacy_tracks.items[0].name, "Bohemian Rhapsody");
+        assert_eq!(legacy_tracks.items[0].artists, vec!["Queen"]);
+        assert_eq!(legacy_tracks.items[0].duration_ms, 354_000);
+
+        // Clear live search
+        app.clear_live_search();
+        assert!(app.live_search_items.is_empty());
+        assert!(app.live_search_suggestions.is_empty());
+        assert_eq!(app.live_search_selected_index, 0);
     }
 }

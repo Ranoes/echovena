@@ -69,6 +69,10 @@ impl From<event::KeyEvent> for Key {
         code: event::KeyCode::Tab,
         ..
       } => Key::Tab,
+      event::KeyEvent {
+        code: event::KeyCode::BackTab,
+        ..
+      } => Key::BackTab,
 
       // First check for char + modifier
       event::KeyEvent {

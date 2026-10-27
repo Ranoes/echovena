@@ -15,6 +15,8 @@ pub enum Key {
   Enter,
   /// Tabulation key
   Tab,
+  /// Backtab (Shift+Tab)
+  BackTab,
   /// Backspace key
   Backspace,
   /// Escape key
@@ -110,6 +112,7 @@ impl fmt::Display for Key {
       Key::Left | Key::Right | Key::Up | Key::Down => write!(f, "<{:?} Arrow Key>", self),
       Key::Enter
       | Key::Tab
+      | Key::BackTab
       | Key::Backspace
       | Key::Esc
       | Key::Ins

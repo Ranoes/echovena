@@ -1,9 +1,43 @@
 use super::client::InnerTubeClient;
 use super::types::{SearchResponse, SearchScope};
+use crate::core::app::App;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Mutex};
+
+static GLOBAL_SEARCHER: OnceLock<DebouncedSearcher> = OnceLock::new();
+
+/// Initializes the global debounced live searcher and hooks its response pump to `App`.
+pub fn init_live_search(app: Arc<Mutex<App>>) {
+    if GLOBAL_SEARCHER.get().is_some() {
+        return;
+    }
+    let client = Arc::new(InnerTubeClient::new());
+    let (searcher, mut rx_result) = DebouncedSearcher::new(client);
+    let _ = GLOBAL_SEARCHER.set(searcher);
+
+    tokio::spawn(async move {
+        while let Some(response) = rx_result.recv().await {
+            let mut app_guard = app.lock().await;
+            app_guard.set_live_search_response(response);
+        }
+    });
+}
+
+/// Triggers a debounced live search query globally.
+pub fn trigger_query(query: impl Into<String>, scope: SearchScope) {
+    if let Some(searcher) = GLOBAL_SEARCHER.get() {
+        searcher.on_query_change(query, scope);
+    }
+}
+
+/// Clears active live search query globally.
+pub fn clear_query() {
+    if let Some(searcher) = GLOBAL_SEARCHER.get() {
+        searcher.clear();
+    }
+}
 
 /// Default debounce duration per technical specification: 250ms
 pub const DEFAULT_DEBOUNCE_MS: u64 = 250;

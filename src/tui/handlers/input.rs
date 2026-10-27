@@ -15,11 +15,17 @@ pub fn handler(key: Key, app: &mut App) {
         .view
         .input
         .drain(app.view.input_idx..app.view.input.len());
+      if app.view.input_context == InputContext::GlobalSearch {
+        app.trigger_live_search();
+      }
     }
     Key::Ctrl('u') => {
       app.view.input.drain(..app.view.input_idx);
       app.view.input_idx = 0;
       app.view.input_cursor_position = 0;
+      if app.view.input_context == InputContext::GlobalSearch {
+        app.clear_live_search();
+      }
     }
     Key::Ctrl('v') => {
       if let Some(text) = app.get_clipboard_text() {
@@ -29,12 +35,18 @@ pub fn handler(key: Key, app: &mut App) {
           app.view.input_idx += 1;
           app.view.input_cursor_position += compute_character_width(c);
         }
+        if app.view.input_context == InputContext::GlobalSearch {
+          app.trigger_live_search();
+        }
       }
     }
     Key::Ctrl('l') => {
       app.view.input = vec![];
       app.view.input_idx = 0;
       app.view.input_cursor_position = 0;
+      if app.view.input_context == InputContext::GlobalSearch {
+        app.clear_live_search();
+      }
     }
     Key::Ctrl('w') => {
       if app.view.input_cursor_position == 0 {
@@ -58,6 +70,9 @@ pub fn handler(key: Key, app: &mut App) {
       app.view.input.drain(word_start..app.view.input_idx);
       app.view.input_idx = word_start;
       app.view.input_cursor_position -= deleted_len;
+      if app.view.input_context == InputContext::GlobalSearch {
+        app.trigger_live_search();
+      }
     }
     Key::End | Key::Ctrl('e') => {
       app.view.input_idx = app.view.input.len();
@@ -80,34 +95,89 @@ pub fn handler(key: Key, app: &mut App) {
       app.view.input_idx += 1;
       app.view.input_cursor_position += compute_character_width(next_c);
     }
+    Key::Right if app.view.input_context == InputContext::GlobalSearch && app.view.input_idx == app.view.input.len() => {
+      // Autocomplete with top suggestion when at the end of input
+      if let Some(top_suggestion) = app.live_search_suggestions.first().cloned() {
+        app.view.input = top_suggestion.chars().collect();
+        app.view.input_idx = app.view.input.len();
+        let input_string: String = app.view.input.iter().collect();
+        app.view.input_cursor_position = UnicodeWidthStr::width(input_string.as_str())
+          .try_into()
+          .unwrap_or(0);
+        app.trigger_live_search();
+      }
+    }
+    Key::Tab => {
+      if app.view.input_context == InputContext::GlobalSearch {
+        app.cycle_search_scope();
+      }
+    }
+    Key::BackTab => {
+      if app.view.input_context == InputContext::GlobalSearch {
+        app.cycle_search_scope_back();
+      }
+    }
+    Key::Down | Key::Ctrl('n') => {
+      if app.view.input_context == InputContext::GlobalSearch {
+        app.move_live_search_down();
+      }
+    }
+    Key::Up | Key::Ctrl('p') => {
+      if app.view.input_context == InputContext::GlobalSearch {
+        app.move_live_search_up();
+      }
+    }
     Key::Esc => match app.view.input_context {
       InputContext::PlaylistTrackSearch | InputContext::SavedTrackSearch => {
         app.view.input_context = InputContext::GlobalSearch;
         app.set_current_route_state(Some(ActiveBlock::TrackTable), Some(ActiveBlock::TrackTable));
       }
       InputContext::GlobalSearch => {
-        app.set_current_route_state(Some(ActiveBlock::Empty), Some(ActiveBlock::Library));
+        if !app.view.input.is_empty() {
+          app.view.input.clear();
+          app.view.input_idx = 0;
+          app.view.input_cursor_position = 0;
+          app.clear_live_search();
+        } else {
+          app.set_current_route_state(Some(ActiveBlock::Empty), Some(ActiveBlock::Library));
+        }
       }
     },
     Key::Enter => {
       let input_str: String = app.view.input.iter().collect();
-
-      process_input(app, input_str);
+      if app.view.input_context == InputContext::GlobalSearch && !app.live_search_items.is_empty() {
+        app.view.search_selected_tracks_index = Some(app.live_search_selected_index);
+        app.set_current_route_state(
+          Some(ActiveBlock::SearchResultBlock),
+          Some(ActiveBlock::SearchResultBlock),
+        );
+      } else {
+        process_input(app, input_str);
+      }
     }
     Key::Char(c) => {
       app.view.input.insert(app.view.input_idx, c);
       app.view.input_idx += 1;
       app.view.input_cursor_position += compute_character_width(c);
+      if app.view.input_context == InputContext::GlobalSearch {
+        app.trigger_live_search();
+      }
     }
     Key::Backspace | Key::Ctrl('h') if !app.view.input.is_empty() && app.view.input_idx > 0 => {
       let last_c = app.view.input.remove(app.view.input_idx - 1);
       app.view.input_idx -= 1;
       app.view.input_cursor_position -= compute_character_width(last_c);
+      if app.view.input_context == InputContext::GlobalSearch {
+        app.trigger_live_search();
+      }
     }
     Key::Delete | Key::Ctrl('d')
       if !app.view.input.is_empty() && app.view.input_idx < app.view.input.len() =>
     {
       app.view.input.remove(app.view.input_idx);
+      if app.view.input_context == InputContext::GlobalSearch {
+        app.trigger_live_search();
+      }
     }
     _ => {}
   }
