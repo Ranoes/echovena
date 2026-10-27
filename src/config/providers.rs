@@ -15,6 +15,12 @@ pub struct ProviderRegistry {
     pub audio_providers: Vec<AudioProviderConfig>,
     #[serde(default)]
     pub lyric_providers: Vec<LyricProviderConfig>,
+    #[serde(default)]
+    pub spotify_sp_dc: Option<String>,
+    #[serde(default)]
+    pub youtube_cookies_path: Option<String>,
+    #[serde(default)]
+    pub youtube_cookie: Option<String>,
 }
 
 fn default_version() -> u32 {
@@ -171,6 +177,9 @@ impl ProviderRegistry {
                     base_url: "https://music.163.com/api".to_string(),
                 },
             ],
+            spotify_sp_dc: None,
+            youtube_cookies_path: None,
+            youtube_cookie: None,
         }
     }
 

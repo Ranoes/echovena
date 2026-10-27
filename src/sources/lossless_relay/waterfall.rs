@@ -375,6 +375,9 @@ mod tests {
                 },
             ],
             lyric_providers: vec![],
+            spotify_sp_dc: None,
+            youtube_cookies_path: None,
+            youtube_cookie: None,
         };
 
         let waterfall = LosslessWaterfall::new(registry);
