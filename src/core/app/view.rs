@@ -137,6 +137,8 @@ pub struct ViewState {
   pub playlist_sync_selected_link: usize,
   /// Cursor in the mirror picker dialog.
   pub playlist_sync_picker_index: usize,
+  /// Active tab in the sidebar Playlist panel (0: EchoVena, 1: Spotify, 2: YouTube)
+  pub playlist_panel_tab: usize,
 
   // Sort menu state
   /// Whether the sort menu popup is visible

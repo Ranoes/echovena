@@ -6,12 +6,15 @@ use super::format_template;
 #[cfg_attr(all(test, feature = "gui"), derive(ts_rs::TS))]
 pub struct SidebarStrings {
   pub library: &'static str,
+  pub search_results: &'static str,
   pub discover: &'static str,
   pub recently_played: &'static str,
   pub friends: &'static str,
   pub stats: &'static str,
   pub playlist_sync: &'static str,
   pub liked_songs: &'static str,
+  pub song_list: &'static str,
+  pub settings: &'static str,
   pub albums: &'static str,
   pub artists: &'static str,
   pub podcasts: &'static str,
@@ -42,12 +45,15 @@ pub struct SidebarStrings {
 
 pub const EN: SidebarStrings = SidebarStrings {
   library: "Quick Menu",
-  discover: "Discover",
+  search_results: "Search Results",
+  discover: "Music Discovery",
   recently_played: "Recently Played",
   friends: "Friends",
   stats: "Stats",
-  playlist_sync: "Playlist sync",
+  playlist_sync: "Playlist Sync",
   liked_songs: "Liked Songs",
+  song_list: "Song List",
+  settings: "Settings",
   albums: "Albums",
   artists: "Artists",
   podcasts: "Podcasts",

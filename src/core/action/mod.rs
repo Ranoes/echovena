@@ -568,12 +568,15 @@ pub enum LibraryTarget {
   LocalFiles,
   /// Row only present under `ai-dj`; a no-op without it.
   AiDj,
+  SearchResults,
+  Playlists,
+  Settings,
 }
 
 impl LibraryTarget {
   /// Every target, in the order of `library_row_requirements()`.
   #[cfg(test)]
-  pub const ALL: [LibraryTarget; 11] = [
+  pub const ALL: [LibraryTarget; 14] = [
     LibraryTarget::Discover,
     LibraryTarget::RecentlyPlayed,
     LibraryTarget::Friends,
@@ -585,6 +588,9 @@ impl LibraryTarget {
     LibraryTarget::Podcasts,
     LibraryTarget::LocalFiles,
     LibraryTarget::AiDj,
+    LibraryTarget::SearchResults,
+    LibraryTarget::Playlists,
+    LibraryTarget::Settings,
   ];
 
   /// The sidebar label in the selected language.
@@ -596,12 +602,15 @@ impl LibraryTarget {
       LibraryTarget::Friends => sidebar.friends,
       LibraryTarget::Stats => sidebar.stats,
       LibraryTarget::PlaylistSync => sidebar.playlist_sync,
-      LibraryTarget::LikedSongs => sidebar.liked_songs,
+      LibraryTarget::LikedSongs => sidebar.song_list,
       LibraryTarget::Albums => sidebar.albums,
       LibraryTarget::Artists => sidebar.artists,
       LibraryTarget::Podcasts => sidebar.podcasts,
       LibraryTarget::LocalFiles => sidebar.local_files,
       LibraryTarget::AiDj => sidebar.ai_dj,
+      LibraryTarget::SearchResults => sidebar.search_results,
+      LibraryTarget::Playlists => sidebar.playlists,
+      LibraryTarget::Settings => sidebar.settings,
     }
   }
 }

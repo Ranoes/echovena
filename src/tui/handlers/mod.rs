@@ -28,7 +28,7 @@ mod miniplayer;
 mod mouse;
 mod party;
 mod playbar;
-mod playlist;
+pub(crate) mod playlist;
 mod playlist_sync;
 mod plugin_screen;
 mod podcasts;
@@ -209,61 +209,9 @@ pub fn handle_app(key: Key, app: &mut App) {
         let trimmed = input_str.trim().to_string();
         if !trimmed.is_empty() {
           app.view.url_import_in_progress = true;
-          app.view.url_import_status = Some("Importing playlist...".to_string());
-
-          let url_to_import = trimmed.clone();
-          tokio::spawn(async move {
-            if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
-              if let Some(sp) = crate::sources::lossless_relay::spotify_scraper::parse_spotify_url(&url_to_import) {
-                let scraper = crate::sources::lossless_relay::spotify_scraper::SpotifyScraper::new();
-                match sp {
-                  crate::sources::lossless_relay::spotify_scraper::SpotifyResource::Playlist(id) => {
-                    if let Ok((pl, tracks)) = scraper.fetch_playlist(&id).await {
-                      db.upsert_imported_playlist(&pl).ok();
-                      db.replace_playlist_tracks(&pl.id, &tracks).ok();
-                      let resolver = crate::sources::lossless_relay::resolver::Resolver::new(db.clone());
-                      let (worker, rx) = crate::sources::lossless_relay::resolver::BatchResolutionWorker::new(resolver.clone());
-                      worker.enqueue_batch(tracks).await.ok();
-                      tokio::spawn(crate::sources::lossless_relay::resolver::BatchResolutionWorker::run_loop(resolver, rx));
-                    }
-                  }
-                  crate::sources::lossless_relay::spotify_scraper::SpotifyResource::Album(id) => {
-                    if let Ok((pl, tracks)) = scraper.fetch_album(&id).await {
-                      db.upsert_imported_playlist(&pl).ok();
-                      db.replace_playlist_tracks(&pl.id, &tracks).ok();
-                      let resolver = crate::sources::lossless_relay::resolver::Resolver::new(db.clone());
-                      let (worker, rx) = crate::sources::lossless_relay::resolver::BatchResolutionWorker::new(resolver.clone());
-                      worker.enqueue_batch(tracks).await.ok();
-                      tokio::spawn(crate::sources::lossless_relay::resolver::BatchResolutionWorker::run_loop(resolver, rx));
-                    }
-                  }
-                  crate::sources::lossless_relay::spotify_scraper::SpotifyResource::Track(id) => {
-                    if let Ok(track) = scraper.fetch_track(&id).await {
-                      let resolver = crate::sources::lossless_relay::resolver::Resolver::new(db.clone());
-                      resolver.resolve_track(&track).await.ok();
-                    }
-                  }
-                }
-              } else if let Some(yt) = crate::sources::lossless_relay::youtube_importer::parse_youtube_url(&url_to_import) {
-                let importer = crate::sources::lossless_relay::youtube_importer::YouTubeImporter::new();
-                match yt {
-                  crate::sources::lossless_relay::youtube_importer::YouTubeResource::Playlist(id) => {
-                    if let Ok((pl, tracks)) = importer.fetch_playlist(&id).await {
-                      db.upsert_imported_playlist(&pl).ok();
-                      db.replace_playlist_tracks(&pl.id, &tracks).ok();
-                      let resolver = crate::sources::lossless_relay::resolver::Resolver::new(db.clone());
-                      let (worker, rx) = crate::sources::lossless_relay::resolver::BatchResolutionWorker::new(resolver.clone());
-                      worker.enqueue_batch(tracks).await.ok();
-                      tokio::spawn(crate::sources::lossless_relay::resolver::BatchResolutionWorker::run_loop(resolver, rx));
-                    }
-                  }
-                  crate::sources::lossless_relay::youtube_importer::YouTubeResource::Video(_vid) => {}
-                }
-              }
-            }
-          });
-          app.view.url_import_status = Some("Import launched! Tracks queued for lossless resolution.".to_string());
-          app.view.url_import_in_progress = false;
+          app.view.url_import_status = Some("Connecting and resolving playlist in background...".to_string());
+          app.set_status_message(format!("Importing playlist '{}' in background...", trimmed), 15);
+          app.dispatch(crate::infra::network::IoEvent::ImportPlaylistUrl(trimmed));
         }
       }
       Key::Char(c) => {

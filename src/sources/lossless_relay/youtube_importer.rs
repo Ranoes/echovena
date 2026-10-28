@@ -28,6 +28,11 @@ pub fn parse_youtube_url(input: &str) -> Option<YouTubeResource> {
     if let Some(id) = trimmed.strip_prefix("yt:video:") {
         return Some(YouTubeResource::Video(id.to_string()));
     }
+    if (trimmed.starts_with("PL") || trimmed.starts_with("OLAK5uy_") || trimmed.starts_with("RDCLAK5uy_") || trimmed.starts_with("VLPL"))
+        && !trimmed.contains('/') && !trimmed.contains(' ')
+    {
+        return Some(YouTubeResource::Playlist(trimmed.to_string()));
+    }
 
     // YouTu.be short URL: https://youtu.be/<videoId>?...
     if trimmed.contains("youtu.be/") {

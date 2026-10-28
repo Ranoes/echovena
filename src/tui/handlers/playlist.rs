@@ -6,26 +6,88 @@ use crate::core::requirement::{Capability, Requirement};
 use crate::core::source::Source;
 use crate::tui::event::Key;
 
-/// Total rows in the sidebar Playlists panel. For Spotify this is the leading
-/// "+ Add Playlist" row + playlists/folders; for Local it is the folder count
-/// (no write capability, so no "Add Playlist").
+/// Returns the formatted playlist list items for the active playlist panel tab.
+pub fn get_playlist_tab_items(app: &App) -> Vec<String> {
+  match app.view.playlist_panel_tab {
+    // Tab 0: EchoVena Playlists
+    0 => {
+      let mut items = vec![
+        "+ Add Playlist".to_string(),
+        "+ Import URL [Key U]".to_string(),
+        "\u{1F504} Sync Remote Playlists [Ctrl+r]".to_string(),
+      ];
+      if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+        if let Ok(playlists) = db.list_imported_playlists() {
+          for p in playlists {
+            let icon = match p.platform.as_str() {
+              "spotify_synced" | "spotify" => "\u{1F504} [Spotify]",
+              "youtube" | "ytmusic" => "\u{1F4FC} [YouTube]",
+              _ => "\u{2728} [EchoVena]",
+            };
+            items.push(format!("{} {} ({})", icon, p.title, p.track_count));
+          }
+        }
+      }
+      for p in app.local_playlists() {
+        items.push(format!("\u{1F4C1} [Local] {}", p.name));
+      }
+      items
+    }
+    // Tab 1: Spotify Playlists
+    1 => {
+      let mut items = vec!["+ Add Spotify Playlist".to_string()];
+      let mut found_any = false;
+      if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+        if let Ok(playlists) = db.list_imported_playlists() {
+          for p in playlists.into_iter().filter(|p| p.platform.starts_with("spotify")) {
+            found_any = true;
+            let icon = if p.platform == "spotify_synced" { "\u{1F504} [Synced]" } else { "\u{1F3B5} [Imported]" };
+            items.push(format!("{} {} ({})", icon, p.title, p.track_count));
+          }
+        }
+      }
+      for p in app.all_playlists() {
+        found_any = true;
+        items.push(format!("\u{1F3B5} {} ({})", p.name, p.track_count));
+      }
+      if !found_any {
+        items.push("(No Spotify playlists \u{2014} press 'U' to import or 's' to sync)".to_string());
+      }
+      items
+    }
+    // Tab 2: YouTube Playlists
+    _ => {
+      let mut items = vec!["+ New YouTube Playlist".to_string()];
+      let mut found_any = false;
+      for p in app.youtube_playlists() {
+        found_any = true;
+        items.push(format!("\u{1F4FC} {} ({})", p.name, p.track_count));
+      }
+      if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+        if let Ok(playlists) = db.list_imported_playlists() {
+          for p in playlists.into_iter().filter(|p| p.platform == "youtube" || p.platform == "ytmusic") {
+            found_any = true;
+            items.push(format!("\u{1F4FC} [Imported] {} ({})", p.title, p.track_count));
+          }
+        }
+      }
+      if !found_any {
+        items.push("(No YouTube playlists \u{2014} press 'U' to import or 'w' to save)".to_string());
+      }
+      items
+    }
+  }
+}
+
+/// Total rows in the sidebar Playlists panel for the active tab.
 pub(crate) fn total_display_count(app: &App) -> usize {
   match app.active_source {
     Source::Local => app.local_playlists().len(),
     Source::Subsonic => app.subsonic_playlists().len(),
     Source::Radio => app.radio_stations().len(),
-    // Local YouTube playlists + the "+ New Playlist" entry.
-    Source::YouTube => app.youtube_playlists().len() + 1,
     Source::Qobuz => app.qobuz_playlists().len(),
-    Source::LosslessRelay => {
-      if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
-        db.list_imported_playlists().map(|p| p.len() + 1).unwrap_or(1)
-      } else {
-        1
-      }
-    }
-    Source::Spotify => app.get_playlist_display_count() + 1,
     Source::AppleMusic => app.apple_music_playlists().len(),
+    _ => get_playlist_tab_items(app).len(),
   }
 }
 
@@ -71,6 +133,7 @@ fn open_qobuz_folder(app: &mut App) {
 /// YouTube: open the highlighted local playlist's saved videos in the shared
 /// track table, or the create-playlist form on the trailing "+ New Playlist"
 /// entry.
+#[allow(dead_code)]
 fn open_youtube_playlist(app: &mut App) {
   let Some(idx) = app.view.selected_playlist_index else {
     return;
@@ -90,6 +153,7 @@ fn open_youtube_playlist(app: &mut App) {
 
 /// Lossless Relay: open the highlighted imported SQLite playlist in the shared
 /// track table, or the URL import modal on the trailing "+ Import URL" entry.
+#[allow(dead_code)]
 fn open_lossless_relay_playlist(app: &mut App) {
   let Some(idx) = app.view.selected_playlist_index else {
     return;
@@ -176,6 +240,31 @@ pub fn handler(key: Key, app: &mut App) {
         app.view.selected_playlist_index = Some(count - 1);
       }
     }
+    Key::Tab => {
+      app.view.playlist_panel_tab = (app.view.playlist_panel_tab + 1) % 3;
+      app.view.selected_playlist_index = Some(0);
+      app.view.playlist_scroll_offset.set(0);
+    }
+    Key::BackTab => {
+      app.view.playlist_panel_tab = if app.view.playlist_panel_tab == 0 { 2 } else { app.view.playlist_panel_tab - 1 };
+      app.view.selected_playlist_index = Some(0);
+      app.view.playlist_scroll_offset.set(0);
+    }
+    Key::Char('1') => {
+      app.view.playlist_panel_tab = 0;
+      app.view.selected_playlist_index = Some(0);
+      app.view.playlist_scroll_offset.set(0);
+    }
+    Key::Char('2') => {
+      app.view.playlist_panel_tab = 1;
+      app.view.selected_playlist_index = Some(0);
+      app.view.playlist_scroll_offset.set(0);
+    }
+    Key::Char('3') => {
+      app.view.playlist_panel_tab = 2;
+      app.view.selected_playlist_index = Some(0);
+      app.view.playlist_scroll_offset.set(0);
+    }
     Key::Enter => {
       common_key_events::remember_sidebar_block(app, ActiveBlock::MyPlaylists);
       activate_selected(app);
@@ -246,17 +335,30 @@ pub(super) fn select_previous(app: &mut App) {
   }
 }
 
-/// The Enter consequence, routed by the active browse source.
+/// The Enter consequence, routed by the active playlist panel tab.
 pub(super) fn activate_selected(app: &mut App) {
   app.view.last_sidebar_block = SidebarBlock::Playlists;
+  let Some(idx) = app.view.selected_playlist_index else {
+    return;
+  };
+
   match app.active_source {
-    Source::Local => open_local_folder(app),
-    Source::Subsonic => open_subsonic_folder(app),
-    Source::Radio => play_radio_station(app),
-    Source::YouTube => open_youtube_playlist(app),
-    Source::Qobuz => open_qobuz_folder(app),
-    Source::LosslessRelay => open_lossless_relay_playlist(app),
-    Source::Spotify => open_spotify_row(app),
+    Source::Local => {
+      open_local_folder(app);
+      return;
+    }
+    Source::Subsonic => {
+      open_subsonic_folder(app);
+      return;
+    }
+    Source::Radio => {
+      play_radio_station(app);
+      return;
+    }
+    Source::Qobuz => {
+      open_qobuz_folder(app);
+      return;
+    }
     Source::AppleMusic => {
       let uri = app
         .view
@@ -264,10 +366,106 @@ pub(super) fn activate_selected(app: &mut App) {
         .and_then(|i| app.apple_music_playlists().get(i))
         .map(|p| p.uri.clone());
       open_source_playlist(app, uri);
+      return;
+    }
+    _ => {}
+  }
+
+  match app.view.playlist_panel_tab {
+    // Tab 0: EchoVena Playlists
+    0 => {
+      match idx {
+        0 => {
+          // "+ Add Playlist"
+          app.push_navigation_stack(RouteId::CreatePlaylist, ActiveBlock::CreatePlaylistForm);
+        }
+        1 => {
+          // "+ Import URL [Key U]"
+          app.view.url_import_visible = true;
+        }
+        2 => {
+          // "Sync Remote Playlists [Ctrl+r]"
+          app.apply(Action::RunPlaylistSync);
+        }
+        _ => {
+          let db_playlists = crate::sources::lossless_relay::db::Database::open_default()
+            .ok()
+            .and_then(|db| db.list_imported_playlists().ok())
+            .unwrap_or_default();
+          let db_len = db_playlists.len();
+          let relative_idx = idx.saturating_sub(3);
+          if relative_idx < db_len {
+            let uri = db_playlists[relative_idx].id.clone();
+            open_source_playlist(app, Some(uri));
+          } else {
+            let local_idx = relative_idx.saturating_sub(db_len);
+            let uri = app.local_playlists().get(local_idx).map(|p| p.uri.clone());
+            open_source_playlist(app, uri);
+          }
+        }
+      }
+    }
+    // Tab 1: Spotify Playlists
+    1 => {
+      if idx == 0 {
+        // "+ Add Spotify Playlist"
+        app.push_navigation_stack(RouteId::CreatePlaylist, ActiveBlock::CreatePlaylistForm);
+      } else {
+        let spotify_db_playlists: Vec<_> = crate::sources::lossless_relay::db::Database::open_default()
+          .ok()
+          .and_then(|db| db.list_imported_playlists().ok())
+          .unwrap_or_default()
+          .into_iter()
+          .filter(|p| p.platform.starts_with("spotify"))
+          .collect();
+        let db_len = spotify_db_playlists.len();
+        let relative_idx = idx.saturating_sub(1);
+        if relative_idx < db_len {
+          let uri = spotify_db_playlists[relative_idx].id.clone();
+          open_source_playlist(app, Some(uri));
+        } else {
+          let spotify_idx = relative_idx.saturating_sub(db_len);
+          let id_opt = app.all_playlists().get(spotify_idx).and_then(|p| p.id.clone());
+          if let Some(id_str) = id_opt {
+            app.view.active_playlist_index = Some(spotify_idx);
+            app.apply(Action::Open(OpenTarget::Playlist {
+              id: id_str,
+              from_search: false,
+            }));
+          }
+        }
+      }
+    }
+    // Tab 2: YouTube Playlists
+    _ => {
+      if idx == 0 {
+        // "+ New YouTube Playlist"
+        app.push_navigation_stack(RouteId::CreatePlaylist, ActiveBlock::CreatePlaylistForm);
+      } else {
+        let yt_local_len = app.youtube_playlists().len();
+        let relative_idx = idx.saturating_sub(1);
+        if relative_idx < yt_local_len {
+          let uri = app.youtube_playlists().get(relative_idx).map(|p| p.uri.clone());
+          open_source_playlist(app, uri);
+        } else {
+          let yt_db_playlists: Vec<_> = crate::sources::lossless_relay::db::Database::open_default()
+            .ok()
+            .and_then(|db| db.list_imported_playlists().ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| p.platform == "youtube" || p.platform == "ytmusic")
+            .collect();
+          let db_idx = relative_idx.saturating_sub(yt_local_len);
+          if let Some(pl) = yt_db_playlists.get(db_idx) {
+            open_source_playlist(app, Some(pl.id.clone()));
+          }
+        }
+      }
     }
   }
 }
 
+#[allow(dead_code)]
 fn open_spotify_row(app: &mut App) {
   if let Some(selected_idx) = app.view.selected_playlist_index {
     if selected_idx == 0 {

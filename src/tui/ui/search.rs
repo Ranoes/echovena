@@ -401,6 +401,12 @@ pub fn draw_live_youtube_search(f: &mut Frame<'_>, app: &App, area: Rect) {
       row_spans.push(Span::styled("  ", Style::default()));
     }
 
+    // Source Badge
+    row_spans.push(Span::styled(
+      "[YouTube] ",
+      Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+    ));
+
     // Badges
     for badge in &item.badges {
       match badge {
@@ -535,7 +541,7 @@ pub fn draw_search_results(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
         .items
         .iter()
         .map(|item| {
-          let mut song_name = "".to_string();
+          let mut song_name = "[Spotify] ".to_string();
           let id = item.id.clone().unwrap_or_default();
           if currently_playing_id == id {
             song_name += "▶ "

@@ -71,12 +71,12 @@ impl DownloadSource {
 #[cfg_attr(all(test, feature = "gui"), derive(ts_rs::TS))]
 pub enum Source {
   #[default]
+  YouTube,
   LosslessRelay,
   Spotify,
   Local,
   Subsonic,
   Radio,
-  YouTube,
   Qobuz,
   /// macOS only: a remote for the Music app (feature `apple-music`).
   AppleMusic,
@@ -85,12 +85,12 @@ pub enum Source {
 impl Source {
   /// Every source, in display order. Add new sources here.
   pub const ALL: [Source; 8] = [
+    Source::YouTube,
     Source::LosslessRelay,
     Source::Spotify,
     Source::Local,
     Source::Subsonic,
     Source::Radio,
-    Source::YouTube,
     Source::Qobuz,
     Source::AppleMusic,
   ];
@@ -101,12 +101,12 @@ impl Source {
     // Spelled out rather than sliced off `ALL`, so a source added after
     // Apple Music is not the one that disappears.
     const WITHOUT_APPLE_MUSIC: [Source; 7] = [
+      Source::YouTube,
       Source::LosslessRelay,
       Source::Spotify,
       Source::Local,
       Source::Subsonic,
       Source::Radio,
-      Source::YouTube,
       Source::Qobuz,
     ];
     if cfg!(all(feature = "apple-music", target_os = "macos")) {
@@ -133,30 +133,31 @@ impl Source {
   /// display name changes.
   pub fn to_config_str(self) -> &'static str {
     match self {
+      Source::YouTube => "YouTube",
       Source::LosslessRelay => "LosslessRelay",
       Source::Spotify => "Spotify",
       Source::Local => "Local",
       Source::Subsonic => "Subsonic",
       Source::Radio => "Radio",
-      Source::YouTube => "YouTube",
       Source::Qobuz => "Qobuz",
       Source::AppleMusic => "AppleMusic",
     }
   }
 
   /// Parse the config-file token back to a `Source`.
-  /// Unknown strings fall back to `Spotify` so old or hand-edited configs
+  /// Unknown strings fall back to `YouTube` so old or hand-edited configs
   /// never break startup.
   pub fn from_config_str(s: &str) -> Self {
     match s {
+      "YouTube" => Source::YouTube,
       "LosslessRelay" => Source::LosslessRelay,
+      "Spotify" => Source::Spotify,
       "Local" => Source::Local,
       "Subsonic" => Source::Subsonic,
       "Radio" => Source::Radio,
-      "YouTube" => Source::YouTube,
       "Qobuz" => Source::Qobuz,
       "AppleMusic" => Source::AppleMusic,
-      _ => Source::Spotify,
+      _ => Source::YouTube,
     }
   }
 

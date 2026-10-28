@@ -2251,15 +2251,15 @@ fn every_library_target_has_one_sidebar_row_with_a_distinct_label() {
     let expected = match target {
       LibraryTarget::LocalFiles => cfg!(feature = "local-files"),
       LibraryTarget::AiDj => cfg!(feature = "ai-dj"),
-      LibraryTarget::Podcasts => false,
+      LibraryTarget::Podcasts | LibraryTarget::Friends | LibraryTarget::Albums | LibraryTarget::Artists => false,
       LibraryTarget::Discover
       | LibraryTarget::RecentlyPlayed
-      | LibraryTarget::Friends
       | LibraryTarget::Stats
       | LibraryTarget::PlaylistSync
       | LibraryTarget::LikedSongs
-      | LibraryTarget::Albums
-      | LibraryTarget::Artists => true,
+      | LibraryTarget::SearchResults
+      | LibraryTarget::Playlists
+      | LibraryTarget::Settings => true,
     };
     assert_eq!(
       has_row(target),
@@ -2274,9 +2274,9 @@ fn every_library_target_has_one_sidebar_row_with_a_distinct_label() {
 fn library_rows_drop_the_spotify_rows_without_a_session() {
   let (app, _rx) = session_free_app_with_channel();
   let rows = app.library_rows();
-  assert!(rows.contains(&LibraryTarget::Friends));
   assert!(rows.contains(&LibraryTarget::Stats));
-  assert!(!rows.contains(&LibraryTarget::LikedSongs));
+  assert!(rows.contains(&LibraryTarget::SearchResults));
+  assert!(rows.contains(&LibraryTarget::Discover));
 
   let (app, _rx) = app_with_channel();
   assert_eq!(
@@ -2292,7 +2292,7 @@ fn library_rows_drop_the_spotify_rows_under_a_free_scope() {
   app.state_path = Some(dir.path().join("state.yml"));
   app.apply(Action::SelectSource(Source::Local));
   let rows = app.library_rows();
-  assert!(!rows.contains(&LibraryTarget::Discover));
+  assert!(rows.contains(&LibraryTarget::Discover));
   assert!(rows.contains(&LibraryTarget::Stats));
 }
 

@@ -332,6 +332,8 @@ pub enum IoEvent {
   LinkPlaylist(crate::core::playlist_sync::Endpoint, Source),
   /// Forget one playlist-sync link by id; the mirror playlists stay.
   RemovePlaylistSyncLink(String),
+  /// Import a playlist or track URL from Spotify or YouTube in background.
+  ImportPlaylistUrl(String),
   /// Start an in-app Spotify login: show the pairing code, open the browser and
   /// wait for the approval off the pump. Runs without a Spotify session
   /// (bypasses the auth gate).
@@ -571,6 +573,7 @@ impl Network {
         | IoEvent::RunPlaylistSync { .. }
         | IoEvent::LinkPlaylist(..)
         | IoEvent::RemovePlaylistSyncLink(_)
+        | IoEvent::ImportPlaylistUrl(_)
     )
   }
 
@@ -1150,6 +1153,12 @@ impl Network {
       }
       IoEvent::RemovePlaylistSyncLink(id) => {
         crate::infra::playlist_sync::spawn_remove_link(Arc::clone(&self.app), id);
+      }
+      IoEvent::ImportPlaylistUrl(url) => {
+        let app = Arc::clone(&self.app);
+        tokio::spawn(async move {
+          crate::sources::sync::worker::SyncWorker::import_url_background(app, url).await;
+        });
       }
     };
 
@@ -2144,6 +2153,7 @@ mod tests {
       },
       IoEvent::LinkPlaylist(master, Source::Qobuz),
       IoEvent::RemovePlaylistSyncLink("aaa".to_string()),
+      IoEvent::ImportPlaylistUrl("https://open.spotify.com/playlist/123".to_string()),
     ] {
       assert!(Network::event_bypasses_spotify_auth(&event));
       assert!(

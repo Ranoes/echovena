@@ -3,12 +3,13 @@ use super::*;
 /// Every sidebar row with what it needs; `App::library_rows` is the filtered list.
 pub(crate) fn library_row_requirements() -> &'static [(LibraryTarget, Requirement)] {
   &[
+    (LibraryTarget::SearchResults, Requirement::None),
     (LibraryTarget::Discover, Requirement::None),
-    (LibraryTarget::RecentlyPlayed, Requirement::None),
     (LibraryTarget::LikedSongs, Requirement::None),
-    (LibraryTarget::Albums, Requirement::None),
-    (LibraryTarget::Artists, Requirement::None),
+    (LibraryTarget::Playlists, Requirement::None),
+    (LibraryTarget::Settings, Requirement::None),
     (LibraryTarget::PlaylistSync, Requirement::None),
+    (LibraryTarget::RecentlyPlayed, Requirement::None),
     (LibraryTarget::Stats, Requirement::None),
     #[cfg(feature = "local-files")]
     (LibraryTarget::LocalFiles, Requirement::None),
@@ -527,6 +528,15 @@ impl App {
       LibraryTarget::AiDj => {
         #[cfg(feature = "ai-dj")]
         self.open_ai_dj_screen();
+      }
+      LibraryTarget::SearchResults => {
+        self.push_navigation_stack(RouteId::Search, ActiveBlock::SearchResultBlock);
+      }
+      LibraryTarget::Playlists => {
+        self.push_navigation_stack(RouteId::Home, ActiveBlock::MyPlaylists);
+      }
+      LibraryTarget::Settings => {
+        self.push_navigation_stack(RouteId::Settings, ActiveBlock::Settings);
       }
     }
   }

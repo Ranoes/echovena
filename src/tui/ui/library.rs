@@ -35,6 +35,7 @@ pub fn draw_library_block(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
 }
 
 /// Sidebar label for the pinned community playlist.
+#[allow(dead_code)]
 fn community_pin_label(app: &App) -> String {
   app.strings().sidebar.community_pin.to_string()
 }
@@ -184,111 +185,21 @@ pub fn draw_playlist_block(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
     return;
   }
 
-  // YouTube: the sidebar Playlists panel lists the user's *local* YouTube
-  // playlists (youtube_playlists.yml — no Google account), plus a create
-  // entry. Videos are found via search and added with `w`.
-  if app.active_source == Source::YouTube {
-    let mut items: Vec<String> = app
-      .youtube_playlists()
-      .iter()
-      .map(|p| format!("\u{1F4FC} {} ({})", p.name, p.track_count))
-      .collect();
-    items.push(strings.new_playlist.to_string());
-    draw_selectable_list(
-      f,
-      app,
-      layout_chunk,
-      strings.youtube_playlists,
-      &items,
-      highlight_state,
-      app.view.selected_playlist_index,
-      &app.view.playlist_scroll_offset,
-    );
-    return;
-  }
-
-  // Lossless Relay: the sidebar Playlists panel lists the synced and imported
-  // Spotify and YouTube playlists from the local SQLite database.
-  if app.active_source == Source::LosslessRelay {
-    let mut items: Vec<String> = Vec::new();
-    if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
-      if let Ok(playlists) = db.list_imported_playlists() {
-        for p in &playlists {
-          let badge = match p.platform.as_str() {
-            "spotify_synced" => "\u{1F504} [Synced Spotify]",
-            "spotify" => "\u{1F3B5} [Imported Spotify]",
-            "youtube" | "ytmusic" => "\u{1F4FC} [Imported YouTube]",
-            _ => "\u{2728} [Lossless Relay]",
-          };
-          items.push(format!("{} {} ({})", badge, p.title, p.track_count));
-        }
-      }
-    }
-    if items.is_empty() {
-      items.push("Press 'U' to import URL".to_string());
-    } else {
-      items.push("+ Import URL [Key U]".to_string());
-    }
-    draw_selectable_list(
-      f,
-      app,
-      layout_chunk,
-      "Lossless Relay Playlists",
-      &items,
-      highlight_state,
-      app.view.selected_playlist_index,
-      &app.view.playlist_scroll_offset,
-    );
-    return;
-  }
-
-  let display_items = app.get_playlist_display_items();
-
-  let playlist_items: Vec<String> = if app.playlist_folder_items().is_empty() {
-    // Fallback only when folder-aware items are not initialized yet. Keep the
-    // pin at row 0 so this branch stays consistent with the display-item count
-    // (which injects the pin) and the Enter/click index math.
-    let mut names: Vec<String> = Vec::new();
-    if app.community_pin_visible() {
-      names.push(community_pin_label(app));
-    }
-    if let Some(p) = app.playlists() {
-      names.extend(p.items.iter().map(|item| item.name.to_owned()));
-    }
-    names
-  } else {
-    display_items
-      .iter()
-      .map(|item| match item {
-        crate::core::app::PlaylistFolderItem::Folder(folder) => {
-          let name = folder.display_name(app.strings());
-          if name.starts_with('\u{2190}') {
-            // Back entry (already has arrow prefix)
-            name.into_owned()
-          } else {
-            format!("{FOLDER_ICON} {}", name)
-          }
-        }
-        crate::core::app::PlaylistFolderItem::Playlist { index, .. } => app
-          .all_playlists()
-          .get(*index)
-          .map(|p| p.name.clone())
-          .unwrap_or_else(|| strings.unknown.to_string()),
-        crate::core::app::PlaylistFolderItem::CommunityPin => community_pin_label(app),
-      })
-      .collect()
+  // Unified tabbed Playlist panel: [1: EchoVena | 2: Spotify | 3: YouTube]
+  let title = match app.view.playlist_panel_tab {
+    0 => " Playlists: [\u{25cf} EchoVena] [\u{25cb} Spotify] [\u{25cb} YouTube] (Tab) ",
+    1 => " Playlists: [\u{25cb} EchoVena] [\u{25cf} Spotify] [\u{25cb} YouTube] (Tab) ",
+    _ => " Playlists: [\u{25cb} EchoVena] [\u{25cb} Spotify] [\u{25cf} YouTube] (Tab) ",
   };
 
-  // "+ Add Playlist" is the leading row (row 0), above the display items.
-  let mut display_list = vec![strings.add_playlist.to_string()];
-  display_list.extend(playlist_items);
+  let items = crate::tui::handlers::playlist::get_playlist_tab_items(app);
 
   draw_selectable_list(
     f,
     app,
     layout_chunk,
-    strings.playlists,
-    &display_list,
+    title,
+    &items,
     highlight_state,
     app.view.selected_playlist_index,
     &app.view.playlist_scroll_offset,

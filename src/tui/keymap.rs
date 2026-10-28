@@ -702,7 +702,10 @@ pub fn default_binding(action: &Action) -> Exposure<TuiSurface> {
       | LibraryTarget::LikedSongs
       | LibraryTarget::Albums
       | LibraryTarget::Artists
-      | LibraryTarget::Podcasts,
+      | LibraryTarget::Podcasts
+      | LibraryTarget::SearchResults
+      | LibraryTarget::Playlists
+      | LibraryTarget::Settings,
     ) => literal(ENTER, "Library sidebar"),
     Action::OpenLibrary(LibraryTarget::LocalFiles) => {
       #[cfg(feature = "local-files")]

@@ -46,14 +46,18 @@ pub fn parse_spotify_url(input: &str) -> Option<SpotifyResource> {
             .trim_start_matches("open.spotify.com/");
 
         let parts: Vec<&str> = url_path.split('/').filter(|s| !s.is_empty()).collect();
-        if parts.len() >= 2 {
-            let id = parts[1].to_string();
-            return match parts[0] {
-                "track" => Some(SpotifyResource::Track(id)),
-                "album" => Some(SpotifyResource::Album(id)),
-                "playlist" => Some(SpotifyResource::Playlist(id)),
-                _ => None,
-            };
+        for (i, part) in parts.iter().enumerate() {
+            if *part == "track" || *part == "album" || *part == "playlist" {
+                if let Some(id) = parts.get(i + 1) {
+                    let id = id.to_string();
+                    return match *part {
+                        "track" => Some(SpotifyResource::Track(id)),
+                        "album" => Some(SpotifyResource::Album(id)),
+                        "playlist" => Some(SpotifyResource::Playlist(id)),
+                        _ => None,
+                    };
+                }
+            }
         }
     }
 
