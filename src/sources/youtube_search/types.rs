@@ -4,7 +4,6 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SearchScope {
     #[default]
-    All,
     Music,
     Album,
     Artist,
@@ -15,7 +14,6 @@ impl SearchScope {
     /// Returns the display label for the scope tab
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::All => "ALL",
             Self::Music => "MUSIC",
             Self::Album => "ALBUM",
             Self::Artist => "ARTIST",
@@ -26,7 +24,6 @@ impl SearchScope {
     /// Short label for tight layouts
     pub fn short_label(&self) -> &'static str {
         match self {
-            Self::All => "ALL",
             Self::Music => "MUSIC",
             Self::Album => "ALBUM",
             Self::Artist => "ARTIST",
@@ -37,7 +34,6 @@ impl SearchScope {
     /// InnerTube search filter params for YouTube Music
     pub fn innertube_params(&self) -> Option<&'static str> {
         match self {
-            Self::All => None,
             Self::Music => Some("EgWKAQIIAWoKEAkQBRAKEAMQBBAF"),
             Self::Album => Some("EgWKAQIBAWoKEAkQBRAKEAMQBBAF"),
             Self::Artist => Some("EgWKAQIgAWoKEAkQBRAKEAMQBBAF"),
@@ -48,11 +44,10 @@ impl SearchScope {
     /// Cycles forward to the next scope (e.g. on Tab)
     pub fn cycle_next(&self) -> Self {
         match self {
-            Self::All => Self::Music,
             Self::Music => Self::Album,
             Self::Album => Self::Artist,
             Self::Artist => Self::Video,
-            Self::Video => Self::All,
+            Self::Video => Self::Music,
         }
     }
 
@@ -64,11 +59,10 @@ impl SearchScope {
     /// Cycles backward to the previous scope (e.g. on Shift+Tab)
     pub fn cycle_prev(&self) -> Self {
         match self {
-            Self::All => Self::Video,
+            Self::Music => Self::Video,
             Self::Video => Self::Artist,
             Self::Artist => Self::Album,
             Self::Album => Self::Music,
-            Self::Music => Self::All,
         }
     }
 

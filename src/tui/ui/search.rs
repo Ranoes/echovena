@@ -191,7 +191,6 @@ pub fn draw_live_youtube_search(f: &mut Frame<'_>, app: &App, area: Rect) {
   ];
 
   let scopes = [
-    (SearchScope::All, "ALL"),
     (SearchScope::Music, "MUSIC"),
     (SearchScope::Album, "ALBUM"),
     (SearchScope::Artist, "ARTIST"),

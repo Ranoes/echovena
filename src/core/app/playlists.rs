@@ -313,13 +313,18 @@ impl App {
     if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
       if let Ok(Some(mut pl)) = db.get_imported_playlist(&playlist) {
         let count = pl.track_count;
+        let (title, artist) = if let Some(pending) = self.pending_playlist_track_add.as_ref() {
+          (pending.track_name.clone(), "YouTube".to_string())
+        } else {
+          (track.clone(), "Unknown Artist".to_string())
+        };
         let track_entry = crate::sources::lossless_relay::db::PlaylistTrack {
           playlist_id: playlist.clone(),
           position: count,
           source_track_id: track.clone(),
-          raw_title: track.clone(),
-          clean_title: track.clone(),
-          artist: "Unknown Artist".to_string(),
+          raw_title: title.clone(),
+          clean_title: title,
+          artist,
           album: None,
           duration_ms: 0,
           isrc: None,
@@ -368,7 +373,7 @@ impl App {
     let Some(track) = self.track_table.tracks.get(self.view.track_table_index) else {
       return;
     };
-    let track_id = track.id.clone();
+    let track_id = track.uri.clone().or_else(|| track.id.clone());
     let track_name = track.name.clone();
     self.begin_add_track_to_playlist_flow(track_id, track_name);
   }
@@ -376,6 +381,14 @@ impl App {
   /// Open the add-to-playlist picker for the item playing now, through the
   /// ownership order. A queued Spotify track stages the slot's own track.
   pub fn begin_add_playing_track_to_playlist_flow(&mut self) {
+    #[cfg(feature = "youtube")]
+    if let Some(yt_track) = self.youtube_playback.as_ref().and_then(|yt| yt.current()) {
+      let track_id = yt_track.uri.clone().or_else(|| yt_track.id.as_ref().map(|id| format!("youtube:video:{}", id)));
+      let track_name = yt_track.name.clone();
+      self.begin_add_track_to_playlist_flow(track_id, track_name);
+      return;
+    }
+
     match self.playing_item() {
       PlayingItem::Spotify(PlayableItem::Track(track)) => {
         let track_id = track.id.as_ref().map(|id| id.uri());

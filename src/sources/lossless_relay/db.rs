@@ -44,6 +44,18 @@ pub struct ResolutionEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DownloadedTrack {
+    pub source_track_id: String,
+    pub title: String,
+    pub artist: String,
+    pub album: Option<String>,
+    pub duration_ms: u64,
+    pub file_path: String,
+    pub cover_art_url: Option<String>,
+    pub downloaded_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LyricsEntry {
     pub source_track_id: String,
     pub isrc: Option<String>,
@@ -144,6 +156,17 @@ impl Database {
                 raw_elrc TEXT,
                 user_offset_ms INTEGER DEFAULT 0,
                 fetched_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS downloaded_tracks (
+                source_track_id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                artist TEXT NOT NULL,
+                album TEXT,
+                duration_ms INTEGER NOT NULL,
+                file_path TEXT NOT NULL,
+                cover_art_url TEXT,
+                downloaded_at INTEGER NOT NULL
             );
             "#,
         )
@@ -486,6 +509,67 @@ impl Database {
         )
         .context("failed to update lyric offset")?;
         Ok(())
+    }
+
+    pub fn add_downloaded_track(&self, track: &DownloadedTrack) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO downloaded_tracks (
+                source_track_id, title, artist, album, duration_ms, file_path, cover_art_url, downloaded_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ON CONFLICT(source_track_id) DO UPDATE SET
+                title = excluded.title,
+                artist = excluded.artist,
+                album = excluded.album,
+                duration_ms = excluded.duration_ms,
+                file_path = excluded.file_path,
+                cover_art_url = excluded.cover_art_url,
+                downloaded_at = excluded.downloaded_at
+            "#,
+            params![
+                track.source_track_id,
+                track.title,
+                track.artist,
+                track.album,
+                track.duration_ms as i64,
+                track.file_path,
+                track.cover_art_url,
+                track.downloaded_at,
+            ],
+        )
+        .context("failed to insert or update downloaded track")?;
+        Ok(())
+    }
+
+    pub fn list_downloaded_tracks(&self) -> Result<Vec<DownloadedTrack>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT source_track_id, title, artist, album, duration_ms, file_path, cover_art_url, downloaded_at
+            FROM downloaded_tracks
+            ORDER BY downloaded_at DESC
+            "#,
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let dur: i64 = row.get(4)?;
+            Ok(DownloadedTrack {
+                source_track_id: row.get(0)?,
+                title: row.get(1)?,
+                artist: row.get(2)?,
+                album: row.get(3)?,
+                duration_ms: dur.max(0) as u64,
+                file_path: row.get(5)?,
+                cover_art_url: row.get(6)?,
+                downloaded_at: row.get(7)?,
+            })
+        })?;
+
+        let mut tracks = Vec::new();
+        for r in rows {
+            tracks.push(r?);
+        }
+        Ok(tracks)
     }
 }
 

@@ -240,6 +240,7 @@ pub fn draw_action_bar(f: &mut Frame<'_>, app: &App, area: Rect) {
     ("Enter", "Play"),
     ("/", "Search"),
     ("p", "Paste URL"),
+    ("W", "Add Playing"),
     ("K", "Karaoke"),
     ("s", "Download"),
     ("d", "Sources"),

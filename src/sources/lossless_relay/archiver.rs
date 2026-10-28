@@ -166,7 +166,73 @@ pub async fn archive_single_track_with_ext_to(
     };
     db.upsert_resolution(&entry).ok();
 
+    // Register into downloaded_tracks for library display
+    let dl_track = crate::sources::lossless_relay::db::DownloadedTrack {
+        source_track_id: track.source_track_id.clone(),
+        title: track.clean_title.clone(),
+        artist: track.artist.clone(),
+        album: track.album.clone(),
+        duration_ms: track.duration_ms.max(0) as u64,
+        file_path: audio_path.to_string_lossy().to_string(),
+        cover_art_url: track.cover_art_url.clone(),
+        downloaded_at: chrono::Utc::now().timestamp(),
+    };
+    db.add_downloaded_track(&dl_track).ok();
+
     Ok(audio_path)
+}
+
+/// Scans the archive directory for existing audio tracks and registers them in the database.
+pub fn scan_and_sync_local_downloads(db: &Database, root: &Path) {
+    if !root.exists() {
+        return;
+    }
+    let mut dirs_to_visit = vec![root.to_path_buf()];
+    while let Some(current_dir) = dirs_to_visit.pop() {
+        if let Ok(entries) = fs::read_dir(&current_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    dirs_to_visit.push(path);
+                } else if path.is_file() {
+                    if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+                        if matches!(ext.to_lowercase().as_str(), "flac" | "opus" | "m4a" | "mp3" | "webm") {
+                            let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+                            let clean_title = if let Some((_, rest)) = file_stem.split_once(" - ") {
+                                rest.to_string()
+                            } else {
+                                file_stem.to_string()
+                            };
+                            let parent = path.parent();
+                            let album = parent.and_then(|p| p.file_name()).and_then(|s| s.to_str()).map(|s| s.to_string());
+                            let artist = parent
+                                .and_then(|p| p.parent())
+                                .and_then(|p| p.file_name())
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("Unknown Artist")
+                                .to_string();
+
+                            let track_id = format!("local:track:{}", sanitize_filename(&format!("{}-{}", artist, clean_title)));
+                            let dl_track = crate::sources::lossless_relay::db::DownloadedTrack {
+                                source_track_id: track_id.clone(),
+                                title: clean_title,
+                                artist,
+                                album,
+                                duration_ms: 0,
+                                file_path: path.to_string_lossy().to_string(),
+                                cover_art_url: None,
+                                downloaded_at: entry.metadata().ok().and_then(|m| m.modified().ok())
+                                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                    .map(|d| d.as_secs() as i64)
+                                    .unwrap_or_else(|| chrono::Utc::now().timestamp()),
+                            };
+                            let _ = db.add_downloaded_track(&dl_track);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Archives a single audio track to a designated root directory (defaults to FLAC)

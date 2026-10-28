@@ -17,12 +17,12 @@ mod tests {
 
     #[test]
     fn test_search_scope_cycle() {
-        let s = SearchScope::All;
-        assert_eq!(s.cycle_next(), SearchScope::Music);
-        assert_eq!(s.cycle_next().cycle_next(), SearchScope::Album);
-        assert_eq!(s.cycle_next().cycle_next().cycle_next(), SearchScope::Artist);
-        assert_eq!(s.cycle_next().cycle_next().cycle_next().cycle_next(), SearchScope::Video);
-        assert_eq!(s.cycle_next().cycle_next().cycle_next().cycle_next().cycle_next(), SearchScope::All);
+        let s = SearchScope::Music;
+        assert_eq!(s.cycle_next(), SearchScope::Album);
+        assert_eq!(s.cycle_next().cycle_next(), SearchScope::Artist);
+        assert_eq!(s.cycle_next().cycle_next().cycle_next(), SearchScope::Video);
+        assert_eq!(s.cycle_next().cycle_next().cycle_next().cycle_next(), SearchScope::Music);
+
 
         assert_eq!(s.cycle_prev(), SearchScope::Video);
         assert_eq!(s.cycle_prev().cycle_prev(), SearchScope::Artist);
@@ -30,7 +30,7 @@ mod tests {
 
     #[test]
     fn test_search_scope_params() {
-        assert_eq!(SearchScope::All.innertube_params(), None);
+
         assert!(SearchScope::Music.innertube_params().is_some());
         assert!(SearchScope::Album.innertube_params().is_some());
         assert!(SearchScope::Artist.innertube_params().is_some());
@@ -147,7 +147,7 @@ mod tests {
             }
         });
 
-        let results = client::parse_ytm_search_response(&mock_json, SearchScope::All);
+        let results = client::parse_ytm_search_response(&mock_json, SearchScope::Music);
         assert_eq!(results.len(), 2);
 
         // Top Card
@@ -229,11 +229,11 @@ mod tests {
         let (debouncer, mut rx) = DebouncedSearcher::with_duration(client, Duration::from_millis(50));
 
         // Submit rapid queries
-        debouncer.on_query_change("a", SearchScope::All);
+        debouncer.on_query_change("a", SearchScope::Music);
         tokio::time::sleep(Duration::from_millis(10)).await;
-        debouncer.on_query_change("ab", SearchScope::All);
+        debouncer.on_query_change("ab", SearchScope::Music);
         tokio::time::sleep(Duration::from_millis(10)).await;
-        debouncer.on_query_change("abc", SearchScope::All);
+        debouncer.on_query_change("abc", SearchScope::Music);
 
         // Clear immediately
         debouncer.clear();
@@ -249,11 +249,9 @@ mod tests {
         let mut app = App::default();
 
         // Initial scope
-        assert_eq!(app.search_scope, SearchScope::All);
+        assert_eq!(app.search_scope, SearchScope::Music);
 
         // Forward cycling
-        app.cycle_search_scope();
-        assert_eq!(app.search_scope, SearchScope::Music);
         app.cycle_search_scope();
         assert_eq!(app.search_scope, SearchScope::Album);
         app.cycle_search_scope();
@@ -261,7 +259,7 @@ mod tests {
         app.cycle_search_scope();
         assert_eq!(app.search_scope, SearchScope::Video);
         app.cycle_search_scope();
-        assert_eq!(app.search_scope, SearchScope::All);
+        assert_eq!(app.search_scope, SearchScope::Music);
 
         // Backward cycling
         app.cycle_search_scope_back();
@@ -272,8 +270,6 @@ mod tests {
         assert_eq!(app.search_scope, SearchScope::Album);
         app.cycle_search_scope_back();
         assert_eq!(app.search_scope, SearchScope::Music);
-        app.cycle_search_scope_back();
-        assert_eq!(app.search_scope, SearchScope::All);
 
         // Add mock items to live search
         app.live_search_items = vec![

@@ -423,6 +423,50 @@ impl App {
     &mut self.library.saved_tracks
   }
 
+  pub fn populate_saved_tracks_from_local_and_db(&mut self) {
+    if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+      if let Some(root) = crate::core::paths::music_archive_dir() {
+        crate::sources::lossless_relay::archiver::scan_and_sync_local_downloads(&db, &root);
+      }
+      if let Ok(downloaded) = db.list_downloaded_tracks() {
+        if !downloaded.is_empty() {
+          let local_tracks: Vec<crate::core::plugin_api::TrackInfo> = downloaded
+            .into_iter()
+            .enumerate()
+            .map(|(i, d)| crate::core::plugin_api::TrackInfo {
+              uri: Some(d.source_track_id.clone()),
+              name: d.title,
+              artists: vec![d.artist],
+              album: d.album.unwrap_or_default(),
+              duration_ms: d.duration_ms,
+              id: Some(d.source_track_id),
+              album_id: None,
+              artist_refs: Vec::new(),
+              is_playable: true,
+              is_local: true,
+              track_number: (i + 1) as u32,
+              explicit: false,
+              image_url: d.cover_art_url,
+              release_date: None,
+              generated_name: None,
+            })
+            .collect();
+
+          if self.track_table.tracks.is_empty() {
+            self.track_table.tracks = local_tracks;
+          } else {
+            for lt in local_tracks {
+              if !self.track_table.tracks.iter().any(|t| t.uri == lt.uri || t.id == lt.id) {
+                self.track_table.tracks.push(lt);
+              }
+            }
+          }
+          self.track_table.context = Some(TrackTableContext::SavedTracks);
+        }
+      }
+    }
+  }
+
   pub fn set_saved_tracks_to_table_continuous(&mut self) {
     if self.active_saved_track_filter.is_some() {
       return;
@@ -494,7 +538,10 @@ impl App {
       LibraryTarget::LikedSongs => {
         self.clear_saved_track_filter();
         self.reset_saved_tracks_view();
-        self.dispatch(IoEvent::GetCurrentSavedTracks(None));
+        if self.spotify_connected && self.active_source == crate::core::source::Source::Spotify {
+          self.dispatch(IoEvent::GetCurrentSavedTracks(None));
+        }
+        self.populate_saved_tracks_from_local_and_db();
         self.push_navigation_stack(RouteId::TrackTable, ActiveBlock::TrackTable);
       }
       LibraryTarget::Albums => {

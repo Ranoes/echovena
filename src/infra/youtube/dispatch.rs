@@ -38,7 +38,7 @@ use crate::core::source::{Searcher, Source};
 use crate::infra::audio::LocalPlayer;
 use crate::infra::network::IoEvent;
 use crate::infra::queue::{
-  advance_index, apply_resolved, is_placeholder, replay_file, snapshot_tracks,
+  advance_index, apply_resolved, replay_file, snapshot_tracks,
 };
 
 /// Skip direction within the YouTube queue.
@@ -399,13 +399,18 @@ async fn delete_playlist(app: &Arc<Mutex<App>>, uri: &str) {
 }
 
 /// Find a video's browse row by bare id or `youtube:` URI, in the search
-/// results or the track table (whichever view the add originated from).
+/// results, the track table, the active youtube playback session, or queue.
 fn find_video_row(app: &App, video_ref: &str) -> Option<TrackInfo> {
   let uri = super::uri_for_video_id(video_ref);
+  let clean_id = super::extract_youtube_video_id(video_ref);
   let matches = |t: &&TrackInfo| {
     t.id.as_deref() == Some(video_ref)
       || t.uri.as_deref() == Some(video_ref)
       || t.uri.as_deref() == Some(uri.as_str())
+      || (clean_id.is_some() && (
+        t.id.as_deref() == clean_id.as_deref()
+          || t.uri.as_deref().and_then(super::extract_youtube_video_id).as_deref() == clean_id.as_deref()
+      ))
   };
   app
     .search_results()
@@ -413,7 +418,57 @@ fn find_video_row(app: &App, video_ref: &str) -> Option<TrackInfo> {
     .as_ref()
     .and_then(|p| p.items.iter().find(matches))
     .or_else(|| app.track_table.tracks.iter().find(matches))
+    .or_else(|| {
+      app.youtube_playback.as_ref().and_then(|yt| {
+        yt.tracks.iter().find(matches)
+      })
+    })
     .cloned()
+    .or_else(|| {
+      if let Some(pending) = app.pending_playlist_track_add.as_ref() {
+        if pending.track_id == video_ref {
+          let vid = clean_id.clone().unwrap_or_else(|| video_ref.to_string());
+          return Some(TrackInfo {
+            id: Some(vid.clone()),
+            uri: Some(format!("youtube:video:{}", vid)),
+            name: pending.track_name.clone(),
+            artists: vec!["YouTube".to_string()],
+            album: String::new(),
+            duration_ms: 0,
+            album_id: None,
+            artist_refs: vec![],
+            is_playable: true,
+            is_local: false,
+            track_number: 1,
+            explicit: false,
+            image_url: None,
+            release_date: None,
+            generated_name: None,
+          });
+        }
+      }
+      if let Some(vid) = clean_id {
+        Some(TrackInfo {
+          id: Some(vid.clone()),
+          uri: Some(format!("youtube:video:{}", vid)),
+          name: video_ref.to_string(),
+          artists: vec!["YouTube".to_string()],
+          album: String::new(),
+          duration_ms: 0,
+          album_id: None,
+          artist_refs: vec![],
+          is_playable: true,
+          is_local: false,
+          track_number: 1,
+          explicit: false,
+          image_url: None,
+          release_date: None,
+          generated_name: None,
+        })
+      } else {
+        None
+      }
+    })
 }
 
 /// Add a video to a playlist, resolving its metadata from the browse views.
@@ -620,6 +675,23 @@ async fn download_audio(
     let tmp = NamedTempFile::with_suffix(".m4a").context("creating temp file for YouTube audio")?;
     return Ok((tmp, cached, None));
   }
+  // Check local offline archive in SQLite
+  if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+    let id1 = format!("yt:video:{}", video_id);
+    let id2 = format!("youtube:video:{}", video_id);
+    let res = db.get_resolution(&id1).ok().flatten()
+      .or_else(|| db.get_resolution(&id2).ok().flatten())
+      .or_else(|| db.get_resolution(video_id).ok().flatten());
+    if let Some(res) = res {
+      if let Some(archive_path_str) = res.local_archive_path {
+        let p = std::path::PathBuf::from(archive_path_str);
+        if p.exists() {
+          let tmp = NamedTempFile::with_suffix(".flac").context("creating temp file for YouTube audio")?;
+          return Ok((tmp, p, None));
+        }
+      }
+    }
+  }
   let tmp = NamedTempFile::with_suffix(".m4a").context("creating temp file for YouTube audio")?;
   let resolved = source.download_audio(video_id, tmp.path()).await?;
   let path = tmp.path().to_path_buf();
@@ -701,7 +773,7 @@ async fn resolve_or_extract_video_id(
       Some(vid) => Some(vid),
       None => {
         // Fallback to All scope
-        if let Ok(items) = client.search(clean_query, crate::sources::youtube_search::SearchScope::All).await {
+        if let Ok(items) = client.search(clean_query, crate::sources::youtube_search::SearchScope::Video).await {
           items.into_iter().find_map(|item| item.video_id)
         } else {
           None
@@ -792,24 +864,6 @@ async fn start_youtube_queue(app: &Arc<Mutex<App>>, uris: &[String], start_idx: 
     return;
   }
   let index = start_idx.min(tracks.len() - 1);
-
-  // A livestream (duration 0 in the search row) never finishes downloading —
-  // the tempfile fetch would just spin until the timeout. Refuse up front. A
-  // placeholder for an off-screen URI also reads 0, but only because its
-  // duration is unknown: that one downloads (#716).
-  if tracks[index].duration_ms == 0 && !is_placeholder(&tracks[index]) {
-    set_error(
-      app,
-      crate::infra::app_strings(app)
-        .await
-        .status
-        .infra
-        .youtube_no_live
-        .to_string(),
-    )
-    .await;
-    return;
-  }
 
   let video_id = match resolve_or_extract_video_id(app, &tracks[index]).await {
     Ok(id) => {
@@ -1008,21 +1062,6 @@ pub(crate) async fn play_index(app: &Arc<Mutex<App>>, target: usize) {
       },
     }
   };
-
-  if track.duration_ms == 0 && !is_placeholder(&track) {
-    teardown_youtube(app).await;
-    set_error(
-      app,
-      crate::infra::app_strings(app)
-        .await
-        .status
-        .infra
-        .youtube_no_live
-        .to_string(),
-    )
-    .await;
-    return;
-  }
 
   let video_id = match resolve_or_extract_video_id(app, &track).await {
     Ok(id) => id,

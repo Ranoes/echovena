@@ -99,7 +99,7 @@ impl Default for App {
       track_table_epoch: 0,
       radio_epoch: None,
       search_results: SearchResult::default(),
-      search_scope: crate::sources::youtube_search::SearchScope::All,
+      search_scope: crate::sources::youtube_search::SearchScope::Music,
       live_search_items: Vec::new(),
       live_search_suggestions: Vec::new(),
       live_search_loading: false,
