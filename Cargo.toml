@@ -168,7 +168,7 @@ objc2 = { version = "0.6", optional = true }
 block2 = { version = "0.6", optional = true }
 
 [features]
-default = ["telemetry", "streaming", "audio-viz-cpal", "macos-media", "discord-rpc", "mpris", "self-update", "windows-media", "scripting", "tui"]
+default = ["telemetry", "streaming", "audio-viz-cpal", "macos-media", "discord-rpc", "mpris", "self-update", "windows-media", "scripting", "tui", "youtube"]
 telemetry = []
 # The terminal frontend: gates `mod tui` and owns the terminal-only crates.
 # The headless CI leg omits it, so any `crate::tui` import from core/infra/cli
