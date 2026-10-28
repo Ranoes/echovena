@@ -33,7 +33,7 @@ pub fn queue_item_source(uri: &str) -> QueueItemSource {
     QueueItemSource::LocalFile
   } else if uri.starts_with("subsonic:") {
     QueueItemSource::Subsonic
-  } else if uri.starts_with("youtube:") {
+  } else if uri.starts_with("youtube:") || uri.starts_with("yt:") {
     QueueItemSource::YouTube
   } else if uri.starts_with("qobuz:") {
     QueueItemSource::Qobuz
@@ -63,7 +63,7 @@ pub fn queue_item_source(uri: &str) -> QueueItemSource {
 /// than have an empty handle queued for it.
 #[cfg_attr(not(any(feature = "mcp-server", feature = "ai-dj")), allow(dead_code))]
 pub fn is_playable_track_uri(uri: &str) -> bool {
-  ["spotify:track:", "file:", "subsonic:", "youtube:", "qobuz:"]
+  ["spotify:track:", "file:", "subsonic:", "youtube:", "yt:", "qobuz:"]
     .iter()
     .any(|prefix| {
       uri

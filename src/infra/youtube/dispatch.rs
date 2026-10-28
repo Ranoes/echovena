@@ -84,7 +84,7 @@ pub async fn route_youtube_event(app: &Arc<Mutex<App>>, event: &IoEvent) -> bool
     }
     // Start a queue of videos: handle if YouTube URI or if Spotify is not active & connected
     IoEvent::StartPlayback(None, Some(uris), offset) => {
-      let is_yt = uris.first().is_some_and(|u| is_youtube_uri(u));
+      let is_yt = uris.first().is_some_and(|u| is_youtube_uri(u)) || matches!(app.lock().await.track_table.context, Some(crate::core::app::TrackTableContext::YouTubePlaylist));
       let spotify_active = {
         let guard = app.lock().await;
         guard.active_source == Source::Spotify && guard.spotify_connected
@@ -99,7 +99,7 @@ pub async fn route_youtube_event(app: &Arc<Mutex<App>>, event: &IoEvent) -> bool
     }
     // Context with specific track(s) in queue
     IoEvent::StartPlayback(Some(_ctx), Some(uris), offset) => {
-      let is_yt = uris.first().is_some_and(|u| is_youtube_uri(u));
+      let is_yt = uris.first().is_some_and(|u| is_youtube_uri(u)) || matches!(app.lock().await.track_table.context, Some(crate::core::app::TrackTableContext::YouTubePlaylist));
       let spotify_active = {
         let guard = app.lock().await;
         guard.active_source == Source::Spotify && guard.spotify_connected
@@ -114,7 +114,7 @@ pub async fn route_youtube_event(app: &Arc<Mutex<App>>, event: &IoEvent) -> bool
     }
     // Context URI or single video with no surrounding list
     IoEvent::StartPlayback(Some(uri), None, offset) => {
-      let is_yt = is_youtube_uri(uri);
+      let is_yt = is_youtube_uri(uri) || matches!(app.lock().await.track_table.context, Some(crate::core::app::TrackTableContext::YouTubePlaylist));
       let spotify_active = {
         let guard = app.lock().await;
         guard.active_source == Source::Spotify && guard.spotify_connected

@@ -101,12 +101,21 @@ impl App {
 
     // Check local SQLite first (works without Spotify connection!)
     if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+      let clean_id = id_str
+        .strip_prefix("youtube:playlist:")
+        .or_else(|| id_str.strip_prefix("yt:playlist:"))
+        .or_else(|| id_str.strip_prefix("spotify:playlist:"))
+        .or_else(|| id_str.strip_prefix("sqlite:"))
+        .or_else(|| id_str.strip_prefix("echovena:playlist:"))
+        .unwrap_or(&id_str);
       let candidates = [
         id_str.clone(),
-        format!("spotify:playlist:{}", id_str),
-        format!("sqlite:{}", id_str),
-        format!("echovena:playlist:{}", id_str),
-        format!("yt:playlist:{}", id_str),
+        clean_id.to_string(),
+        format!("yt:playlist:{}", clean_id),
+        format!("youtube:playlist:{}", clean_id),
+        format!("spotify:playlist:{}", clean_id),
+        format!("sqlite:{}", clean_id),
+        format!("echovena:playlist:{}", clean_id),
       ];
       for cand in &candidates {
         if let Ok(tracks) = db.get_playlist_tracks(cand) {
@@ -132,13 +141,21 @@ impl App {
               })
               .collect();
             self.set_source_track_table(cand, track_infos, TrackTableContext::YouTubePlaylist);
+            if self.get_current_route().id != RouteId::TrackTable {
+              self.push_navigation_stack(RouteId::TrackTable, ActiveBlock::TrackTable);
+            }
             return;
           }
         }
       }
     }
 
-    if !self.spotify_connected {
+    if !self.spotify_connected
+      || self.active_source != crate::core::source::Source::Spotify
+      || id_str.starts_with("yt:")
+      || id_str.starts_with("youtube:")
+      || id_str.starts_with("PL")
+    {
       self.open_source_playlist_tracks(id_str);
       return;
     }
@@ -162,12 +179,21 @@ impl App {
 
     // Check if this is an imported SQLite playlist
     if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+      let clean_id = uri
+        .strip_prefix("youtube:playlist:")
+        .or_else(|| uri.strip_prefix("yt:playlist:"))
+        .or_else(|| uri.strip_prefix("spotify:playlist:"))
+        .or_else(|| uri.strip_prefix("sqlite:"))
+        .or_else(|| uri.strip_prefix("echovena:playlist:"))
+        .unwrap_or(&uri);
       let candidates = [
         uri.clone(),
-        format!("spotify:playlist:{}", uri),
-        format!("sqlite:{}", uri),
-        format!("echovena:playlist:{}", uri),
-        format!("yt:playlist:{}", uri),
+        clean_id.to_string(),
+        format!("yt:playlist:{}", clean_id),
+        format!("youtube:playlist:{}", clean_id),
+        format!("spotify:playlist:{}", clean_id),
+        format!("sqlite:{}", clean_id),
+        format!("echovena:playlist:{}", clean_id),
       ];
       for cand in &candidates {
         if let Ok(tracks) = db.get_playlist_tracks(cand) {
@@ -193,6 +219,9 @@ impl App {
               })
               .collect();
             self.set_source_track_table(cand, track_infos, TrackTableContext::YouTubePlaylist);
+            if self.get_current_route().id != RouteId::TrackTable {
+              self.push_navigation_stack(RouteId::TrackTable, ActiveBlock::TrackTable);
+            }
             return;
           }
         }
@@ -208,7 +237,11 @@ impl App {
         TrackTableContext::SubsonicPlaylist,
         IoEvent::GetSubsonicTracks(uri),
       )
-    } else if uri.starts_with(YOUTUBE_PLAYLIST_PREFIX) {
+    } else if uri.starts_with(YOUTUBE_PLAYLIST_PREFIX)
+      || uri.starts_with("yt:playlist:")
+      || uri.starts_with("youtube:")
+      || uri.starts_with("yt:")
+    {
       (
         TrackTableContext::YouTubePlaylist,
         IoEvent::GetYouTubeTracks(uri),

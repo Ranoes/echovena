@@ -202,6 +202,35 @@ fn process_input(app: &mut App, input: String) {
   // On searching for a track, clear the playlist selection
   app.view.selected_playlist_index = Some(0);
 
+  // 0. Detect YouTube or Spotify playlist URL and launch background import
+  if let Some(crate::sources::lossless_relay::youtube_importer::YouTubeResource::Playlist(ref pl_id)) =
+    crate::sources::lossless_relay::youtube_importer::parse_youtube_url(&input)
+  {
+    let trimmed = input.trim().to_string();
+    app.view.url_import_visible = true;
+    app.view.url_import_input = trimmed.chars().collect();
+    app.view.url_import_in_progress = true;
+    app.view.url_import_status = Some("Connecting and resolving YouTube playlist in background...".to_string());
+    app.set_status_message(format!("Importing YouTube playlist '{}' in background...", pl_id), 15);
+    app.dispatch(crate::infra::network::IoEvent::ImportPlaylistUrl(trimmed));
+    app.set_current_route_state(Some(ActiveBlock::Empty), Some(ActiveBlock::Empty));
+    return;
+  }
+
+  if let Some(crate::sources::lossless_relay::spotify_scraper::SpotifyResource::Playlist(ref pl_id)) =
+    crate::sources::lossless_relay::spotify_scraper::parse_spotify_url(&input)
+  {
+    let trimmed = input.trim().to_string();
+    app.view.url_import_visible = true;
+    app.view.url_import_input = trimmed.chars().collect();
+    app.view.url_import_in_progress = true;
+    app.view.url_import_status = Some("Connecting and resolving Spotify playlist in background...".to_string());
+    app.set_status_message(format!("Importing Spotify playlist '{}' in background...", pl_id), 15);
+    app.dispatch(crate::infra::network::IoEvent::ImportPlaylistUrl(trimmed));
+    app.set_current_route_state(Some(ActiveBlock::Empty), Some(ActiveBlock::Empty));
+    return;
+  }
+
   // 1. YouTube direct URL or video ID detection
   if input.contains("youtube.com/watch")
     || input.contains("youtu.be/")

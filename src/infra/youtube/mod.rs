@@ -194,6 +194,11 @@ impl YouTubePlaybackState {
 /// Whether a URI is owned by the YouTube source.
 pub fn is_youtube_uri(uri: &str) -> bool {
   uri.starts_with(YOUTUBE_PREFIX)
+    || uri.starts_with("yt:")
+    || uri.starts_with("youtube:video:")
+    || uri.starts_with("yt:video:")
+    || uri.starts_with("youtube:playlist:")
+    || uri.starts_with("yt:playlist:")
 }
 
 /// Strip the `youtube:` prefix and return the video id, validating its
@@ -202,7 +207,10 @@ pub fn is_youtube_uri(uri: &str) -> bool {
 /// URL structure.
 pub fn video_id_from_uri(uri: &str) -> Result<&str> {
   let id = uri
-    .strip_prefix(YOUTUBE_PREFIX)
+    .strip_prefix("youtube:video:")
+    .or_else(|| uri.strip_prefix("yt:video:"))
+    .or_else(|| uri.strip_prefix(YOUTUBE_PREFIX))
+    .or_else(|| uri.strip_prefix("yt:"))
     .ok_or_else(|| anyhow!("Not a YouTube URI: {}", uri))?;
   if id.is_empty()
     || !id
@@ -224,15 +232,25 @@ pub fn extract_youtube_video_id(input: &str) -> Option<String> {
   if trimmed.len() == 11 && trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
     return Some(trimmed.to_string());
   }
-  // 2. youtube: prefix
-  if let Some(id) = trimmed.strip_prefix(YOUTUBE_PREFIX) {
+  // 2. youtube: / yt: prefixes
+  let candidate = trimmed
+    .strip_prefix("youtube:video:")
+    .or_else(|| trimmed.strip_prefix("yt:video:"))
+    .or_else(|| trimmed.strip_prefix(YOUTUBE_PREFIX))
+    .or_else(|| trimmed.strip_prefix("yt:"));
+  if let Some(id) = candidate {
     let id = id.trim();
     if id.len() == 11 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
       return Some(id.to_string());
     }
   }
   // 3. URLs
-  if let Ok(url) = url::Url::parse(trimmed) {
+  let parse_target = if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+    format!("https://{}", trimmed)
+  } else {
+    trimmed.to_string()
+  };
+  if let Ok(url) = url::Url::parse(&parse_target) {
     if url.host_str().is_some_and(|h| h.contains("youtu.be")) {
       let path = url.path().trim_start_matches('/');
       if path.len() >= 11 {

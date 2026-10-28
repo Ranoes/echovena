@@ -93,27 +93,17 @@ pub fn handle_paste(text: String, app: &mut App) {
 
   // 1. If URL Import modal is open, paste directly into it
   if app.view.url_import_visible {
-    for c in cleaned.chars() {
-      app.view.url_import_input.push(c);
-    }
+    app.view.url_import_input = cleaned.chars().collect();
     app.set_status_message("Pasted URL from clipboard. Press Enter to import.".to_string(), 4);
     return;
   }
 
-  // 2. If Search input is focused, paste directly into search buffer
-  if app.get_current_route().active_block == ActiveBlock::Input {
-    for c in cleaned.chars() {
-      app.view.input.insert(app.view.input_idx, c);
-      app.view.input_idx += 1;
-      app.view.input_cursor_position += input::compute_character_width(c);
-    }
-    return;
-  }
-
-  // 3. If in normal mode and text looks like a URL or Spotify/YouTube link:
+  // 2. Check if text looks like a URL or Spotify/YouTube link:
   let is_url = cleaned.starts_with("http://")
     || cleaned.starts_with("https://")
     || cleaned.starts_with("spotify:")
+    || cleaned.starts_with("youtube:")
+    || cleaned.starts_with("yt:")
     || cleaned.starts_with("www.")
     || cleaned.contains("youtube.com")
     || cleaned.contains("youtu.be")
@@ -123,14 +113,25 @@ pub fn handle_paste(text: String, app: &mut App) {
     app.view.url_import_visible = true;
     app.view.url_import_input = cleaned.chars().collect();
     app.set_status_message("Pasted music URL! Press Enter to import.".to_string(), 5);
-  } else {
-    // If it's plain text pasted on main screen, open search and fill it
-    focus_global_search(app);
-    app.view.input = cleaned.chars().collect();
-    app.view.input_idx = app.view.input.len();
-    app.view.input_cursor_position = cleaned.len() as u16;
-    app.set_status_message("Pasted search query! Press Enter to search.".to_string(), 4);
+    return;
   }
+
+  // 3. If Search input is focused, paste directly into search buffer
+  if app.get_current_route().active_block == ActiveBlock::Input {
+    for c in cleaned.chars() {
+      app.view.input.insert(app.view.input_idx, c);
+      app.view.input_idx += 1;
+      app.view.input_cursor_position += input::compute_character_width(c);
+    }
+    return;
+  }
+
+  // If it's plain text pasted on main screen, open search and fill it
+  focus_global_search(app);
+  app.view.input = cleaned.chars().collect();
+  app.view.input_idx = app.view.input.len();
+  app.view.input_cursor_position = cleaned.len() as u16;
+  app.set_status_message("Pasted search query! Press Enter to search.".to_string(), 4);
 }
 
 pub fn handle_app(key: Key, app: &mut App) {
@@ -180,18 +181,14 @@ pub fn handle_app(key: Key, app: &mut App) {
       Key::Ctrl('v') => {
         if let Some(text) = app.get_clipboard_text() {
           let trimmed = text.trim_matches(|c| c == '\r' || c == '\n').to_string();
-          for c in trimmed.chars() {
-            app.view.url_import_input.push(c);
-          }
+          app.view.url_import_input = trimmed.chars().collect();
           app.set_status_message("Pasted URL from clipboard. Press Enter to import.".to_string(), 4);
         }
       }
       Key::Char('p') | Key::Char('P') if app.view.url_import_input.is_empty() => {
         if let Some(text) = app.get_clipboard_text() {
           let trimmed = text.trim_matches(|c| c == '\r' || c == '\n').to_string();
-          for c in trimmed.chars() {
-            app.view.url_import_input.push(c);
-          }
+          app.view.url_import_input = trimmed.chars().collect();
           app.set_status_message("Vim 'p' pasted URL from clipboard! Press Enter to import.".to_string(), 4);
         } else {
           app.view.url_import_input.push('p');

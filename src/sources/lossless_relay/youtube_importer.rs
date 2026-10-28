@@ -22,10 +22,18 @@ pub fn parse_youtube_url(input: &str) -> Option<YouTubeResource> {
     let trimmed = input.trim();
 
     // Direct ID or custom URI
-    if let Some(id) = trimmed.strip_prefix("yt:playlist:") {
+    if let Some(id) = trimmed
+        .strip_prefix("youtube:playlist:")
+        .or_else(|| trimmed.strip_prefix("yt:playlist:"))
+    {
         return Some(YouTubeResource::Playlist(id.to_string()));
     }
-    if let Some(id) = trimmed.strip_prefix("yt:video:") {
+    if let Some(id) = trimmed
+        .strip_prefix("youtube:video:")
+        .or_else(|| trimmed.strip_prefix("yt:video:"))
+        .or_else(|| trimmed.strip_prefix("youtube:"))
+        .or_else(|| trimmed.strip_prefix("yt:"))
+    {
         return Some(YouTubeResource::Video(id.to_string()));
     }
     if (trimmed.starts_with("PL") || trimmed.starts_with("OLAK5uy_") || trimmed.starts_with("RDCLAK5uy_") || trimmed.starts_with("VLPL"))
@@ -34,42 +42,68 @@ pub fn parse_youtube_url(input: &str) -> Option<YouTubeResource> {
         return Some(YouTubeResource::Playlist(trimmed.to_string()));
     }
 
-    // YouTu.be short URL: https://youtu.be/<videoId>?...
-    if trimmed.contains("youtu.be/") {
-        let path = trimmed
-            .split('?')
-            .next()?
-            .trim_start_matches("http://")
-            .trim_start_matches("https://")
-            .trim_start_matches("youtu.be/")
-            .trim_matches('/');
-        if !path.is_empty() {
-            return Some(YouTubeResource::Video(path.to_string()));
+    // YouTu.be short URL: https://youtu.be/<videoId>?list=...
+    if trimmed.contains("youtu.be") {
+        let parse_target = if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+            format!("https://{}", trimmed)
+        } else {
+            trimmed.to_string()
+        };
+        if let Ok(url) = url::Url::parse(&parse_target) {
+            for (k, v) in url.query_pairs() {
+                if k == "list" && !v.is_empty() {
+                    return Some(YouTubeResource::Playlist(v.to_string()));
+                }
+            }
+            let path = url.path().trim_start_matches('/');
+            let video_id = path.split('?').next().unwrap_or(path).trim_matches('/');
+            if !video_id.is_empty() {
+                return Some(YouTubeResource::Video(video_id.to_string()));
+            }
         }
     }
 
     // Standard YouTube / YouTube Music URL
-    if trimmed.contains("youtube.com/") {
-        let query_part = trimmed.split('?').nth(1)?;
-        let mut video_id: Option<String> = None;
-        let mut list_id: Option<String> = None;
+    if trimmed.contains("youtube.com") {
+        let parse_target = if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+            format!("https://{}", trimmed)
+        } else {
+            trimmed.to_string()
+        };
+        if let Ok(url) = url::Url::parse(&parse_target) {
+            let mut video_id: Option<String> = None;
+            let mut list_id: Option<String> = None;
 
-        for pair in query_part.split('&') {
-            if let Some((k, v)) = pair.split_once('=') {
+            for (k, v) in url.query_pairs() {
                 if k == "list" && !v.is_empty() {
                     list_id = Some(v.to_string());
                 } else if (k == "v" || k == "video_id") && !v.is_empty() {
                     video_id = Some(v.to_string());
                 }
             }
-        }
 
-        // Playlist takes precedence if present in playlist context, otherwise video
-        if let Some(list) = list_id {
-            return Some(YouTubeResource::Playlist(list));
-        }
-        if let Some(v) = video_id {
-            return Some(YouTubeResource::Video(v));
+            // Also check path prefixes: /playlist/<id> or /browse/VL<id>
+            let path = url.path().trim_start_matches('/');
+            if list_id.is_none() {
+                if let Some(rest) = path.strip_prefix("playlist/") {
+                    let clean = rest.split('?').next().unwrap_or(rest).trim_matches('/');
+                    if !clean.is_empty() {
+                        list_id = Some(clean.to_string());
+                    }
+                } else if let Some(rest) = path.strip_prefix("browse/VL") {
+                    let clean = rest.split('?').next().unwrap_or(rest).trim_matches('/');
+                    if !clean.is_empty() {
+                        list_id = Some(clean.to_string());
+                    }
+                }
+            }
+
+            if let Some(list) = list_id {
+                return Some(YouTubeResource::Playlist(list));
+            }
+            if let Some(v) = video_id {
+                return Some(YouTubeResource::Video(v));
+            }
         }
     }
 
@@ -546,6 +580,36 @@ mod tests {
 
         assert_eq!(
             parse_youtube_url("yt:playlist:PL12345"),
+            Some(YouTubeResource::Playlist("PL12345".to_string()))
+        );
+
+        assert_eq!(
+            parse_youtube_url("youtube:playlist:PL12345"),
+            Some(YouTubeResource::Playlist("PL12345".to_string()))
+        );
+
+        assert_eq!(
+            parse_youtube_url("youtube:video:dQw4w9WgXcQ"),
+            Some(YouTubeResource::Video("dQw4w9WgXcQ".to_string()))
+        );
+
+        assert_eq!(
+            parse_youtube_url("yt:video:dQw4w9WgXcQ"),
+            Some(YouTubeResource::Video("dQw4w9WgXcQ".to_string()))
+        );
+
+        assert_eq!(
+            parse_youtube_url("https://youtu.be/dQw4w9WgXcQ?list=PL12345"),
+            Some(YouTubeResource::Playlist("PL12345".to_string()))
+        );
+
+        assert_eq!(
+            parse_youtube_url("https://music.youtube.com/browse/VLPL12345"),
+            Some(YouTubeResource::Playlist("PL12345".to_string()))
+        );
+
+        assert_eq!(
+            parse_youtube_url("youtube.com/playlist?list=PL12345"),
             Some(YouTubeResource::Playlist("PL12345".to_string()))
         );
 

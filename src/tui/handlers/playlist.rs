@@ -393,6 +393,9 @@ pub fn handler(key: Key, app: &mut App) {
     }
     Key::Char('u') | Key::Char('U') => {
       app.view.url_import_visible = true;
+      app.view.url_import_input.clear();
+      app.view.url_import_status = None;
+      app.view.url_import_in_progress = false;
     }
     Key::Char('d') | Key::Char('D') | Key::Delete => {
       handle_delete_playlist(app);
@@ -465,6 +468,9 @@ pub(super) fn activate_selected(app: &mut App) {
         1 => {
           // "+ Import URL [Key U]"
           app.view.url_import_visible = true;
+          app.view.url_import_input.clear();
+          app.view.url_import_status = None;
+          app.view.url_import_in_progress = false;
         }
         _ => {
           let db_playlists = crate::sources::lossless_relay::db::Database::open_default()
@@ -489,6 +495,9 @@ pub(super) fn activate_selected(app: &mut App) {
       if idx == 0 {
         // "+ Import Spotify URL"
         app.view.url_import_visible = true;
+        app.view.url_import_input.clear();
+        app.view.url_import_status = None;
+        app.view.url_import_in_progress = false;
       } else {
         let spotify_db_playlists: Vec<_> = crate::sources::lossless_relay::db::Database::open_default()
           .ok()

@@ -314,7 +314,7 @@ fn on_enter(app: &mut App) {
       TrackTableContext::RecommendedTracks => {
         // The whole list is sent so playback can continue past the selection.
         let (uris, offset) = common_key_events::uri_playback_request(
-          tracks.iter().map(|track| track.uri.clone()),
+          tracks.iter().map(|track| track.uri.clone().or_else(|| track.id.clone())),
           *selected_index,
         );
         if !uris.is_empty() {
@@ -356,7 +356,7 @@ fn on_enter(app: &mut App) {
         // through. Routed to the local, subsonic or youtube player by URI
         // scheme (infra::local / infra::subsonic / infra::youtube dispatch).
         let (uris, offset) = common_key_events::uri_playback_request(
-          tracks.iter().map(|track| track.uri.clone()),
+          tracks.iter().map(|track| track.uri.clone().or_else(|| track.id.clone())),
           *selected_index,
         );
         if !uris.is_empty() {

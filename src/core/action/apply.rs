@@ -258,6 +258,8 @@ impl App {
               crate::core::app::TrackTableContext::MyPlaylists
             };
             self.open_playlist_tracks(playlist_id, context);
+          } else {
+            self.open_source_playlist_tracks(id);
           }
         }
         super::OpenTarget::SourcePlaylist(uri) => self.open_source_playlist_tracks(uri),
