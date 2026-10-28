@@ -18,21 +18,23 @@ mod tests {
     #[test]
     fn test_search_scope_cycle() {
         let s = SearchScope::All;
-        assert_eq!(s.cycle_next(), SearchScope::Songs);
-        assert_eq!(s.cycle_next().cycle_next(), SearchScope::Albums);
-        assert_eq!(s.cycle_next().cycle_next().cycle_next(), SearchScope::Playlists);
-        assert_eq!(s.cycle_next().cycle_next().cycle_next().cycle_next(), SearchScope::All);
+        assert_eq!(s.cycle_next(), SearchScope::Music);
+        assert_eq!(s.cycle_next().cycle_next(), SearchScope::Album);
+        assert_eq!(s.cycle_next().cycle_next().cycle_next(), SearchScope::Artist);
+        assert_eq!(s.cycle_next().cycle_next().cycle_next().cycle_next(), SearchScope::Video);
+        assert_eq!(s.cycle_next().cycle_next().cycle_next().cycle_next().cycle_next(), SearchScope::All);
 
-        assert_eq!(s.cycle_prev(), SearchScope::Playlists);
-        assert_eq!(s.cycle_prev().cycle_prev(), SearchScope::Albums);
+        assert_eq!(s.cycle_prev(), SearchScope::Video);
+        assert_eq!(s.cycle_prev().cycle_prev(), SearchScope::Artist);
     }
 
     #[test]
     fn test_search_scope_params() {
         assert_eq!(SearchScope::All.innertube_params(), None);
-        assert!(SearchScope::Songs.innertube_params().is_some());
-        assert!(SearchScope::Albums.innertube_params().is_some());
-        assert!(SearchScope::Playlists.innertube_params().is_some());
+        assert!(SearchScope::Music.innertube_params().is_some());
+        assert!(SearchScope::Album.innertube_params().is_some());
+        assert!(SearchScope::Artist.innertube_params().is_some());
+        assert!(SearchScope::Video.innertube_params().is_some());
     }
 
     #[test]
@@ -199,7 +201,7 @@ mod tests {
             }
         });
 
-        let results = client::parse_yt_web_search_response(&mock_json, SearchScope::Songs);
+        let results = client::parse_yt_web_search_response(&mock_json, SearchScope::Music);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].video_id.as_deref(), Some("kJQP7kiw5Fk"));
         assert_eq!(results[0].artist, "Luis Fonsi");
@@ -251,19 +253,27 @@ mod tests {
 
         // Forward cycling
         app.cycle_search_scope();
-        assert_eq!(app.search_scope, SearchScope::Songs);
+        assert_eq!(app.search_scope, SearchScope::Music);
         app.cycle_search_scope();
-        assert_eq!(app.search_scope, SearchScope::Albums);
+        assert_eq!(app.search_scope, SearchScope::Album);
         app.cycle_search_scope();
-        assert_eq!(app.search_scope, SearchScope::Playlists);
+        assert_eq!(app.search_scope, SearchScope::Artist);
+        app.cycle_search_scope();
+        assert_eq!(app.search_scope, SearchScope::Video);
         app.cycle_search_scope();
         assert_eq!(app.search_scope, SearchScope::All);
 
         // Backward cycling
         app.cycle_search_scope_back();
-        assert_eq!(app.search_scope, SearchScope::Playlists);
+        assert_eq!(app.search_scope, SearchScope::Video);
         app.cycle_search_scope_back();
-        assert_eq!(app.search_scope, SearchScope::Albums);
+        assert_eq!(app.search_scope, SearchScope::Artist);
+        app.cycle_search_scope_back();
+        assert_eq!(app.search_scope, SearchScope::Album);
+        app.cycle_search_scope_back();
+        assert_eq!(app.search_scope, SearchScope::Music);
+        app.cycle_search_scope_back();
+        assert_eq!(app.search_scope, SearchScope::All);
 
         // Add mock items to live search
         app.live_search_items = vec![
@@ -277,7 +287,7 @@ mod tests {
                 duration_ms: 180_000,
                 duration_str: "3:00".into(),
                 badges: vec![SearchBadge::Official],
-                scope: SearchScope::Songs,
+                scope: SearchScope::Music,
                 thumbnail_url: None,
                 is_playable: true,
             },
@@ -291,7 +301,7 @@ mod tests {
                 duration_ms: 210_000,
                 duration_str: "3:30".into(),
                 badges: vec![SearchBadge::Explicit],
-                scope: SearchScope::Songs,
+                scope: SearchScope::Music,
                 thumbnail_url: None,
                 is_playable: true,
             },
@@ -305,7 +315,7 @@ mod tests {
                 duration_ms: 240_000,
                 duration_str: "4:00".into(),
                 badges: vec![SearchBadge::Remaster],
-                scope: SearchScope::Songs,
+                scope: SearchScope::Music,
                 thumbnail_url: None,
                 is_playable: true,
             },
@@ -345,7 +355,7 @@ mod tests {
 
         let response = SearchResponse {
             query: "bohemian".to_string(),
-            scope: SearchScope::Songs,
+            scope: SearchScope::Music,
             items: vec![SearchResultItem {
                 id: "yt:video:fJ9rUzIMcZQ".into(),
                 video_id: Some("fJ9rUzIMcZQ".into()),
@@ -356,7 +366,7 @@ mod tests {
                 duration_ms: 354_000,
                 duration_str: "5:54".into(),
                 badges: vec![SearchBadge::Official, SearchBadge::Remaster],
-                scope: SearchScope::Songs,
+                scope: SearchScope::Music,
                 thumbnail_url: None,
                 is_playable: true,
             }],
@@ -401,7 +411,7 @@ mod tests {
                 duration_ms: 354_000,
                 duration_str: "5:54".into(),
                 badges: vec![SearchBadge::Official],
-                scope: SearchScope::Songs,
+                scope: SearchScope::Music,
                 thumbnail_url: None,
                 is_playable: true,
             },

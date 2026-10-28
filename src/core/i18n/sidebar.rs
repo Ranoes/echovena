@@ -49,7 +49,7 @@ pub const EN: SidebarStrings = SidebarStrings {
   discover: "Music Discovery",
   recently_played: "Recently Played",
   friends: "Friends",
-  stats: "Stats",
+  stats: "Listening History & Stats",
   playlist_sync: "Playlist Sync",
   liked_songs: "Liked Songs",
   song_list: "Song List",

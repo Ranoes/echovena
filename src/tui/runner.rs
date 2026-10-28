@@ -80,7 +80,7 @@ fn modal_captures_key_before_back(app: &App) -> bool {
 /// its route popped instead of receiving the key, however well its own handler
 /// copes with it.
 fn key_reaches_handlers_before_back(app: &App, key: Key) -> bool {
-  if app.view.url_import_visible || app.view.relay_status_visible || app.view.karaoke_stage_visible {
+  if app.view.url_import_visible || app.view.relay_status_visible || app.view.karaoke_stage_visible || app.view.sync_auth_modal.is_some() {
     return true;
   }
   if modal_captures_key_before_back(app) {
@@ -121,7 +121,7 @@ fn dispatch_key(key: Key, app: &mut App) -> bool {
   let current_active_block = app.get_current_route().active_block;
 
   // Immediate unconditional quit shortcut ('Q', Ctrl+C, Ctrl+Q) when not typing inside an input field
-  if matches!(key, Key::Ctrl('c') | Key::Ctrl('q') | Key::Char('Q')) && current_active_block != ActiveBlock::Input {
+  if matches!(key, Key::Ctrl('c') | Key::Ctrl('q') | Key::Char('Q')) && current_active_block != ActiveBlock::Input && !app.view.url_import_visible && app.view.sync_auth_modal.is_none() {
     app.close_io_channel();
     return true;
   }
@@ -556,7 +556,7 @@ pub async fn start_ui(
   // `App` construction must not touch stdout.
   #[cfg(feature = "cover-art")]
   crate::tui::cover_art::init_renderer();
-  execute!(stdout(), EnableMouseCapture)?;
+  let _ = execute!(stdout(), EnableMouseCapture);
   let _ = execute!(stdout(), EnableBracketedPaste);
   let keyboard_enhancement_supported = supports_keyboard_enhancement().unwrap_or(false);
   let keyboard_enhancement_enabled = keyboard_enhancement_supported
@@ -638,6 +638,7 @@ pub async fn start_ui(
         || (current_route.id == RouteId::LyricsView
           && app.lyrics_status() == crate::core::app::LyricsStatus::Found)
         || app.view.liked_song_animation_frame.is_some()
+        || app.view.karaoke_stage_visible
         || app.theme_fade_active();
       let current_tick_rate = if animation_active {
         app.user_config.behavior.animation_tick_rate_milliseconds

@@ -1419,11 +1419,11 @@ impl UserConfig {
           .ok_or_else(|| anyhow!("Invalid app config directory"))?;
 
         if !home_config_dir.exists() {
-          fs::create_dir(home_config_dir)?;
+          let _ = fs::create_dir_all(home_config_dir);
         }
 
         if !app_config_dir.exists() {
-          fs::create_dir(&app_config_dir)?;
+          let _ = fs::create_dir_all(&app_config_dir);
         }
 
         // Restrict the app's own config directory (holds config.yml, which

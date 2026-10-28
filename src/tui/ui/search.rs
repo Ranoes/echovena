@@ -191,10 +191,11 @@ pub fn draw_live_youtube_search(f: &mut Frame<'_>, app: &App, area: Rect) {
   ];
 
   let scopes = [
-    (SearchScope::All, "All"),
-    (SearchScope::Songs, "Songs"),
-    (SearchScope::Albums, "Albums"),
-    (SearchScope::Playlists, "Playlists"),
+    (SearchScope::All, "ALL (YouTube Music + Video)"),
+    (SearchScope::Music, "Music (Contain music)"),
+    (SearchScope::Album, "Album"),
+    (SearchScope::Artist, "Artist"),
+    (SearchScope::Video, "Video (Contain Music from music video)"),
   ];
 
   for (scope, label) in scopes {
@@ -874,7 +875,7 @@ mod tests {
   fn youtube_live_search_renders_scope_badges_and_results() {
     let mut app = App::default();
     app.active_source = crate::core::source::Source::YouTube;
-    app.search_scope = SearchScope::Songs;
+    app.search_scope = SearchScope::Music;
     app.live_search_suggestions = vec!["bohemian rhapsody".into()];
     app.live_search_items = vec![
       crate::sources::youtube_search::SearchResultItem {
@@ -887,7 +888,7 @@ mod tests {
         duration_ms: 354_000,
         duration_str: "5:54".into(),
         badges: vec![SearchBadge::Official, SearchBadge::Remaster],
-        scope: SearchScope::Songs,
+        scope: SearchScope::Music,
         thumbnail_url: None,
         is_playable: true,
       },

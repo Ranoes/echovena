@@ -393,12 +393,12 @@ fn parse_ytm_responsive_list_item(renderer: &Value, default_scope: SearchScope) 
     extract_list_item_badges(renderer, &mut badges);
 
     // Determine scope / classification
-    let scope = if browse_id.as_ref().is_some_and(|b| b.starts_with("VL") || b.starts_with("PL")) {
-        SearchScope::Playlists
-    } else if browse_id.as_ref().is_some_and(|b| b.starts_with("MPREb_")) {
-        SearchScope::Albums
+    let scope = if browse_id.as_ref().is_some_and(|b| b.starts_with("MPREb_")) {
+        SearchScope::Album
+    } else if browse_id.as_ref().is_some_and(|b| b.starts_with("UC")) {
+        SearchScope::Artist
     } else if video_id.is_some() {
-        SearchScope::Songs
+        SearchScope::Music
     } else {
         default_scope
     };

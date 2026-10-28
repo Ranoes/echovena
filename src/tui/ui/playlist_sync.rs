@@ -1,14 +1,13 @@
 use crate::core::app::{ActiveBlock, App};
-use crate::core::playlist_sync::{Link, UnmatchReason};
 use ratatui::{
   layout::{Constraint, Layout, Rect},
-  style::Style,
+  style::{Color, Modifier, Style},
   text::{Line, Span},
-  widgets::{Block, Borders, Paragraph, Wrap},
+  widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Wrap},
   Frame,
 };
 
-use super::util::{draw_selectable_list, get_color, hint_span};
+use super::util::{get_color, hint_span};
 
 pub fn draw_playlist_sync(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
   let current_route = app.get_current_route();
@@ -16,135 +15,217 @@ pub fn draw_playlist_sync(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
     current_route.active_block == ActiveBlock::PlaylistSync,
     current_route.hovered_block == ActiveBlock::PlaylistSync,
   );
-  let theme = app.user_config.theme;
-
-  let [links_area, detail_area, help_area] = layout_chunk.layout(&Layout::vertical([
-    Constraint::Min(4),
-    Constraint::Length(10),
+  let [settings_area, playlists_area, help_area] = layout_chunk.layout(&Layout::vertical([
+    Constraint::Length(8),
+    Constraint::Min(6),
     Constraint::Length(1),
   ]));
 
-  let links = app.playlist_sync_links();
-  let mut title = app.strings().screens.playlist_sync.to_string();
-  if app.playlist_sync_in_flight() {
-    title.push_str(app.strings().screens.syncing_suffix);
-  }
+  // 1. Settings & Platform Authentication Status Area
+  draw_sync_settings(f, app, settings_area, highlight_state);
 
-  if links.is_empty() {
-    let empty = Paragraph::new(app.strings().screens.playlist_links_empty)
-      .wrap(Wrap { trim: true })
-      .style(Style::default().fg(theme.hint.into()))
-      .block(
-        Block::default()
-          .borders(Borders::ALL)
-          .title(Span::styled(title, get_color(highlight_state, theme)))
-          .border_style(get_color(highlight_state, theme)),
-      );
-    f.render_widget(empty, links_area);
-  } else {
-    let rows: Vec<String> = links.iter().map(|link| link_row(app, link)).collect();
-    draw_selectable_list(
-      f,
-      app,
-      links_area,
-      &title,
-      &rows,
-      highlight_state,
-      Some(app.view.playlist_sync_selected_link.min(rows.len() - 1)),
-      &app.view.playlist_sync_scroll_offset,
-    );
-  }
+  // 2. Synced Cloud Playlists (SQLite Cache)
+  draw_synced_playlists(f, app, playlists_area, highlight_state);
 
-  draw_detail(f, app, detail_area);
+  // 3. Bottom Help & Action Bar
   draw_help_bar(f, app, help_area);
 }
 
-/// One link's row: the master, its source, and the sources it mirrors onto.
-fn link_row(app: &App, link: &Link) -> String {
-  let mut mirrors = link
-    .mirrors
-    .iter()
-    .map(|mirror| app.strings().sidebar.source_label(mirror.endpoint.source))
-    .collect::<Vec<&str>>()
-    .join(", ");
-  if mirrors.is_empty() {
-    mirrors = app.strings().screens.no_mirrors.to_string();
-  }
-  app.strings().screens.sync_link_row(
-    &link.master.name,
-    app.strings().sidebar.source_label(link.master.source),
-    &mirrors,
-    link.unmatched_count(),
-  )
-}
-
-/// What the unmatched line says about a track the last run could not place.
-fn reason_text(app: &App, reason: &UnmatchReason) -> String {
-  match reason {
-    UnmatchReason::NoCandidate => app.strings().screens.sync_no_match.to_string(),
-    UnmatchReason::NotSyncable => app.strings().screens.sync_cannot_match.to_string(),
-    UnmatchReason::SearchFailed(text) => app.strings().screens.sync_search_failed(text),
-  }
-}
-
-fn draw_detail(f: &mut Frame<'_>, app: &App, area: Rect) {
+fn draw_sync_settings(f: &mut Frame<'_>, app: &App, area: Rect, highlight_state: (bool, bool)) {
   let theme = app.user_config.theme;
-  let selected = app.selected_playlist_sync_link();
-  let title = selected
-    .zip(app.playlist_sync_last_report())
-    .and_then(|(link, report)| {
-      report
-        .links
-        .iter()
-        .find(|entry| entry.id == link.id)
-        .map(|entry| {
-          app
-            .strings()
-            .screens
-            .sync_last_run(&entry.line_with(app.strings()))
-        })
-    })
-    .unwrap_or_else(|| app.strings().screens.details.to_string());
+  let spotify_connected = crate::sources::sync::auth::SpotifyAuthHandler::resolve_sp_dc().is_some();
+  let youtube_connected = crate::sources::sync::auth::YouTubeAuthHandler::has_auth();
+  let sync_in_flight = app.playlist_sync_in_flight();
 
-  let mut lines: Vec<Line> = Vec::new();
-  if let Some(link) = selected {
-    for mirror in &link.mirrors {
-      lines.push(Line::from(Span::styled(
-        app.strings().screens.sync_mirror_detail(
-          app.strings().sidebar.source_label(mirror.endpoint.source),
-          mirror.matches.len(),
-          mirror.unmatched.len(),
-          mirror
-            .last_run
-            .as_deref()
-            .unwrap_or(app.strings().screens.never),
-        ),
-        Style::default().fg(theme.text.into()),
-      )));
-      for entry in &mirror.unmatched {
-        lines.push(Line::from(Span::styled(
-          format!(
-            "  {} - {}: {}",
-            entry.title,
-            entry.artist,
-            reason_text(app, &entry.reason)
-          ),
-          Style::default().fg(theme.hint.into()),
-        )));
-      }
-    }
-  }
+  let spotify_spans = if spotify_connected {
+    vec![
+      Span::styled("  ● Spotify:   ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+      Span::styled("CONNECTED (sp_dc authenticated)    ", Style::default().fg(Color::White)),
+      Span::styled("[Key C] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+      Span::styled("Update sp_dc Cookie", Style::default().fg(Color::Gray)),
+    ]
+  } else {
+    vec![
+      Span::styled("  ○ Spotify:   ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+      Span::styled("NOT CONFIGURED                     ", Style::default().fg(Color::DarkGray)),
+      Span::styled("[Key C] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+      Span::styled("Set sp_dc Cookie (Required for Spotify Sync)", Style::default().fg(Color::Yellow)),
+    ]
+  };
 
-  let detail = Paragraph::new(lines).block(
-    Block::default()
-      .borders(Borders::ALL)
-      .title(Span::styled(
-        title,
-        Style::default().fg(theme.inactive.into()),
-      ))
-      .border_style(Style::default().fg(theme.inactive.into())),
+  let youtube_spans = if youtube_connected {
+    vec![
+      Span::styled("  ● YouTube:   ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+      Span::styled("CONNECTED (cookies active)         ", Style::default().fg(Color::White)),
+      Span::styled("[Key Y] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+      Span::styled("Update YouTube Cookies", Style::default().fg(Color::Gray)),
+    ]
+  } else {
+    vec![
+      Span::styled("  ○ YouTube:   ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+      Span::styled("NOT CONFIGURED                     ", Style::default().fg(Color::DarkGray)),
+      Span::styled("[Key Y] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+      Span::styled("Set cookies.txt (Optional for Private Playlists)", Style::default().fg(Color::Yellow)),
+    ]
+  };
+
+  let sync_status_spans = if sync_in_flight {
+    vec![
+      Span::styled("  ⟳ Sync Engine: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+      Span::styled("SYNCING IN BACKGROUND...           ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+      Span::styled("[Key s / Enter] ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+      Span::styled("Trigger Sync", Style::default().fg(Color::DarkGray)),
+    ]
+  } else {
+    vec![
+      Span::styled("  ✔ Sync Engine: ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+      Span::styled("Ready (Bidirectional Sync Active)  ", Style::default().fg(Color::White)),
+      Span::styled("[Key s / Enter] ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+      Span::styled("Run Full Bidirectional Sync Now", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+    ]
+  };
+
+  let content = vec![
+    Line::from(""),
+    Line::from(spotify_spans),
+    Line::from(youtube_spans),
+    Line::from(sync_status_spans),
+  ];
+
+  let block = Block::default()
+    .borders(Borders::ALL)
+    .border_type(BorderType::Rounded)
+    .title(Span::styled(
+      " ⚡ Cloud Playlist Sync & Platform Settings ",
+      get_color(highlight_state, theme).add_modifier(Modifier::BOLD),
+    ))
+    .border_style(get_color(highlight_state, theme));
+
+  f.render_widget(Paragraph::new(content).block(block), area);
+}
+
+fn draw_synced_playlists(f: &mut Frame<'_>, app: &App, area: Rect, highlight_state: (bool, bool)) {
+  let theme = app.user_config.theme;
+
+  let imported_playlists = crate::sources::lossless_relay::db::Database::open_default()
+    .ok()
+    .and_then(|db| db.list_imported_playlists().ok())
+    .unwrap_or_default();
+
+  let title = format!(
+    " 📁 Synced Playlists (SQLite Local Cache: {} playlists) ",
+    imported_playlists.len()
   );
-  f.render_widget(detail, area);
+
+  if imported_playlists.is_empty() {
+    let empty_text = vec![
+      Line::from(""),
+      Line::from(Span::styled(
+        "No synced cloud playlists found in local database (~/.local/share/echovena/library.db).",
+        Style::default().fg(theme.hint.into()),
+      )),
+      Line::from(""),
+      Line::from(vec![
+        Span::styled("  • Press ", Style::default().fg(Color::DarkGray)),
+        Span::styled("[s]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(" or ", Style::default().fg(Color::DarkGray)),
+        Span::styled("[Enter]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(" to auto-fetch remote playlists from Spotify and YouTube.", Style::default().fg(Color::White)),
+      ]),
+      Line::from(vec![
+        Span::styled("  • Press ", Style::default().fg(Color::DarkGray)),
+        Span::styled("[C]", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::styled(" to configure your Spotify sp_dc authentication cookie.", Style::default().fg(Color::White)),
+      ]),
+      Line::from(vec![
+        Span::styled("  • Press ", Style::default().fg(Color::DarkGray)),
+        Span::styled("[Y]", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        Span::styled(" to configure your YouTube Netscape cookies.", Style::default().fg(Color::White)),
+      ]),
+      Line::from(vec![
+        Span::styled("  • Press ", Style::default().fg(Color::DarkGray)),
+        Span::styled("[U]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(" anywhere to paste and import any Spotify or YouTube URL directly.", Style::default().fg(Color::White)),
+      ]),
+    ];
+
+    let empty = Paragraph::new(empty_text)
+      .wrap(Wrap { trim: true })
+      .block(
+        Block::default()
+          .borders(Borders::ALL)
+          .border_type(BorderType::Rounded)
+          .title(Span::styled(&title, get_color(highlight_state, theme)))
+          .border_style(get_color(highlight_state, theme)),
+      );
+    f.render_widget(empty, area);
+  } else {
+    let selected_idx = app.view.playlist_sync_selected_link.min(imported_playlists.len().saturating_sub(1));
+
+    let items: Vec<ListItem> = imported_playlists
+      .iter()
+      .enumerate()
+      .map(|(idx, pl)| {
+        let is_selected = idx == selected_idx;
+        let prefix = if is_selected { " ▶ " } else { "   " };
+
+        let (tag_color, tag_text) = match pl.platform.as_str() {
+          "spotify" => (Color::Green, "[Spotify] "),
+          "youtube" => (Color::Red, "[YouTube] "),
+          _ => (Color::Cyan, "[EchoVena] "),
+        };
+
+        let mut spans = vec![
+          Span::styled(prefix, Style::default().fg(if is_selected { Color::Cyan } else { Color::DarkGray })),
+          Span::styled(tag_text, Style::default().fg(tag_color).add_modifier(Modifier::BOLD)),
+          Span::styled(
+            &pl.title,
+            if is_selected {
+              Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            } else {
+              Style::default().fg(Color::Gray)
+            },
+          ),
+        ];
+
+        if let Some(ref author) = pl.author {
+          if !author.is_empty() {
+            spans.push(Span::styled(format!("  by {}", author), Style::default().fg(Color::DarkGray)));
+          }
+        }
+
+        spans.push(Span::styled(
+          format!("  ({} tracks)", pl.track_count),
+          Style::default().fg(Color::Yellow),
+        ));
+
+        if pl.last_synced_at > 0 {
+          let synced_time = chrono::DateTime::from_timestamp(pl.last_synced_at, 0)
+            .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_else(|| "recent".to_string());
+          spans.push(Span::styled(format!("  Synced: {}", synced_time), Style::default().fg(Color::DarkGray)));
+        }
+
+        let item_style = if is_selected {
+          Style::default().bg(Color::Rgb(30, 35, 45))
+        } else {
+          Style::default()
+        };
+
+        ListItem::new(Line::from(spans)).style(item_style)
+      })
+      .collect();
+
+    let list = List::new(items).block(
+      Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(Span::styled(&title, get_color(highlight_state, theme)))
+        .border_style(get_color(highlight_state, theme)),
+    );
+
+    f.render_widget(list, area);
+  }
 }
 
 fn draw_help_bar(f: &mut Frame<'_>, app: &App, area: Rect) {
@@ -152,95 +233,19 @@ fn draw_help_bar(f: &mut Frame<'_>, app: &App, area: Rect) {
   let label = |text: &'static str| Span::styled(text, Style::default().fg(theme.inactive.into()));
 
   let line = Line::from(vec![
-    hint_span("s", theme),
-    label(app.strings().screens.sync_now_hint),
+    hint_span("s/Enter", theme),
+    label(" Sync Now   "),
+    hint_span("C", theme),
+    label(" Spotify sp_dc   "),
+    hint_span("Y", theme),
+    label(" YouTube Cookies   "),
     hint_span("D", theme),
-    label(app.strings().screens.remove_link_hint),
+    label(" Delete   "),
     hint_span("↑/↓", theme),
-    label(app.strings().screens.select_hint),
+    label(" Select   "),
     hint_span("←", theme),
-    label(app.strings().screens.back_hint),
+    label(" Back"),
   ]);
 
   f.render_widget(Paragraph::new(line), area);
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-  use crate::core::app::RouteId;
-  use crate::core::playlist_sync::{Endpoint, Mirror, Unmatched};
-  use crate::core::source::Source;
-  use ratatui::{backend::TestBackend, Terminal};
-  use std::collections::BTreeMap;
-
-  fn rendered(app: &App, area: Rect) -> String {
-    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
-    terminal.draw(|f| draw_playlist_sync(f, app, area)).unwrap();
-    let buffer = terminal.backend().buffer();
-    (0..area.height)
-      .flat_map(|y| (0..area.width).map(move |x| (x, y)))
-      .filter_map(|(x, y)| buffer.cell((x, y)).map(|c| c.symbol().to_string()))
-      .collect()
-  }
-
-  fn endpoint(source: Source, name: &str) -> Endpoint {
-    Endpoint {
-      source,
-      playlist_uri: format!("{}:playlist:9", source.to_config_str()),
-      name: name.to_string(),
-    }
-  }
-
-  #[test]
-  fn the_sync_screen_lists_links_and_their_mirrors() {
-    let mut app = App::default_connected();
-    let mut matches = BTreeMap::new();
-    matches.insert("master-1".to_string(), "mirror-1".to_string());
-    app.set_playlist_sync_links(vec![Link {
-      id: "aaaaaaaaaaaa".to_string(),
-      master: endpoint(Source::Spotify, "Road Trip"),
-      mirrors: vec![Mirror {
-        endpoint: endpoint(Source::Qobuz, "Road Trip"),
-        matches,
-        unmatched: vec![Unmatched {
-          master_key: "master-2".to_string(),
-          title: "Rare Take".to_string(),
-          artist: "Nobody".to_string(),
-          reason: UnmatchReason::NoCandidate,
-        }],
-        last_run: Some("2026-09-17T10:00:00Z".to_string()),
-      }],
-    }]);
-    app.push_navigation_stack(RouteId::PlaylistSync, ActiveBlock::PlaylistSync);
-
-    let content = rendered(&app, Rect::new(0, 0, 100, 20));
-
-    assert!(
-      content.contains("Road Trip [Spotify] -> Qobuz"),
-      "link row missing: {content}"
-    );
-    assert!(
-      content.contains("Qobuz: 1 matched, 1 unmatched, last run 2026-09-17T10:00:00Z"),
-      "mirror detail missing: {content}"
-    );
-    assert!(
-      content.contains("Rare Take - Nobody: no match"),
-      "unmatched detail missing: {content}"
-    );
-  }
-
-  #[test]
-  fn an_empty_sync_screen_explains_the_m_key() {
-    let mut app = App::default_connected();
-    app.push_navigation_stack(RouteId::PlaylistSync, ActiveBlock::PlaylistSync);
-
-    let content = rendered(&app, Rect::new(0, 0, 100, 20));
-
-    assert!(
-      content.contains("press m to mirror it"),
-      "empty hint missing: {content}"
-    );
-    assert!(content.contains("Sync now"), "help bar missing: {content}");
-  }
 }

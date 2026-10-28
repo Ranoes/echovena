@@ -222,6 +222,69 @@ pub fn handle_app(key: Key, app: &mut App) {
     return;
   }
 
+  // Sync Auth Modal: intercept keys when visible.
+  if let Some(modal_type) = app.view.sync_auth_modal {
+    match key {
+      Key::Esc => {
+        app.view.sync_auth_modal = None;
+      }
+      Key::Ctrl('v') => {
+        if let Some(text) = app.get_clipboard_text() {
+          let trimmed = text.trim_matches(|c| c == '\r' || c == '\n').to_string();
+          for c in trimmed.chars() {
+            app.view.sync_auth_input.push(c);
+          }
+          app.set_status_message("Pasted from clipboard. Press Enter to save.".to_string(), 4);
+        }
+      }
+      Key::Char('p') | Key::Char('P') if app.view.sync_auth_input.is_empty() => {
+        if let Some(text) = app.get_clipboard_text() {
+          let trimmed = text.trim_matches(|c| c == '\r' || c == '\n').to_string();
+          for c in trimmed.chars() {
+            app.view.sync_auth_input.push(c);
+          }
+          app.set_status_message("Vim 'p' pasted from clipboard. Press Enter to save.".to_string(), 4);
+        } else {
+          app.view.sync_auth_input.push('p');
+        }
+      }
+      Key::Backspace => {
+        app.view.sync_auth_input.pop();
+      }
+      Key::Ctrl('u') => {
+        app.view.sync_auth_input.clear();
+      }
+      Key::Enter => {
+        let input_str: String = app.view.sync_auth_input.iter().collect();
+        let trimmed = input_str.trim().to_string();
+        if !trimmed.is_empty() {
+          match modal_type {
+            crate::core::app::SyncAuthModalType::SpotifySpDc => {
+              if let Err(e) = crate::sources::sync::auth::SpotifyAuthHandler::save_sp_dc(&trimmed) {
+                app.set_status_message(format!("Failed to save Spotify sp_dc: {e}"), 6);
+              } else {
+                app.set_status_message("Spotify sp_dc saved! Press 's' to run bidirectional sync.".to_string(), 6);
+              }
+            }
+            crate::core::app::SyncAuthModalType::YouTubeCookies => {
+              if let Err(e) = crate::sources::sync::auth::YouTubeAuthHandler::save_cookies_file(&trimmed) {
+                app.set_status_message(format!("Failed to save YouTube cookies: {e}"), 6);
+              } else {
+                app.set_status_message("YouTube cookies saved! Press 's' to run bidirectional sync.".to_string(), 6);
+              }
+            }
+          }
+        }
+        app.view.sync_auth_modal = None;
+      }
+      Key::Char(c) => {
+        app.view.sync_auth_input.push(c);
+      }
+      _ => {}
+    }
+    return;
+  }
+
   // Plugin popup is a modal: intercept all keys before anything else.
   if app.plugin_popup.is_some() {
     match key {

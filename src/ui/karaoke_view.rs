@@ -141,6 +141,13 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
     };
 
     // Calculate current interpolated playback time T_now in milliseconds
+    #[cfg(feature = "youtube")]
+    let current_time_ms = if let Some(yt) = app.youtube_playback.as_ref() {
+        (yt.player.position().as_millis() as i64) + (offset_ms as i64)
+    } else {
+        (app.song_progress_ms as i64) + (offset_ms as i64)
+    };
+    #[cfg(not(feature = "youtube"))]
     let current_time_ms = (app.song_progress_ms as i64) + (offset_ms as i64);
 
     let chunks = Layout::default()
@@ -171,8 +178,16 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
     // 2. Lyrics Stage Rendering (Active line centered with 2 lines before & 2 lines after)
     let active_line_idx = timeline.active_line_index(current_time_ms).unwrap_or(0);
 
-    let start_idx = active_line_idx.saturating_sub(2);
-    let end_idx = (active_line_idx + 3).min(timeline.lines.len());
+    let available_lines = chunks[1].height as usize;
+    let add_spacing = available_lines > 18;
+    let half_window = if add_spacing {
+        (available_lines / 4).clamp(3, 6)
+    } else {
+        (available_lines / 2).clamp(4, 10)
+    };
+
+    let start_idx = active_line_idx.saturating_sub(half_window);
+    let end_idx = (active_line_idx + half_window + 2).min(timeline.lines.len());
 
     let mut rendered_lines = Vec::new();
 
@@ -258,7 +273,9 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
             );
         }
 
-        rendered_lines.push(Line::from("")); // Spacing
+        if add_spacing || is_active {
+            rendered_lines.push(Line::from("")); // Spacing
+        }
     }
 
     let lyrics_para = Paragraph::new(rendered_lines);

@@ -9,18 +9,42 @@ pub fn handler(key: Key, app: &mut App) {
       common_key_events::focus_sidebar(app)
     }
     k if common_key_events::down_event(k, &app.user_config.keys) => {
-      let next = common_key_events::on_down_press_handler(
-        app.playlist_sync_links(),
-        Some(app.view.playlist_sync_selected_link),
-      );
-      app.view.playlist_sync_selected_link = next;
+      let db_count = crate::sources::lossless_relay::db::Database::open_default()
+        .ok()
+        .and_then(|db| db.list_imported_playlists().ok())
+        .map(|list| list.len())
+        .unwrap_or(0);
+
+      if db_count > 0 {
+        app.view.playlist_sync_selected_link = (app.view.playlist_sync_selected_link + 1) % db_count;
+      } else {
+        let next = common_key_events::on_down_press_handler(
+          app.playlist_sync_links(),
+          Some(app.view.playlist_sync_selected_link),
+        );
+        app.view.playlist_sync_selected_link = next;
+      }
     }
     k if common_key_events::up_event(k, &app.user_config.keys) => {
-      let next = common_key_events::on_up_press_handler(
-        app.playlist_sync_links(),
-        Some(app.view.playlist_sync_selected_link),
-      );
-      app.view.playlist_sync_selected_link = next;
+      let db_count = crate::sources::lossless_relay::db::Database::open_default()
+        .ok()
+        .and_then(|db| db.list_imported_playlists().ok())
+        .map(|list| list.len())
+        .unwrap_or(0);
+
+      if db_count > 0 {
+        app.view.playlist_sync_selected_link = if app.view.playlist_sync_selected_link == 0 {
+          db_count.saturating_sub(1)
+        } else {
+          app.view.playlist_sync_selected_link - 1
+        };
+      } else {
+        let next = common_key_events::on_up_press_handler(
+          app.playlist_sync_links(),
+          Some(app.view.playlist_sync_selected_link),
+        );
+        app.view.playlist_sync_selected_link = next;
+      }
     }
     k if common_key_events::high_event(k) => {
       app.view.playlist_sync_selected_link = common_key_events::on_high_press_handler();
@@ -33,10 +57,32 @@ pub fn handler(key: Key, app: &mut App) {
       let next = common_key_events::on_low_press_handler(app.playlist_sync_links());
       app.view.playlist_sync_selected_link = next;
     }
-    Key::Char('s') => {
+    Key::Char('s') | Key::Enter => {
       app.apply(Action::RunPlaylistSync);
+      app.set_status_message("Bidirectional playlist sync started in background...".to_string(), 5);
     }
-    Key::Char('D') => app.begin_remove_playlist_sync_link(),
+    Key::Char('c') | Key::Char('C') => {
+      app.view.sync_auth_modal = Some(crate::core::app::SyncAuthModalType::SpotifySpDc);
+      app.view.sync_auth_input.clear();
+    }
+    Key::Char('y') | Key::Char('Y') => {
+      app.view.sync_auth_modal = Some(crate::core::app::SyncAuthModalType::YouTubeCookies);
+      app.view.sync_auth_input.clear();
+    }
+    Key::Char('D') => {
+      if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+        if let Ok(playlists) = db.list_imported_playlists() {
+          if let Some(target) = playlists.get(app.view.playlist_sync_selected_link) {
+            let id = target.id.clone();
+            let title = target.title.clone();
+            let _ = db.delete_imported_playlist(&id);
+            app.set_status_message(format!("Deleted playlist '{}' from local database", title), 4);
+            return;
+          }
+        }
+      }
+      app.begin_remove_playlist_sync_link();
+    }
     _ => {}
   }
 }

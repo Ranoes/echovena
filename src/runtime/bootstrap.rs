@@ -70,22 +70,6 @@ pub(super) fn setup_logging(
   let log_dir = crate::core::paths::app_log_dir();
   let log_path = crate::core::paths::app_log_path();
 
-  // Owner-only, not plain create_dir_all: this sits in the shared OS temp
-  // directory under a predictable name, so the default mode would leave the
-  // logs readable by every other local user.
-  crate::core::paths::ensure_private_dir(&log_dir).map_err(|e| {
-    anyhow::anyhow!(
-      "Failed to create log directory {}: {}",
-      log_dir.display(),
-      e
-    )
-  })?;
-  // The global level never goes above `Info`: dependencies (reqwest, hyper,
-  // rustls, h2, ...) are deliberately never pinned individually with
-  // `level_for`, so the global default is what keeps them quiet at
-  // `--debug`/`ECHOVENA_LOG=trace` without a pin list that has to be kept in
-  // sync as dependencies change. Below `Info` (e.g. `ECHOVENA_LOG=warn`) the
-  // requested level applies globally instead, since nothing needs raising.
   let global_level = resolved_level.min(log::LevelFilter::Info);
   let mut dispatch = fern::Dispatch::new()
     .format(|out, message, record| {
@@ -101,19 +85,36 @@ pub(super) fn setup_logging(
   for &(target, level) in target_levels {
     dispatch = dispatch.level_for(target, level);
   }
-  dispatch
-    .chain(fern::log_file(&log_path)?) // Use the dynamic path
-    .apply()
-    .map_err(|e| anyhow::anyhow!("Failed to initialize logger: {}", e))?;
 
-  // Print the location of log for user reference — on stderr, not stdout.
-  //
-  // stdout belongs to program output: `echovena history recap` writes HTML there
-  // and `echovena mcp` writes JSON-RPC there, where the MCP spec is explicit
-  // that a server "MUST NOT write anything to its stdout that is not a valid MCP
-  // message" (a stray line makes every client fail to start). A diagnostic notice
-  // is exactly what stderr is for, and it stays visible on a terminal either way.
-  eprintln!("Logging to: {}", log_path.display());
+  // Attempt to open the log file; fall back gracefully if running in a non-admin
+  // environment where temp or specific directories have restricted ACLs.
+  let chained_file = if crate::core::paths::ensure_private_dir(&log_dir).is_ok() {
+    fern::log_file(&log_path).ok()
+  } else {
+    None
+  };
+
+  let active_log_path = if let Some(file_dispatch) = chained_file {
+    dispatch = dispatch.chain(file_dispatch);
+    Some(log_path)
+  } else if let Some(fallback_dir) = crate::core::paths::app_state_dir().or_else(dirs::cache_dir) {
+    let _ = std::fs::create_dir_all(&fallback_dir);
+    let fallback_path = fallback_dir.join(format!("echovenalog{}", std::process::id()));
+    if let Ok(file_dispatch) = fern::log_file(&fallback_path) {
+      dispatch = dispatch.chain(file_dispatch);
+      Some(fallback_path)
+    } else {
+      None
+    }
+  } else {
+    None
+  };
+
+  if let Err(e) = dispatch.apply() {
+    eprintln!("Warning: Failed to initialize logger: {}", e);
+  } else if let Some(path) = active_log_path {
+    eprintln!("Logging to: {}", path.display());
+  }
 
   Ok(())
 }

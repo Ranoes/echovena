@@ -16,6 +16,12 @@ use super::*;
 ///
 /// Add a field here only when it is presentation state. A pending operation or
 /// a value another frontend would also need belongs on `App` itself.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SyncAuthModalType {
+  SpotifySpDc,
+  YouTubeCookies,
+}
+
 #[derive(Default)]
 pub struct ViewState {
   /// Terminal geometry as of the last frame. The small/large search limits
@@ -155,6 +161,10 @@ pub struct ViewState {
   pub url_import_status: Option<String>,
   /// Whether an import operation is running in the background
   pub url_import_in_progress: bool,
+  /// Modal dialog for configuring playlist sync credentials (Spotify sp_dc or YouTube cookies)
+  pub sync_auth_modal: Option<SyncAuthModalType>,
+  /// Input buffer for sync auth modal
+  pub sync_auth_input: Vec<char>,
   /// Whether the Full-Screen Karaoke Stage View (K key) is visible
   pub karaoke_stage_visible: bool,
   /// Whether Romanization/translation line display is enabled (T key)

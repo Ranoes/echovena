@@ -5,19 +5,32 @@ use std::fmt;
 pub enum SearchScope {
     #[default]
     All,
-    Songs,
-    Albums,
-    Playlists,
+    Music,
+    Album,
+    Artist,
+    Video,
 }
 
 impl SearchScope {
     /// Returns the display label for the scope tab
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::All => "ALL (YouTube Music + Video)",
+            Self::Music => "Music (Contain music)",
+            Self::Album => "Album",
+            Self::Artist => "Artist",
+            Self::Video => "Video (Contain Music from music video)",
+        }
+    }
+
+    /// Short label for tight layouts
+    pub fn short_label(&self) -> &'static str {
+        match self {
             Self::All => "All",
-            Self::Songs => "Songs",
-            Self::Albums => "Albums",
-            Self::Playlists => "Playlists",
+            Self::Music => "Music",
+            Self::Album => "Album",
+            Self::Artist => "Artist",
+            Self::Video => "Video",
         }
     }
 
@@ -25,19 +38,21 @@ impl SearchScope {
     pub fn innertube_params(&self) -> Option<&'static str> {
         match self {
             Self::All => None,
-            Self::Songs => Some("EgWKAQIIAWoKEAkQBRAKEAMQBBAF"),
-            Self::Albums => Some("EgWKAQIBAWoKEAkQBRAKEAMQBBAF"),
-            Self::Playlists => Some("EgWKAQIIAFoKEAkQBRAKEAMQBBAF"),
+            Self::Music => Some("EgWKAQIIAWoKEAkQBRAKEAMQBBAF"),
+            Self::Album => Some("EgWKAQIBAWoKEAkQBRAKEAMQBBAF"),
+            Self::Artist => Some("EgWKAQIgAWoKEAkQBRAKEAMQBBAF"),
+            Self::Video => Some("EgWKAQIQAWoKEAkQBRAKEAMQBBAF"),
         }
     }
 
     /// Cycles forward to the next scope (e.g. on Tab)
     pub fn cycle_next(&self) -> Self {
         match self {
-            Self::All => Self::Songs,
-            Self::Songs => Self::Albums,
-            Self::Albums => Self::Playlists,
-            Self::Playlists => Self::All,
+            Self::All => Self::Music,
+            Self::Music => Self::Album,
+            Self::Album => Self::Artist,
+            Self::Artist => Self::Video,
+            Self::Video => Self::All,
         }
     }
 
@@ -49,10 +64,11 @@ impl SearchScope {
     /// Cycles backward to the previous scope (e.g. on Shift+Tab)
     pub fn cycle_prev(&self) -> Self {
         match self {
-            Self::All => Self::Playlists,
-            Self::Playlists => Self::Albums,
-            Self::Albums => Self::Songs,
-            Self::Songs => Self::All,
+            Self::All => Self::Video,
+            Self::Video => Self::Artist,
+            Self::Artist => Self::Album,
+            Self::Album => Self::Music,
+            Self::Music => Self::All,
         }
     }
 
