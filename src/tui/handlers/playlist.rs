@@ -507,10 +507,14 @@ pub(super) fn activate_selected(app: &mut App) {
           let id_opt = app.all_playlists().get(spotify_idx).and_then(|p| p.id.clone());
           if let Some(id_str) = id_opt {
             app.view.active_playlist_index = Some(spotify_idx);
-            app.apply(Action::Open(OpenTarget::Playlist {
-              id: id_str,
-              from_search: false,
-            }));
+            if app.active_source == crate::core::source::Source::Spotify && app.spotify_connected {
+              app.apply(Action::Open(OpenTarget::Playlist {
+                id: id_str,
+                from_search: false,
+              }));
+            } else {
+              open_source_playlist(app, Some(id_str));
+            }
           }
         }
       }

@@ -15,22 +15,22 @@ impl SearchScope {
     /// Returns the display label for the scope tab
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::All => "ALL (YouTube Music + Video)",
-            Self::Music => "Music (Contain music)",
-            Self::Album => "Album",
-            Self::Artist => "Artist",
-            Self::Video => "Video (Contain Music from music video)",
+            Self::All => "ALL",
+            Self::Music => "MUSIC",
+            Self::Album => "ALBUM",
+            Self::Artist => "ARTIST",
+            Self::Video => "VIDEO",
         }
     }
 
     /// Short label for tight layouts
     pub fn short_label(&self) -> &'static str {
         match self {
-            Self::All => "All",
-            Self::Music => "Music",
-            Self::Album => "Album",
-            Self::Artist => "Artist",
-            Self::Video => "Video",
+            Self::All => "ALL",
+            Self::Music => "MUSIC",
+            Self::Album => "ALBUM",
+            Self::Artist => "ARTIST",
+            Self::Video => "VIDEO",
         }
     }
 

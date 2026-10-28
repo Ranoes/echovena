@@ -673,18 +673,24 @@ impl Network {
 
     if !bypass_auth {
       if self.spotify.is_none() {
-        self
-          .show_status_message(
-            self
-              .strings()
-              .await
-              .status
-              .infra
-              .spotify_not_connected
-              .to_string(),
-            6,
-          )
-          .await;
+        let is_spotify_active = {
+          let app = self.app.lock().await;
+          app.active_source == Source::Spotify
+        };
+        if is_spotify_active {
+          self
+            .show_status_message(
+              self
+                .strings()
+                .await
+                .status
+                .infra
+                .spotify_not_connected
+                .to_string(),
+              6,
+            )
+            .await;
+        }
         let mut app = self.app.lock().await;
         app.is_loading = false;
         app.is_volume_change_in_flight = false;

@@ -178,21 +178,24 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
         f.render_widget(gauge, chunks[0]);
     }
 
-    // 2. Lyrics Stage Rendering (Centered around active line, show more lyrics lines)
+    // 2. Lyrics Stage Rendering (Centered in middle of view with auto-scroll)
     let active_line_idx = timeline.active_line_index(current_time_ms).unwrap_or(0);
-
     let available_lines = chunks[1].height as usize;
-    // Show more lyrics context: display up to half of available space before and after
-    let half_window = (available_lines / 2).clamp(4, 15);
-
-    let start_idx = active_line_idx.saturating_sub(half_window);
-    let end_idx = (active_line_idx + half_window + 3).min(timeline.lines.len());
+    let mid_offset = available_lines / 2;
 
     let mut rendered_lines = Vec::new();
+    let mut active_row = 0;
 
-    for idx in start_idx..end_idx {
-        let line = &timeline.lines[idx];
+    // Pad top so initial lines can rest centered in the middle of the screen
+    for _ in 0..mid_offset {
+        rendered_lines.push(Line::from(""));
+    }
+
+    for (idx, line) in timeline.lines.iter().enumerate() {
         let is_active = idx == active_line_idx;
+        if is_active {
+            active_row = rendered_lines.len();
+        }
 
         let role_style = match line.vocal_role {
             VocalRole::Lead1 => Style::default().fg(Color::Cyan),
@@ -207,11 +210,10 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
         };
 
         if is_active {
-            // Render word-by-word with clean, crisp pacing (highlight word by word)
+            // Render word-by-word with clean, crisp pacing
             let mut spans = Vec::new();
 
             if line.words.is_empty() {
-                // Line-synced lyric without sub-word timestamps: highlight full active line
                 spans.push(Span::styled(
                     &line.text,
                     role_style.add_modifier(Modifier::BOLD).fg(Color::Yellow),
@@ -219,13 +221,11 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
             } else {
                 for word in &line.words {
                     if current_time_ms >= word.end_time_ms {
-                        // Word already sung: Bright crisp white
                         spans.push(Span::styled(
                             &word.text,
                             role_style.add_modifier(Modifier::BOLD).fg(Color::White),
                         ));
                     } else if current_time_ms >= word.start_time_ms {
-                        // Word currently active / being sung: Bold Yellow Underlined
                         spans.push(Span::styled(
                             &word.text,
                             role_style
@@ -234,7 +234,6 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
                                 .fg(Color::Yellow),
                         ));
                     } else {
-                        // Upcoming word: Dim / DarkGray
                         spans.push(Span::styled(
                             &word.text,
                             Style::default().fg(Color::DarkGray),
@@ -273,13 +272,12 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
             );
         }
 
-        // Add blank separator only around active line to keep dense lyrics visible
-        if is_active || available_lines > 25 {
-            rendered_lines.push(Line::from(""));
-        }
+        rendered_lines.push(Line::from(""));
     }
 
-    let lyrics_para = Paragraph::new(rendered_lines);
+    // Scroll so that `active_row` is always placed at the vertical midpoint (`mid_offset`)
+    let scroll_y = active_row.saturating_sub(mid_offset);
+    let lyrics_para = Paragraph::new(rendered_lines).scroll((scroll_y as u16, 0));
     f.render_widget(lyrics_para, chunks[1]);
 
     // 3. Footer controls

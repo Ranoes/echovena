@@ -98,32 +98,18 @@ impl App {
       }
       return;
     }
-    self.pending_playlist_open = Some(id_str.clone());
-    self.reset_playlist_tracks_view(playlist_id, context);
-    self.push_navigation_stack(RouteId::TrackTable, ActiveBlock::TrackTable);
-    self.set_status_message(self.strings().status.app.loading_playlist, 3);
-    self.dispatch(IoEvent::GetPlaylistItems(id_str, self.playlist_offset));
-  }
 
-  /// Open a decoded source's playlist or folder in the shared track table,
-  /// routed by URI scheme. Leaves the Spotify page cache alone.
-  pub(crate) fn open_source_playlist_tracks(&mut self, uri: String) {
-    if uri.starts_with("applemusic:") {
-      self.source_table_uri = None;
-      self.show_tracks_in_table(Vec::new(), TrackTableContext::AppleMusicPlaylist);
-      self.browse_apple_music(crate::infra::apple_music::Browse::Tracks(uri));
-      return;
-    }
-
-    // Check if this is an imported/synced SQLite playlist
-    if uri.starts_with("spotify:playlist:")
-      || uri.starts_with("spotify:personal:")
-      || uri.starts_with("sqlite:")
-      || uri.starts_with("relay:")
-      || uri.starts_with("yt:playlist:")
-    {
-      if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
-        if let Ok(tracks) = db.get_playlist_tracks(&uri) {
+    // Check local SQLite first (works without Spotify connection!)
+    if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+      let candidates = [
+        id_str.clone(),
+        format!("spotify:playlist:{}", id_str),
+        format!("sqlite:{}", id_str),
+        format!("echovena:playlist:{}", id_str),
+        format!("yt:playlist:{}", id_str),
+      ];
+      for cand in &candidates {
+        if let Ok(tracks) = db.get_playlist_tracks(cand) {
           if !tracks.is_empty() {
             let track_infos: Vec<crate::core::plugin_api::TrackInfo> = tracks
               .into_iter()
@@ -145,7 +131,68 @@ impl App {
                 generated_name: None,
               })
               .collect();
-            self.set_source_track_table(&uri, track_infos, TrackTableContext::YouTubePlaylist);
+            self.set_source_track_table(cand, track_infos, TrackTableContext::YouTubePlaylist);
+            return;
+          }
+        }
+      }
+    }
+
+    if !self.spotify_connected {
+      self.open_source_playlist_tracks(id_str);
+      return;
+    }
+
+    self.pending_playlist_open = Some(id_str.clone());
+    self.reset_playlist_tracks_view(playlist_id, context);
+    self.push_navigation_stack(RouteId::TrackTable, ActiveBlock::TrackTable);
+    self.set_status_message(self.strings().status.app.loading_playlist, 3);
+    self.dispatch(IoEvent::GetPlaylistItems(id_str, self.playlist_offset));
+  }
+
+  /// Open a decoded source's playlist or folder in the shared track table,
+  /// routed by URI scheme. Leaves the Spotify page cache alone.
+  pub(crate) fn open_source_playlist_tracks(&mut self, uri: String) {
+    if uri.starts_with("applemusic:") {
+      self.source_table_uri = None;
+      self.show_tracks_in_table(Vec::new(), TrackTableContext::AppleMusicPlaylist);
+      self.browse_apple_music(crate::infra::apple_music::Browse::Tracks(uri));
+      return;
+    }
+
+    // Check if this is an imported SQLite playlist
+    if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+      let candidates = [
+        uri.clone(),
+        format!("spotify:playlist:{}", uri),
+        format!("sqlite:{}", uri),
+        format!("echovena:playlist:{}", uri),
+        format!("yt:playlist:{}", uri),
+      ];
+      for cand in &candidates {
+        if let Ok(tracks) = db.get_playlist_tracks(cand) {
+          if !tracks.is_empty() {
+            let track_infos: Vec<crate::core::plugin_api::TrackInfo> = tracks
+              .into_iter()
+              .map(|t| crate::core::plugin_api::TrackInfo {
+                uri: Some(t.source_track_id.clone()),
+                name: t.clean_title,
+                artists: vec![t.artist],
+                album: t.album.unwrap_or_default(),
+                duration_ms: t.duration_ms as u64,
+                id: Some(t.source_track_id),
+                album_id: None,
+                artist_refs: Vec::new(),
+                is_playable: true,
+                is_local: false,
+                track_number: t.position as u32 + 1,
+                explicit: false,
+                image_url: t.cover_art_url,
+                release_date: None,
+                generated_name: None,
+              })
+              .collect();
+            self.set_source_track_table(cand, track_infos, TrackTableContext::YouTubePlaylist);
             return;
           }
         }

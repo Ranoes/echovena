@@ -97,15 +97,38 @@ pub async fn route_youtube_event(app: &Arc<Mutex<App>>, event: &IoEvent) -> bool
         false
       }
     }
-    // A single video with no surrounding list: a one-track queue.
-    IoEvent::StartPlayback(Some(uri), _, _) => {
+    // Context with specific track(s) in queue
+    IoEvent::StartPlayback(Some(_ctx), Some(uris), offset) => {
+      let is_yt = uris.first().is_some_and(|u| is_youtube_uri(u));
+      let spotify_active = {
+        let guard = app.lock().await;
+        guard.active_source == Source::Spotify && guard.spotify_connected
+      };
+      if is_yt || !spotify_active {
+        start_youtube_queue(app, uris, offset.unwrap_or(0)).await;
+        true
+      } else {
+        teardown_youtube(app).await;
+        false
+      }
+    }
+    // Context URI or single video with no surrounding list
+    IoEvent::StartPlayback(Some(uri), None, offset) => {
       let is_yt = is_youtube_uri(uri);
       let spotify_active = {
         let guard = app.lock().await;
         guard.active_source == Source::Spotify && guard.spotify_connected
       };
       if is_yt || !spotify_active {
-        start_youtube_queue(app, std::slice::from_ref(uri), 0).await;
+        let table_uris: Vec<String> = {
+          let guard = app.lock().await;
+          guard.track_table.tracks.iter().filter_map(|t| t.uri.clone().or_else(|| t.id.clone())).collect()
+        };
+        if !table_uris.is_empty() {
+          start_youtube_queue(app, &table_uris, offset.unwrap_or(0)).await;
+        } else {
+          start_youtube_queue(app, std::slice::from_ref(uri), 0).await;
+        }
         true
       } else {
         teardown_youtube(app).await;

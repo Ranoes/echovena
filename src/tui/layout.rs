@@ -21,6 +21,7 @@ pub struct MainLayoutAreas {
   pub action_bar: Rect,
 }
 
+#[allow(dead_code)]
 pub fn small_terminal_width(behavior: &BehaviorConfig) -> u16 {
   behavior.small_terminal_width.max(1)
 }
@@ -37,9 +38,9 @@ pub fn main_layout_margin(app: &App) -> u16 {
   }
 }
 
-pub fn is_wide_layout(app: &App) -> bool {
-  app.view.size.width >= small_terminal_width(&app.user_config.behavior)
-    && !app.user_config.behavior.enforce_wide_search_bar
+pub fn is_wide_layout(_app: &App) -> bool {
+  // EchoVena keeps the full-width search bar positioned at the top of the TUI
+  false
 }
 
 pub fn compute_main_layout(app: &App) -> Option<MainLayoutAreas> {
