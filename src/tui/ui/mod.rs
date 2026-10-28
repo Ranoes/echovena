@@ -161,8 +161,8 @@ fn draw_route_content(f: &mut Frame<'_>, app: &App, content_area: Rect) {
   };
 }
 
-/// Renders the permanent bottom action bar with live Vim hotkey hints.
-pub fn draw_action_bar(f: &mut Frame<'_>, _app: &App, area: Rect) {
+/// Renders the permanent bottom action bar with live Vim hotkey hints and program processing status.
+pub fn draw_action_bar(f: &mut Frame<'_>, app: &App, area: Rect) {
   if area.height == 0 || area.width == 0 {
     return;
   }
@@ -179,6 +179,60 @@ pub fn draw_action_bar(f: &mut Frame<'_>, _app: &App, area: Rect) {
   let label_style = Style::default().fg(Color::Gray);
   let sep_style = Style::default().fg(Color::DarkGray);
 
+  // Check for any processing message or status message returned by the program
+  let status_msg = app.status_message();
+  let is_error = app.status_message_is_error();
+  let is_syncing = app.playlist_sync_in_flight();
+  let is_importing = app.view.url_import_in_progress;
+  let is_searching = app.live_search_loading;
+  #[cfg(feature = "youtube")]
+  let is_advancing = app.youtube_playback.as_ref().map_or(false, |yt| yt.advancing);
+  #[cfg(not(feature = "youtube"))]
+  let is_advancing = false;
+
+  let mut spans = Vec::new();
+  let has_status = status_msg.is_some() || is_syncing || is_importing || is_searching || is_advancing;
+
+  if has_status {
+    if is_error {
+      let err_text = status_msg.unwrap_or("An unexpected error occurred");
+      spans.push(Span::styled("[✖ ERROR] ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)));
+      spans.push(Span::styled(err_text, Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD)));
+    } else if is_syncing {
+      spans.push(Span::styled("[⟳ SYNCING] ", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)));
+      spans.push(Span::styled("Bidirectional playlist sync in progress...", Style::default().fg(Color::White)));
+    } else if is_importing {
+      spans.push(Span::styled("[⟳ IMPORTING] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+      spans.push(Span::styled("Fetching & importing playlist from URL...", Style::default().fg(Color::White)));
+    } else if is_advancing {
+      spans.push(Span::styled("[⟳ BUFFERING] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+      spans.push(Span::styled("Loading next audio stream...", Style::default().fg(Color::White)));
+    } else if is_searching {
+      spans.push(Span::styled("[⟳ SEARCHING] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+      spans.push(Span::styled("Fetching YouTube results...", Style::default().fg(Color::White)));
+    } else if let Some(msg) = status_msg {
+      if msg.contains("Fetching")
+        || msg.contains("Loading")
+        || msg.contains("Archiving")
+        || msg.contains("Importing")
+        || msg.contains("Searching")
+        || msg.contains("Syncing")
+        || msg.contains("in background")
+      {
+        spans.push(Span::styled("[⟳ PROCESSING] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(msg, Style::default().fg(Color::LightYellow)));
+      } else if msg.contains("Playing") || msg.starts_with('♪') || msg.starts_with('\u{266a}') {
+        spans.push(Span::styled("[▶ PLAYING] ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(msg, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
+      } else {
+        spans.push(Span::styled("[ℹ STATUS] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(msg, Style::default().fg(Color::White)));
+      }
+    }
+
+    spans.push(Span::styled("  │  ", sep_style));
+  }
+
   let items = [
     ("Space", "Play/Pause"),
     ("Enter", "Play"),
@@ -191,9 +245,10 @@ pub fn draw_action_bar(f: &mut Frame<'_>, _app: &App, area: Rect) {
     ("q", "Quit"),
   ];
 
-  let mut spans = Vec::new();
   for (i, (key, label)) in items.iter().enumerate() {
-    if i > 0 {
+    if !has_status && i > 0 {
+      spans.push(Span::styled(" │ ", sep_style));
+    } else if has_status && i > 0 {
       spans.push(Span::styled(" │ ", sep_style));
     }
     spans.push(Span::styled(format!("[{key}] "), key_style));

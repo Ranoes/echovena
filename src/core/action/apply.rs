@@ -118,7 +118,52 @@ impl App {
         self.dispatch(IoEvent::SearchPlaylistTracks(playlist_id, query));
       }
       Action::CreatePlaylist { name, track_uris } => {
-        self.dispatch(IoEvent::CreateNewPlaylist(name, track_uris));
+        let now = std::time::SystemTime::now()
+          .duration_since(std::time::UNIX_EPOCH)
+          .map(|d| d.as_millis() as i64)
+          .unwrap_or(0);
+        let pl_id = format!("echovena:playlist:{:x}", now);
+        let imported = crate::sources::lossless_relay::db::ImportedPlaylist {
+          id: pl_id.clone(),
+          platform: match self.view.playlist_panel_tab {
+            1 => "spotify".to_string(),
+            2 => "youtube".to_string(),
+            _ => "echovena".to_string(),
+          },
+          title: name.clone(),
+          author: Some("EchoVena User".to_string()),
+          source_url: String::new(),
+          cover_art_url: None,
+          snapshot_id: None,
+          track_count: track_uris.len() as i64,
+          last_synced_at: now / 1000,
+        };
+        if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+          let _ = db.upsert_imported_playlist(&imported);
+          for (pos, uri) in track_uris.iter().enumerate() {
+            let track_entry = crate::sources::lossless_relay::db::PlaylistTrack {
+              playlist_id: pl_id.clone(),
+              position: pos as i64,
+              source_track_id: uri.clone(),
+              raw_title: uri.clone(),
+              clean_title: uri.clone(),
+              artist: "Unknown Artist".to_string(),
+              album: None,
+              duration_ms: 0,
+              isrc: None,
+              cover_art_url: None,
+            };
+            let _ = db.add_playlist_track(&track_entry);
+          }
+        }
+
+        if self.view.playlist_panel_tab == 2 || self.active_source == crate::core::source::Source::YouTube {
+          self.dispatch(IoEvent::CreateYouTubePlaylist(name.clone()));
+        }
+        if self.active_source == crate::core::source::Source::Spotify {
+          self.dispatch(IoEvent::CreateNewPlaylist(name.clone(), track_uris));
+        }
+        self.set_status_message(format!("Created playlist '{}'", name), 4);
       }
       Action::CreateYouTubePlaylist(name) => {
         self.dispatch(IoEvent::CreateYouTubePlaylist(name));

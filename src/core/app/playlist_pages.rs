@@ -200,6 +200,10 @@ impl App {
     self.source_table_uri = Some(uri.to_string());
   }
 
+  pub fn source_table_uri(&self) -> Option<&str> {
+    self.source_table_uri.as_deref()
+  }
+
   /// Show a decoded source's search hits as a songs-only result set with the
   /// songs block focused. The album/artist blocks stay empty: their Enter
   /// paths dispatch Spotify-bound events.

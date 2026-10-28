@@ -539,12 +539,36 @@ pub fn draw_song_table(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
   let title = if app.is_playlist_track_table_context() {
     if let Some(query) = app.pending_playlist_track_search.as_ref() {
       app.strings().screens.songs_searching(query)
+    } else if let Some(query) = app.active_playlist_track_filter.as_ref() {
+      app.strings().screens.songs_filtered(query)
+    } else if let Some(uri) = app.source_table_uri() {
+      let count = app.track_table.tracks.len();
+      if uri.starts_with("spotify:") {
+        let name = app.all_playlists().iter().find(|p| p.uri.as_str() == uri || p.id.as_deref().map(|id| format!("spotify:playlist:{id}")).as_deref() == Some(uri)).map(|p| p.name.clone());
+        let db_name = crate::sources::lossless_relay::db::Database::open_default().ok().and_then(|db| db.get_imported_playlist(uri).ok().flatten()).map(|p| p.title);
+        let pl_title = name.or(db_name).unwrap_or_else(|| "Playlist".to_string());
+        format!("Playlist: Spotify — {} ({} tracks)", pl_title, count)
+      } else if uri.starts_with("yt:") || uri.starts_with("youtube:") {
+        let name = app.youtube_playlists().iter().find(|p| p.uri.as_str() == uri).map(|p| p.name.clone());
+        let db_name = crate::sources::lossless_relay::db::Database::open_default().ok().and_then(|db| db.get_imported_playlist(uri).ok().flatten()).map(|p| p.title);
+        let pl_title = name.or(db_name).unwrap_or_else(|| "Playlist".to_string());
+        format!("Playlist: YouTube — {} ({} tracks)", pl_title, count)
+      } else if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+        if let Ok(Some(pl)) = db.get_imported_playlist(uri) {
+          let platform_label = match pl.platform.as_str() {
+            "spotify" | "spotify_synced" => "Spotify",
+            "youtube" | "ytmusic" => "YouTube",
+            _ => "EchoVena",
+          };
+          format!("Playlist: {} — {} ({} tracks)", platform_label, pl.title, count)
+        } else {
+          format!("Playlist: EchoVena — {} tracks", count)
+        }
+      } else {
+        format!("Playlist: EchoVena — {} tracks", count)
+      }
     } else {
-      app
-        .active_playlist_track_filter
-        .as_ref()
-        .map(|query| app.strings().screens.songs_filtered(query))
-        .unwrap_or_else(|| app.strings().screens.songs.to_string())
+      app.strings().screens.songs.to_string()
     }
   } else {
     app.strings().screens.songs.to_string()

@@ -150,17 +150,20 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
     #[cfg(not(feature = "youtube"))]
     let current_time_ms = (app.song_progress_ms as i64) + (offset_ms as i64);
 
+    let break_info = detect_instrumental_break(timeline, current_time_ms);
+    let break_height = if break_info.is_some() { 3 } else { 0 };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Instrumental Break Banner or Gap gauge
-            Constraint::Min(4),    // Lyrics Lines
-            Constraint::Length(2), // Controls footer
+            Constraint::Length(break_height), // Instrumental Break Banner or Gap gauge
+            Constraint::Min(4),               // Lyrics Lines
+            Constraint::Length(2),            // Controls footer
         ])
         .split(inner_area);
 
-    // 1. Instrumental Break Countdown Bar
-    if let Some((remaining_sec, progress)) = detect_instrumental_break(timeline, current_time_ms) {
+    // 1. Instrumental Break Countdown Bar (only rendered when active)
+    if let Some((remaining_sec, progress)) = break_info {
         let label = format!("♪ ♫ [Instrumental Break — {:04.1}s] ♫ ♪", remaining_sec);
         let gauge = Gauge::default()
             .block(Block::default().borders(Borders::NONE))
@@ -175,19 +178,15 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
         f.render_widget(gauge, chunks[0]);
     }
 
-    // 2. Lyrics Stage Rendering (Active line centered with 2 lines before & 2 lines after)
+    // 2. Lyrics Stage Rendering (Centered around active line, show more lyrics lines)
     let active_line_idx = timeline.active_line_index(current_time_ms).unwrap_or(0);
 
     let available_lines = chunks[1].height as usize;
-    let add_spacing = available_lines > 18;
-    let half_window = if add_spacing {
-        (available_lines / 4).clamp(3, 6)
-    } else {
-        (available_lines / 2).clamp(4, 10)
-    };
+    // Show more lyrics context: display up to half of available space before and after
+    let half_window = (available_lines / 2).clamp(4, 15);
 
     let start_idx = active_line_idx.saturating_sub(half_window);
-    let end_idx = (active_line_idx + half_window + 2).min(timeline.lines.len());
+    let end_idx = (active_line_idx + half_window + 3).min(timeline.lines.len());
 
     let mut rendered_lines = Vec::new();
 
@@ -208,38 +207,39 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
         };
 
         if is_active {
-            // Render word-by-word with live sub-word character slice sweep
+            // Render word-by-word with clean, crisp pacing (highlight word by word)
             let mut spans = Vec::new();
 
-            for word in &line.words {
-                if current_time_ms >= word.end_time_ms {
-                    // Sung word
-                    spans.push(Span::styled(
-                        &word.text,
-                        role_style.add_modifier(Modifier::BOLD).fg(Color::White),
-                    ));
-                } else if current_time_ms <= word.start_time_ms {
-                    // Unsung word
-                    spans.push(Span::styled(
-                        &word.text,
-                        Style::default().fg(Color::DarkGray),
-                    ));
-                } else {
-                    // Active word undergoing character-slice sweep
-                    let progress = word.progress(current_time_ms);
-                    let (sung, unsung) = compute_sub_word_slices(&word.text, progress);
-
-                    spans.push(Span::styled(
-                        sung,
-                        role_style
-                            .add_modifier(Modifier::BOLD)
-                            .add_modifier(Modifier::UNDERLINED)
-                            .fg(Color::Yellow),
-                    ));
-                    spans.push(Span::styled(
-                        unsung,
-                        Style::default().fg(Color::DarkGray),
-                    ));
+            if line.words.is_empty() {
+                // Line-synced lyric without sub-word timestamps: highlight full active line
+                spans.push(Span::styled(
+                    &line.text,
+                    role_style.add_modifier(Modifier::BOLD).fg(Color::Yellow),
+                ));
+            } else {
+                for word in &line.words {
+                    if current_time_ms >= word.end_time_ms {
+                        // Word already sung: Bright crisp white
+                        spans.push(Span::styled(
+                            &word.text,
+                            role_style.add_modifier(Modifier::BOLD).fg(Color::White),
+                        ));
+                    } else if current_time_ms >= word.start_time_ms {
+                        // Word currently active / being sung: Bold Yellow Underlined
+                        spans.push(Span::styled(
+                            &word.text,
+                            role_style
+                                .add_modifier(Modifier::BOLD)
+                                .add_modifier(Modifier::UNDERLINED)
+                                .fg(Color::Yellow),
+                        ));
+                    } else {
+                        // Upcoming word: Dim / DarkGray
+                        spans.push(Span::styled(
+                            &word.text,
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                    }
                 }
             }
 
@@ -273,8 +273,9 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
             );
         }
 
-        if add_spacing || is_active {
-            rendered_lines.push(Line::from("")); // Spacing
+        // Add blank separator only around active line to keep dense lyrics visible
+        if is_active || available_lines > 25 {
+            rendered_lines.push(Line::from(""));
         }
     }
 

@@ -213,17 +213,7 @@ impl App {
     // Under the YouTube source the destinations are the *local* playlists
     // (youtube_playlists.yml), not the Spotify ones — no user/playlist
     // fetches apply. The picker's Enter routes by source too.
-    if self.active_source == Source::YouTube {
-      if self.youtube_playlists.is_empty() {
-        // Kick a (re)load in case the file changed on disk; if it is
-        // genuinely empty the user needs to create a playlist first.
-        self.dispatch(IoEvent::GetYouTubePlaylists);
-        self.set_status_message(
-          self.strings().status.app.youtube_no_playlists.to_string(),
-          4,
-        );
-        return;
-      }
+    if self.active_source == Source::YouTube && !self.youtube_playlists.is_empty() {
       self.clear_dialog_state();
       self.pending_playlist_track_add = Some(PendingPlaylistTrackAdd {
         track_id,
@@ -320,6 +310,28 @@ impl App {
   /// exactly like the `w` key that has always driven it.
   /// Add a track to a playlist, routed by the playlist URI's scheme.
   pub(crate) fn add_track_to_playlist(&mut self, playlist: String, track: String) {
+    if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+      if let Ok(Some(mut pl)) = db.get_imported_playlist(&playlist) {
+        let count = pl.track_count;
+        let track_entry = crate::sources::lossless_relay::db::PlaylistTrack {
+          playlist_id: playlist.clone(),
+          position: count,
+          source_track_id: track.clone(),
+          raw_title: track.clone(),
+          clean_title: track.clone(),
+          artist: "Unknown Artist".to_string(),
+          album: None,
+          duration_ms: 0,
+          isrc: None,
+          cover_art_url: None,
+        };
+        let _ = db.add_playlist_track(&track_entry);
+        pl.track_count += 1;
+        let _ = db.upsert_imported_playlist(&pl);
+        self.set_status_message(format!("Added track to '{}'", pl.title), 4);
+      }
+    }
+
     if playlist.starts_with(YOUTUBE_PLAYLIST_PREFIX) {
       self.dispatch(IoEvent::AddTrackToYouTubePlaylist(playlist, track));
     } else {
@@ -334,6 +346,15 @@ impl App {
     track: String,
     position: usize,
   ) {
+    if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+      if let Ok(Some(mut pl)) = db.get_imported_playlist(&playlist) {
+        let _ = db.remove_playlist_track(&playlist, &track);
+        pl.track_count = (pl.track_count - 1).max(0);
+        let _ = db.upsert_imported_playlist(&pl);
+        self.set_status_message(format!("Removed track from '{}'", pl.title), 4);
+      }
+    }
+
     if playlist.starts_with(YOUTUBE_PLAYLIST_PREFIX) {
       self.dispatch(IoEvent::RemoveTrackFromYouTubePlaylist(playlist, track));
     } else {

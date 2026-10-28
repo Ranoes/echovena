@@ -107,10 +107,10 @@ pub fn handler(key: Key, app: &mut App) {
     k if k == app.user_config.keys.previous_page => {
       app.view.track_table_index = app.view.track_table_index.saturating_sub(page_step(app));
     }
-    Key::Char('w') => {
+    Key::Char('w') | Key::Char('a') => {
       app.apply(Action::OpenAddTrackDialog);
     }
-    Key::Char('x') => {
+    Key::Char('D') | Key::Char('x') | Key::Delete => {
       app.apply(Action::OpenRemoveTrackDialog);
     }
     // `handle_app` routes to `handle_escape` first, so `Esc` handling here unreachable.

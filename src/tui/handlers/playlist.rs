@@ -12,43 +12,43 @@ pub fn get_playlist_tab_items(app: &App) -> Vec<String> {
     // Tab 0: EchoVena Playlists
     0 => {
       let mut items = vec![
-        "+ Add Playlist".to_string(),
+        "+ Add Playlist [Key A]".to_string(),
         "+ Import URL [Key U]".to_string(),
-        "\u{1F504} Sync Remote Playlists [Ctrl+r]".to_string(),
+        "\u{1F504} Sync Remote Playlists [Key S]".to_string(),
       ];
       if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
         if let Ok(playlists) = db.list_imported_playlists() {
           for p in playlists {
-            let icon = match p.platform.as_str() {
-              "spotify_synced" | "spotify" => "\u{1F504} [Spotify]",
-              "youtube" | "ytmusic" => "\u{1F4FC} [YouTube]",
-              _ => "\u{2728} [EchoVena]",
+            let label = match p.platform.as_str() {
+              "spotify_synced" | "spotify" => "Playlist: Spotify",
+              "youtube" | "ytmusic" => "Playlist: YouTube",
+              _ => "Playlist: EchoVena",
             };
-            items.push(format!("{} {} ({})", icon, p.title, p.track_count));
+            items.push(format!("\u{2728} [{label}] {} ({} tracks)", p.title, p.track_count));
           }
         }
       }
       for p in app.local_playlists() {
-        items.push(format!("\u{1F4C1} [Local] {}", p.name));
+        items.push(format!("\u{1F4C1} [Playlist: EchoVena (Local)] {}", p.name));
       }
       items
     }
     // Tab 1: Spotify Playlists
     1 => {
-      let mut items = vec!["+ Add Spotify Playlist".to_string()];
+      let mut items = vec!["+ Add Spotify Playlist [Key A]".to_string()];
       let mut found_any = false;
       if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
         if let Ok(playlists) = db.list_imported_playlists() {
           for p in playlists.into_iter().filter(|p| p.platform.starts_with("spotify")) {
             found_any = true;
-            let icon = if p.platform == "spotify_synced" { "\u{1F504} [Synced]" } else { "\u{1F3B5} [Imported]" };
-            items.push(format!("{} {} ({})", icon, p.title, p.track_count));
+            let syn = if p.platform == "spotify_synced" { " (Synced)" } else { "" };
+            items.push(format!("\u{1F504} [Playlist: Spotify{syn}] {} ({} tracks)", p.title, p.track_count));
           }
         }
       }
       for p in app.all_playlists() {
         found_any = true;
-        items.push(format!("\u{1F3B5} {} ({})", p.name, p.track_count));
+        items.push(format!("\u{1F3B5} [Playlist: Spotify] {} ({} tracks)", p.name, p.track_count));
       }
       if !found_any {
         items.push("(No Spotify playlists \u{2014} press 'U' to import or 's' to sync)".to_string());
@@ -57,17 +57,17 @@ pub fn get_playlist_tab_items(app: &App) -> Vec<String> {
     }
     // Tab 2: YouTube Playlists
     _ => {
-      let mut items = vec!["+ New YouTube Playlist".to_string()];
+      let mut items = vec!["+ New YouTube Playlist [Key A]".to_string()];
       let mut found_any = false;
       for p in app.youtube_playlists() {
         found_any = true;
-        items.push(format!("\u{1F4FC} {} ({})", p.name, p.track_count));
+        items.push(format!("\u{1F4FC} [Playlist: YouTube] {} ({} tracks)", p.name, p.track_count));
       }
       if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
         if let Ok(playlists) = db.list_imported_playlists() {
           for p in playlists.into_iter().filter(|p| p.platform == "youtube" || p.platform == "ytmusic") {
             found_any = true;
-            items.push(format!("\u{1F4FC} [Imported] {} ({})", p.title, p.track_count));
+            items.push(format!("\u{1F4FC} [Playlist: YouTube (Saved)] {} ({} tracks)", p.title, p.track_count));
           }
         }
       }
@@ -213,6 +213,128 @@ fn remove_radio_station(app: &mut App) {
   };
 }
 
+fn handle_delete_playlist(app: &mut App) {
+  let Some(idx) = app.view.selected_playlist_index else {
+    app.set_status_message("No playlist selected to delete".to_string(), 4);
+    return;
+  };
+
+  if app.active_source == Source::Radio {
+    remove_radio_station(app);
+    return;
+  }
+
+  match app.view.playlist_panel_tab {
+    // Tab 0: EchoVena Playlists
+    0 => {
+      if idx < 3 {
+        app.set_status_message("Action item cannot be deleted".to_string(), 4);
+        return;
+      }
+      let db_playlists = crate::sources::lossless_relay::db::Database::open_default()
+        .ok()
+        .and_then(|db| db.list_imported_playlists().ok())
+        .unwrap_or_default();
+      let db_len = db_playlists.len();
+      let relative_idx = idx - 3;
+      if relative_idx < db_len {
+        let pl = &db_playlists[relative_idx];
+        let title = pl.title.clone();
+        let id = pl.id.clone();
+        if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+          let _ = db.delete_imported_playlist(&id);
+        }
+        app.set_status_message(format!("Deleted playlist '{}' from local database", title), 4);
+        let new_total = get_playlist_tab_items(app).len();
+        app.view.selected_playlist_index = if new_total > 0 { Some(idx.min(new_total - 1)) } else { None };
+      } else {
+        let local_idx = relative_idx - db_len;
+        if local_idx < app.local_playlists().len() {
+          let name = app.local_playlists()[local_idx].name.clone();
+          app.local_playlists_mut().remove(local_idx);
+          app.set_status_message(format!("Removed local playlist '{}'", name), 4);
+          let new_total = get_playlist_tab_items(app).len();
+          app.view.selected_playlist_index = if new_total > 0 { Some(idx.min(new_total - 1)) } else { None };
+        }
+      }
+    }
+    // Tab 1: Spotify Playlists
+    1 => {
+      if idx == 0 {
+        app.set_status_message("Cannot delete action item".to_string(), 4);
+        return;
+      }
+      let spotify_db: Vec<_> = crate::sources::lossless_relay::db::Database::open_default()
+        .ok()
+        .and_then(|db| db.list_imported_playlists().ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| p.platform.starts_with("spotify"))
+        .collect();
+      let db_len = spotify_db.len();
+      let relative_idx = idx - 1;
+      if relative_idx < db_len {
+        let pl = &spotify_db[relative_idx];
+        let title = pl.title.clone();
+        let id = pl.id.clone();
+        if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+          let _ = db.delete_imported_playlist(&id);
+        }
+        app.set_status_message(format!("Deleted Spotify playlist '{}' from local database", title), 4);
+        let new_total = get_playlist_tab_items(app).len();
+        app.view.selected_playlist_index = if new_total > 0 { Some(idx.min(new_total - 1)) } else { None };
+      } else {
+        let spotify_idx = relative_idx - db_len;
+        if let Some(playlist) = app.all_playlists().get(spotify_idx) {
+          let selected_playlist = playlist.name.clone();
+          app.view.dialog = Some(selected_playlist);
+          app.view.confirm = false;
+          app.push_navigation_stack(
+            RouteId::Dialog,
+            ActiveBlock::Dialog(DialogContext::PlaylistWindow),
+          );
+        }
+      }
+    }
+    // Tab 2: YouTube Playlists
+    _ => {
+      if idx == 0 {
+        app.set_status_message("Cannot delete action item".to_string(), 4);
+        return;
+      }
+      let yt_len = app.youtube_playlists().len();
+      let relative_idx = idx - 1;
+      if relative_idx < yt_len {
+        let playlist = app.youtube_playlists()[relative_idx].clone();
+        app.dispatch(crate::infra::network::IoEvent::DeleteYouTubePlaylist(playlist.uri.clone()));
+        app.set_status_message(format!("Deleted YouTube playlist '{}'", playlist.name), 4);
+        let new_total = get_playlist_tab_items(app).len();
+        app.view.selected_playlist_index = if new_total > 0 { Some(idx.min(new_total - 1)) } else { None };
+      } else {
+        let yt_db: Vec<_> = crate::sources::lossless_relay::db::Database::open_default()
+          .ok()
+          .and_then(|db| db.list_imported_playlists().ok())
+          .unwrap_or_default()
+          .into_iter()
+          .filter(|p| p.platform == "youtube" || p.platform == "ytmusic")
+          .collect();
+        let db_idx = relative_idx - yt_len;
+        if db_idx < yt_db.len() {
+          let pl = &yt_db[db_idx];
+          let title = pl.title.clone();
+          let id = pl.id.clone();
+          if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+            let _ = db.delete_imported_playlist(&id);
+          }
+          app.set_status_message(format!("Deleted YouTube playlist '{}'", title), 4);
+          let new_total = get_playlist_tab_items(app).len();
+          app.view.selected_playlist_index = if new_total > 0 { Some(idx.min(new_total - 1)) } else { None };
+        }
+      }
+    }
+  }
+}
+
 pub fn handler(key: Key, app: &mut App) {
   match key {
     k if common_key_events::toward_content_event(k, &app.user_config) => {
@@ -269,43 +391,17 @@ pub fn handler(key: Key, app: &mut App) {
       common_key_events::remember_sidebar_block(app, ActiveBlock::MyPlaylists);
       activate_selected(app);
     }
-    Key::Char('D') if app.active_source == Source::Radio => {
-      remove_radio_station(app);
+    Key::Char('a') | Key::Char('n') | Key::Char('N') | Key::Char('c') => {
+      app.push_navigation_stack(RouteId::CreatePlaylist, ActiveBlock::CreatePlaylistForm);
     }
-    // Deleting a local YouTube playlist: same confirm dialog UX as Spotify.
-    Key::Char('D') if app.active_source == Source::YouTube => {
-      if let Some(playlist) = app
-        .view
-        .selected_playlist_index
-        .and_then(|idx| app.youtube_playlists().get(idx))
-      {
-        app.view.dialog = Some(playlist.name.clone());
-        app.view.confirm = false;
-        app.push_navigation_stack(
-          RouteId::Dialog,
-          ActiveBlock::Dialog(DialogContext::YouTubePlaylistWindow),
-        );
-      }
+    Key::Char('u') | Key::Char('U') => {
+      app.view.url_import_visible = true;
     }
-    // Deleting playlists is a Spotify-only (PlaylistWriter) action.
-    Key::Char('D') if app.active_source == Source::Spotify => {
-      if let Some(selected_idx) = app.view.selected_playlist_index {
-        if let Some(PlaylistFolderItem::Playlist { index, .. }) = selected_idx
-          .checked_sub(1)
-          .and_then(|i| app.get_playlist_display_item_at(i))
-        {
-          if let Some(playlist) = app.all_playlists().get(*index) {
-            let selected_playlist = &playlist.name;
-            app.view.dialog = Some(selected_playlist.clone());
-            app.view.confirm = false;
-
-            app.push_navigation_stack(
-              RouteId::Dialog,
-              ActiveBlock::Dialog(DialogContext::PlaylistWindow),
-            );
-          }
-        }
-      }
+    Key::Char('s') | Key::Char('S') => {
+      app.apply(Action::RunPlaylistSync);
+    }
+    Key::Char('d') | Key::Char('D') | Key::Delete => {
+      handle_delete_playlist(app);
     }
     Key::Char('m')
       if app
