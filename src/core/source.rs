@@ -178,7 +178,7 @@ impl Source {
   /// Whether this source exposes a saved library — liked songs, saved albums,
   /// followed artists (implements [`LibraryProvider`]).
   pub fn supports_library(&self) -> bool {
-    matches!(self, Source::Spotify | Source::LosslessRelay)
+    matches!(self, Source::Spotify | Source::LosslessRelay | Source::YouTube)
   }
 
   /// Whether this source can mutate playlists: Spotify through the Web API,
@@ -191,7 +191,7 @@ impl Source {
   /// (requires a [`LibraryProvider`] that can accept writes). Currently
   /// equivalent to [`supports_library`](Self::supports_library).
   pub fn supports_like(&self) -> bool {
-    matches!(self, Source::Spotify | Source::LosslessRelay)
+    matches!(self, Source::Spotify | Source::LosslessRelay | Source::YouTube)
   }
 
   /// Whether playlists of this source can take part in a cross-source mirror.

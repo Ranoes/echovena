@@ -80,6 +80,8 @@ pub fn draw_main_layout(f: &mut Frame<'_>, app: &App) {
   crate::ui::modals::url_import::draw_url_import_modal(f, app);
   // Possibly draw Sync Auth modal (C / Y keys)
   crate::ui::modals::sync_auth::draw_sync_auth_modal(f, app);
+  // Possibly draw Manual YouTube Remap modal (m key)
+  crate::ui::modals::remap_track::draw_remap_track_modal(f, app);
 
   // Possibly draw Full-Screen Karaoke Stage View (K key)
   crate::ui::karaoke_view::draw_karaoke_stage_view(f, app);

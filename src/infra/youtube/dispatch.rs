@@ -82,17 +82,35 @@ pub async fn route_youtube_event(app: &Arc<Mutex<App>>, event: &IoEvent) -> bool
       remove_track_from_playlist(app, playlist_ref, video_ref).await;
       true
     }
-    // Start a queue of youtube videos: queue all and start at the offset.
-    IoEvent::StartPlayback(None, Some(uris), offset)
-      if uris.first().is_some_and(|u| is_youtube_uri(u)) =>
-    {
-      start_youtube_queue(app, uris, offset.unwrap_or(0)).await;
-      true
+    // Start a queue of videos: handle if YouTube URI or if Spotify is not active & connected
+    IoEvent::StartPlayback(None, Some(uris), offset) => {
+      let is_yt = uris.first().is_some_and(|u| is_youtube_uri(u));
+      let spotify_active = {
+        let guard = app.lock().await;
+        guard.active_source == Source::Spotify && guard.spotify_connected
+      };
+      if is_yt || !spotify_active {
+        start_youtube_queue(app, uris, offset.unwrap_or(0)).await;
+        true
+      } else {
+        teardown_youtube(app).await;
+        false
+      }
     }
-    // A single youtube video with no surrounding list: a one-track queue.
-    IoEvent::StartPlayback(Some(uri), _, _) if is_youtube_uri(uri) => {
-      start_youtube_queue(app, std::slice::from_ref(uri), 0).await;
-      true
+    // A single video with no surrounding list: a one-track queue.
+    IoEvent::StartPlayback(Some(uri), _, _) => {
+      let is_yt = is_youtube_uri(uri);
+      let spotify_active = {
+        let guard = app.lock().await;
+        guard.active_source == Source::Spotify && guard.spotify_connected
+      };
+      if is_yt || !spotify_active {
+        start_youtube_queue(app, std::slice::from_ref(uri), 0).await;
+        true
+      } else {
+        teardown_youtube(app).await;
+        false
+      }
     }
     // Bare "resume current" — ours only while YouTube owns the session.
     IoEvent::StartPlayback(None, None, None) => match player(app).await {
@@ -603,6 +621,119 @@ async fn decode_hint(app: &Arc<Mutex<App>>, e: impl std::fmt::Display) -> String
     .youtube_decode_failed(&e.to_string())
 }
 
+/// Resolve a track to a YouTube video ID.
+/// 1. If uri starts with `youtube:`, extracts video ID.
+/// 2. If it's a URL or contains video ID, extracts it.
+/// 3. Checks SQLite `resolution_cache` for existing manual remap or auto resolution.
+/// 4. Queries YouTube InnerTube search with song title and artists (zero API keys).
+/// 5. Caches the successful match in SQLite `resolution_cache` so future playback is instant!
+/// 6. Falls back to yt-dlp search if needed.
+async fn resolve_or_extract_video_id(
+  app: &Arc<Mutex<App>>,
+  track: &TrackInfo,
+) -> Result<String> {
+  // 1. Direct YouTube URI
+  if let Some(ref uri) = track.uri {
+    if let Ok(id) = video_id_from_uri(uri) {
+      return Ok(id.to_string());
+    }
+    if let Some(id) = super::extract_youtube_video_id(uri) {
+      return Ok(id);
+    }
+  }
+
+  // 2. Check SQLite resolution cache
+  let track_key = track.uri.clone().unwrap_or_else(|| {
+    track.id.clone().unwrap_or_else(|| format!("{}:{}", track.artists.join(", "), track.name))
+  });
+
+  if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+    if let Ok(Some(entry)) = db.get_resolution(&track_key) {
+      if let Some(path) = entry.local_archive_path {
+        if let Some(id) = super::extract_youtube_video_id(&path) {
+          return Ok(id);
+        }
+      }
+    }
+  }
+
+  // 3. Search via YouTube InnerTube (fast, zero API keys)
+  let query = format!("{} {}", track.name, track.artists.join(" "));
+  let clean_query = query.trim();
+  if !clean_query.is_empty() {
+    {
+      let mut guard = app.lock().await;
+      guard.set_status_message(format!("\u{1F50D} Resolving '{}' on YouTube...", track.name), 15);
+    }
+
+    let client = crate::sources::youtube_search::InnerTubeClient::new();
+    // First try music scope
+    let search_res = client.search(clean_query, crate::sources::youtube_search::SearchScope::Music).await;
+    let found = match search_res {
+      Ok(items) if !items.is_empty() => items.into_iter().find_map(|item| item.video_id),
+      _ => None,
+    };
+
+    let video_id_opt = match found {
+      Some(vid) => Some(vid),
+      None => {
+        // Fallback to All scope
+        if let Ok(items) = client.search(clean_query, crate::sources::youtube_search::SearchScope::All).await {
+          items.into_iter().find_map(|item| item.video_id)
+        } else {
+          None
+        }
+      }
+    };
+
+    if let Some(vid) = video_id_opt {
+      // Cache resolution in SQLite
+      if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+        let entry = crate::sources::lossless_relay::db::ResolutionEntry {
+          source_track_id: track_key,
+          isrc: None,
+          qobuz_id: None,
+          tidal_id: None,
+          resolution_method: "innertube_auto".to_string(),
+          match_confidence: 0.95,
+          local_archive_path: Some(format!("youtube:{}", vid)),
+          resolved_at: chrono::Utc::now().timestamp(),
+        };
+        let _ = db.upsert_resolution(&entry);
+      }
+      return Ok(vid);
+    }
+  }
+
+  // 4. Fallback to yt-dlp search
+  let source = build_source(app).await;
+  if let Ok(search) = source.search(clean_query).await {
+    if let Some(first) = search.tracks.first() {
+      if let Some(ref uri) = first.uri {
+        if let Ok(vid) = video_id_from_uri(uri) {
+          let vid_str = vid.to_string();
+          if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+            let entry = crate::sources::lossless_relay::db::ResolutionEntry {
+              source_track_id: track_key,
+              isrc: None,
+              qobuz_id: None,
+              tidal_id: None,
+              resolution_method: "ytdlp_search".to_string(),
+              match_confidence: 0.90,
+              local_archive_path: Some(format!("youtube:{}", vid_str)),
+              resolved_at: chrono::Utc::now().timestamp(),
+            };
+            let _ = db.upsert_resolution(&entry);
+          }
+          return Ok(vid_str);
+        }
+      }
+    }
+  }
+
+  anyhow::bail!("Could not resolve '{}' to a YouTube video. Press 'm' to remap.", track.name)
+}
+
 /// Begin playing a queue of YouTube videos, taking over the session and
 /// starting at `start_idx` (clamped into range).
 async fn start_youtube_queue(app: &Arc<Mutex<App>>, uris: &[String], start_idx: usize) {
@@ -657,19 +788,13 @@ async fn start_youtube_queue(app: &Arc<Mutex<App>>, uris: &[String], start_idx: 
     return;
   }
 
-  let video_id = match tracks[index].uri.as_deref().map(video_id_from_uri) {
-    Some(Ok(id)) => id.to_string(),
-    _ => {
-      set_error(
-        app,
-        crate::infra::app_strings(app)
-          .await
-          .status
-          .infra
-          .youtube_uri_invalid
-          .to_string(),
-      )
-      .await;
+  let video_id = match resolve_or_extract_video_id(app, &tracks[index]).await {
+    Ok(id) => {
+      tracks[index].uri = Some(uri_for_video_id(&id));
+      id
+    }
+    Err(e) => {
+      set_error(app, e.to_string()).await;
       return;
     }
   };
@@ -836,14 +961,6 @@ async fn replay_current(app: &Arc<Mutex<App>>) -> bool {
   true
 }
 
-/// What the locked snapshot in [`play_index`] decided to do.
-enum Plan {
-  Play(Arc<LocalPlayer>, Arc<YouTubeSource>, String, String),
-  OutOfRange,
-  BadUri,
-  /// The target row is a livestream (duration 0) — its download never ends.
-  Live,
-}
 
 /// Play the queued track at `target`, reusing the published session. Used by
 /// Next/Previous and the runner tick's auto-advance.
@@ -852,73 +969,57 @@ enum Plan {
 /// a network outage or a broken extractor, walking the whole queue at tick
 /// speed would spray error toasts, so one failure ends playback instead.
 pub(crate) async fn play_index(app: &Arc<Mutex<App>>, target: usize) {
-  let plan = {
+  let (player, source, track) = {
     let guard = app.lock().await;
     match guard.youtube_playback.as_ref() {
       None => return, // session torn down between dispatch and here
       Some(s) => match s.tracks.get(target) {
-        None => Plan::OutOfRange,
-        Some(track) if track.duration_ms == 0 && !is_placeholder(track) => Plan::Live,
-        Some(track) => match track.uri.as_deref().map(video_id_from_uri) {
-          Some(Ok(id)) => Plan::Play(
-            Arc::clone(&s.player),
-            Arc::clone(&s.source),
-            id.to_string(),
-            track.name.clone(),
-          ),
-          _ => Plan::BadUri,
-        },
+        None => {
+          drop(guard);
+          if let Some(s) = app.lock().await.youtube_playback.as_mut() {
+            s.advancing = false;
+          }
+          return;
+        }
+        Some(t) => (Arc::clone(&s.player), Arc::clone(&s.source), t.clone()),
       },
     }
   };
 
-  let (player, source, video_id, name) = match plan {
-    Plan::Play(p, s, id, name) => (p, s, id, name),
-    Plan::OutOfRange => {
-      if let Some(s) = app.lock().await.youtube_playback.as_mut() {
-        s.advancing = false;
-      }
-      return;
-    }
-    Plan::BadUri => {
+  if track.duration_ms == 0 && !is_placeholder(&track) {
+    teardown_youtube(app).await;
+    set_error(
+      app,
+      crate::infra::app_strings(app)
+        .await
+        .status
+        .infra
+        .youtube_no_live
+        .to_string(),
+    )
+    .await;
+    return;
+  }
+
+  let video_id = match resolve_or_extract_video_id(app, &track).await {
+    Ok(id) => id,
+    Err(e) => {
       teardown_youtube(app).await;
-      set_error(
-        app,
-        crate::infra::app_strings(app)
-          .await
-          .status
-          .infra
-          .youtube_uri_invalid
-          .to_string(),
-      )
-      .await;
-      return;
-    }
-    Plan::Live => {
-      // Same semantics as a download failure: end the session rather than
-      // leave an empty sink + unmoved index, which would make auto-advance
-      // re-dispatch onto the same livestream row every tick.
-      teardown_youtube(app).await;
-      set_error(
-        app,
-        crate::infra::app_strings(app)
-          .await
-          .status
-          .infra
-          .youtube_no_live
-          .to_string(),
-      )
-      .await;
+      set_error(app, e.to_string()).await;
       return;
     }
   };
+  let name = track.name.clone();
 
   {
     let mut guard = app.lock().await;
-    {
-      let strings = guard.strings();
-      guard.set_status_message(strings.status.infra.fetching(&name), 30)
-    };
+    if let Some(s) = guard.youtube_playback.as_mut() {
+      if let Some(t) = s.tracks.get_mut(target) {
+        t.uri = Some(uri_for_video_id(&video_id));
+      }
+    }
+    let strings = guard.strings();
+    guard.set_status_message(strings.status.infra.fetching(&name), 30);
   }
 
   let (tmp, path, resolved) = match download_audio(&source, &video_id).await {

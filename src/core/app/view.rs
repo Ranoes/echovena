@@ -244,6 +244,12 @@ pub struct ViewState {
   pub artist_albums_scroll_offset: Cell<usize>,
   pub artist_related_artists_scroll_offset: Cell<usize>,
   pub playlist_sync_scroll_offset: Cell<usize>,
+
+  // Manual Remap Modal state
+  pub remap_modal_visible: bool,
+  pub remap_input: Vec<char>,
+  pub remap_track_id: Option<String>,
+  pub remap_track_name: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -188,8 +188,8 @@ pub fn draw_playlist_block(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
   // Unified tabbed Playlist panel: [1: EchoVena | 2: Spotify | 3: YouTube]
   let title = match app.view.playlist_panel_tab {
     0 => " Playlist: EchoVena (Local)  [1:EchoVena | 2:Spotify | 3:YouTube] (Tab) ",
-    1 => " Playlist: Spotify (Synced)  [1:EchoVena | 2:Spotify | 3:YouTube] (Tab) ",
-    _ => " Playlist: YouTube (Cloud)  [1:EchoVena | 2:Spotify | 3:YouTube] (Tab) ",
+    1 => " Playlist: Spotify (Imported)  [1:EchoVena | 2:Spotify | 3:YouTube] (Tab) ",
+    _ => " Playlist: YouTube (Local)  [1:EchoVena | 2:Spotify | 3:YouTube] (Tab) ",
   };
 
   let items = crate::tui::handlers::playlist::get_playlist_tab_items(app);

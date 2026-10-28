@@ -2,7 +2,6 @@ use super::common_key_events;
 use crate::core::action::{Action, OpenTarget};
 use crate::core::app::{ActiveBlock, RouteId, SidebarBlock};
 use crate::core::app::{App, DialogContext, PlaylistFolderItem};
-use crate::core::requirement::{Capability, Requirement};
 use crate::core::source::Source;
 use crate::tui::event::Key;
 
@@ -14,7 +13,6 @@ pub fn get_playlist_tab_items(app: &App) -> Vec<String> {
       let mut items = vec![
         "+ Add Playlist [Key A]".to_string(),
         "+ Import URL [Key U]".to_string(),
-        "\u{1F504} Sync Remote Playlists [Key S]".to_string(),
       ];
       if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
         if let Ok(playlists) = db.list_imported_playlists() {
@@ -35,14 +33,13 @@ pub fn get_playlist_tab_items(app: &App) -> Vec<String> {
     }
     // Tab 1: Spotify Playlists
     1 => {
-      let mut items = vec!["+ Add Spotify Playlist [Key A]".to_string()];
+      let mut items = vec!["+ Import Spotify URL [Key U]".to_string()];
       let mut found_any = false;
       if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
         if let Ok(playlists) = db.list_imported_playlists() {
           for p in playlists.into_iter().filter(|p| p.platform.starts_with("spotify")) {
             found_any = true;
-            let syn = if p.platform == "spotify_synced" { " (Synced)" } else { "" };
-            items.push(format!("\u{1F504} [Playlist: Spotify{syn}] {} ({} tracks)", p.title, p.track_count));
+            items.push(format!("\u{1F504} [Playlist: Spotify] {} ({} tracks)", p.title, p.track_count));
           }
         }
       }
@@ -51,7 +48,7 @@ pub fn get_playlist_tab_items(app: &App) -> Vec<String> {
         items.push(format!("\u{1F3B5} [Playlist: Spotify] {} ({} tracks)", p.name, p.track_count));
       }
       if !found_any {
-        items.push("(No Spotify playlists \u{2014} press 'U' to import or 's' to sync)".to_string());
+        items.push("(No Spotify playlists \u{2014} press 'U' to import playlist URL)".to_string());
       }
       items
     }
@@ -227,7 +224,7 @@ fn handle_delete_playlist(app: &mut App) {
   match app.view.playlist_panel_tab {
     // Tab 0: EchoVena Playlists
     0 => {
-      if idx < 3 {
+      if idx < 2 {
         app.set_status_message("Action item cannot be deleted".to_string(), 4);
         return;
       }
@@ -236,7 +233,7 @@ fn handle_delete_playlist(app: &mut App) {
         .and_then(|db| db.list_imported_playlists().ok())
         .unwrap_or_default();
       let db_len = db_playlists.len();
-      let relative_idx = idx - 3;
+      let relative_idx = idx - 2;
       if relative_idx < db_len {
         let pl = &db_playlists[relative_idx];
         let title = pl.title.clone();
@@ -397,18 +394,8 @@ pub fn handler(key: Key, app: &mut App) {
     Key::Char('u') | Key::Char('U') => {
       app.view.url_import_visible = true;
     }
-    Key::Char('s') | Key::Char('S') => {
-      app.apply(Action::RunPlaylistSync);
-    }
     Key::Char('d') | Key::Char('D') | Key::Delete => {
       handle_delete_playlist(app);
-    }
-    Key::Char('m')
-      if app
-        .availability(Requirement::Capability(Capability::PlaylistSync))
-        .is_available() =>
-    {
-      app.apply(Action::OpenPlaylistSyncPicker);
     }
     _ => {}
   }
@@ -479,17 +466,13 @@ pub(super) fn activate_selected(app: &mut App) {
           // "+ Import URL [Key U]"
           app.view.url_import_visible = true;
         }
-        2 => {
-          // "Sync Remote Playlists [Ctrl+r]"
-          app.apply(Action::RunPlaylistSync);
-        }
         _ => {
           let db_playlists = crate::sources::lossless_relay::db::Database::open_default()
             .ok()
             .and_then(|db| db.list_imported_playlists().ok())
             .unwrap_or_default();
           let db_len = db_playlists.len();
-          let relative_idx = idx.saturating_sub(3);
+          let relative_idx = idx.saturating_sub(2);
           if relative_idx < db_len {
             let uri = db_playlists[relative_idx].id.clone();
             open_source_playlist(app, Some(uri));
@@ -504,8 +487,8 @@ pub(super) fn activate_selected(app: &mut App) {
     // Tab 1: Spotify Playlists
     1 => {
       if idx == 0 {
-        // "+ Add Spotify Playlist"
-        app.push_navigation_stack(RouteId::CreatePlaylist, ActiveBlock::CreatePlaylistForm);
+        // "+ Import Spotify URL"
+        app.view.url_import_visible = true;
       } else {
         let spotify_db_playlists: Vec<_> = crate::sources::lossless_relay::db::Database::open_default()
           .ok()

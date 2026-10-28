@@ -16,6 +16,7 @@ CICDACTION.md
 # Build & Runtime Artifacts
 target/
 /target
+scratch/
 .DS_Store
 .DS_store
 *.db

@@ -48,7 +48,6 @@ use crate::core::app::{
   ActiveBlock, App, ArtistBlock, InputContext, PlaybackOwner, RouteId, SearchResultBlock,
   TrackTableContext,
 };
-use crate::core::requirement::{Availability, Capability, Requirement};
 use crate::core::source::Source;
 use crate::tui::event::Key;
 
@@ -279,6 +278,84 @@ pub fn handle_app(key: Key, app: &mut App) {
       }
       Key::Char(c) => {
         app.view.sync_auth_input.push(c);
+      }
+      _ => {}
+    }
+    return;
+  }
+
+  // Manual YouTube Remap modal: intercept keys when visible.
+  if app.view.remap_modal_visible {
+    match key {
+      Key::Esc => {
+        app.view.remap_modal_visible = false;
+        app.view.remap_input.clear();
+      }
+      Key::Ctrl('v') => {
+        if let Some(text) = app.get_clipboard_text() {
+          let trimmed = text.trim_matches(|c| c == '\r' || c == '\n').to_string();
+          for c in trimmed.chars() {
+            app.view.remap_input.push(c);
+          }
+          app.set_status_message("Pasted YouTube link/ID from clipboard. Press Enter to map.".to_string(), 4);
+        }
+      }
+      Key::Char('p') | Key::Char('P') if app.view.remap_input.is_empty() => {
+        if let Some(text) = app.get_clipboard_text() {
+          let trimmed = text.trim_matches(|c| c == '\r' || c == '\n').to_string();
+          for c in trimmed.chars() {
+            app.view.remap_input.push(c);
+          }
+          app.set_status_message("Vim 'p' pasted YouTube link/ID! Press Enter to map.".to_string(), 4);
+        } else {
+          app.view.remap_input.push('p');
+        }
+      }
+      Key::Backspace => {
+        app.view.remap_input.pop();
+      }
+      Key::Ctrl('u') => {
+        app.view.remap_input.clear();
+      }
+      Key::Enter => {
+        let input_str: String = app.view.remap_input.iter().collect();
+        let trimmed = input_str.trim();
+        #[cfg(feature = "youtube")]
+        let extracted_vid = crate::infra::youtube::extract_youtube_video_id(trimmed);
+        #[cfg(not(feature = "youtube"))]
+        let extracted_vid: Option<String> = if trimmed.len() == 11 { Some(trimmed.to_string()) } else { None };
+
+        if let Some(vid) = extracted_vid {
+          if let Some(track_id) = app.view.remap_track_id.take() {
+            if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+              let entry = crate::sources::lossless_relay::db::ResolutionEntry {
+                source_track_id: track_id.clone(),
+                isrc: None,
+                qobuz_id: None,
+                tidal_id: None,
+                resolution_method: "manual_remap".to_string(),
+                match_confidence: 1.0,
+                local_archive_path: Some(format!("youtube:{}", vid)),
+                resolved_at: chrono::Utc::now().timestamp(),
+              };
+              let _ = db.upsert_resolution(&entry);
+            }
+            // Update the track in the currently open track table
+            if let Some(track) = app.track_table.tracks.get_mut(app.view.track_table_index) {
+              if track.uri.as_ref() == Some(&track_id) || track.id.as_ref() == Some(&track_id) {
+                track.uri = Some(format!("youtube:{}", vid));
+              }
+            }
+            app.set_status_message(format!("Successfully remapped track to YouTube [{}]!", vid), 5);
+          }
+          app.view.remap_modal_visible = false;
+          app.view.remap_input.clear();
+        } else {
+          app.set_status_message("Invalid YouTube video ID or URL. Please provide an 11-char ID or YouTube URL.".to_string(), 4);
+        }
+      }
+      Key::Char(c) => {
+        app.view.remap_input.push(c);
       }
       _ => {}
     }
@@ -849,32 +926,13 @@ pub(super) fn focus_global_search(app: &mut App) {
   app.set_current_route_state(Some(ActiveBlock::Input), Some(ActiveBlock::Input));
 }
 
-/// Focuses the search input, or reports why the key does nothing now.
+/// Focuses the search input in EchoVena. Search is always available via YouTube & live catalog.
 pub(super) fn open_global_search(app: &mut App) -> bool {
-  match app.availability(Requirement::Capability(Capability::Search)) {
-    Availability::Available => {
-      focus_global_search(app);
-      true
-    }
-    Availability::NeedsSpotify => {
-      app.set_status_message(app.strings().status.app.search_needs_spotify, 4);
-      false
-    }
-    Availability::NotForSource(_) | Availability::OnlyForSource(_) => {
-      app.set_status_message(
-        app
-          .strings()
-          .status
-          .app
-          .search_source_unavailable(app.strings().sidebar.source_label(app.active_source)),
-        4,
-      );
-      false
-    }
-  }
+  focus_global_search(app);
+  true
 }
 
-/// The copy keys read the Spotify playback, so Spotify must own it and have an item.
+/// The copy keys copy the current playing song URL to the clipboard.
 fn copy_url(app: &mut App, copy: Action) {
   match app.playback_owner() {
     PlaybackOwner::Spotify | PlaybackOwner::NativeSpotify => {
@@ -888,9 +946,40 @@ fn copy_url(app: &mut App, copy: Action) {
         app.set_status_message(app.strings().status.app.nothing_playing, 4);
       }
     }
-    PlaybackOwner::None => app.set_status_message(app.strings().status.app.nothing_playing, 4),
-    PlaybackOwner::AppleMusic | PlaybackOwner::Queue | PlaybackOwner::Decoded => {
-      app.set_status_message(app.strings().status.app.copy_needs_spotify, 4)
+    PlaybackOwner::Decoded | PlaybackOwner::Queue => {
+      let yt_info: Option<crate::core::plugin_api::TrackInfo> = {
+        #[cfg(feature = "youtube")]
+        {
+          app.youtube_playback.as_ref().and_then(|yt| yt.current().cloned())
+        }
+        #[cfg(not(feature = "youtube"))]
+        {
+          None
+        }
+      };
+      if let Some(track) = yt_info {
+        let url = if let Some(ref uri) = track.uri {
+          #[cfg(feature = "youtube")]
+          if let Ok(vid) = crate::infra::youtube::video_id_from_uri(uri) {
+            format!("https://www.youtube.com/watch?v={}", vid)
+          } else {
+            uri.clone()
+          }
+          #[cfg(not(feature = "youtube"))]
+          uri.clone()
+        } else {
+          format!("https://www.youtube.com/results?search_query={}", track.name)
+        };
+        if let Some(clipboard) = &mut app.clipboard {
+          let _ = clipboard.set_text(url.clone());
+        }
+        app.set_status_message(format!("Copied YouTube URL to clipboard: {}", url), 4);
+      } else {
+        app.set_status_message(app.strings().status.app.nothing_playing, 4);
+      }
+    }
+    PlaybackOwner::None | PlaybackOwner::AppleMusic => {
+      app.set_status_message(app.strings().status.app.nothing_playing, 4);
     }
   }
 }

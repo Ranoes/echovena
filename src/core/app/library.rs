@@ -8,7 +8,6 @@ pub(crate) fn library_row_requirements() -> &'static [(LibraryTarget, Requiremen
     (LibraryTarget::LikedSongs, Requirement::None),
     (LibraryTarget::Playlists, Requirement::None),
     (LibraryTarget::Settings, Requirement::None),
-    (LibraryTarget::PlaylistSync, Requirement::None),
     (LibraryTarget::Stats, Requirement::None),
     #[cfg(feature = "local-files")]
     (LibraryTarget::LocalFiles, Requirement::None),

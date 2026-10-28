@@ -122,6 +122,20 @@ pub fn handler(key: Key, app: &mut App) {
     }
     Key::Char('s') => handle_save_track_event(app),
     Key::Char('S') => play_random_song(app),
+    Key::Char('m') | Key::Char('M') => {
+      if let Some(track) = app.track_table.tracks.get(app.view.track_table_index) {
+        let track_id = track.uri.clone().unwrap_or_else(|| track.id.clone().unwrap_or_else(|| track.name.clone()));
+        let artist_str = if track.artists.is_empty() {
+          String::new()
+        } else {
+          format!(" - {}", track.artists.join(", "))
+        };
+        app.view.remap_track_id = Some(track_id);
+        app.view.remap_track_name = Some(format!("{}{}", track.name, artist_str));
+        app.view.remap_input.clear();
+        app.view.remap_modal_visible = true;
+      }
+    }
     k if k == app.user_config.keys.jump_to_end => jump_to_end(app),
     k if k == app.user_config.keys.jump_to_start => jump_to_start(app),
     //recommended song radio
@@ -260,36 +274,41 @@ fn on_enter(app: &mut App) {
     match context {
       TrackTableContext::MyPlaylists | TrackTableContext::PlaylistSearch => {
         if let Some(track) = tracks.get(*selected_index) {
-          // Get the track ID to play
-          let track_playable_id = track.uri.clone();
-          let context_id = current_playlist_context_id(app);
-
-          // If we have a track ID, play it directly within the context
-          // This ensures the selected track plays first, even with shuffle on
-          if let Some(playable_id) = track_playable_id {
-            if let Some(context_uri) = context_id {
-              app.apply(Action::PlayTrackInContext {
-                context: context_uri,
-                track: playable_id,
-              });
-            } else {
-              // Degenerate no-id case: the same context-less event this
-              // path has always sent.
-              app.apply(Action::PlayUris {
-                uris: vec![playable_id],
-                offset: Some(0), // Play the first (and only) track in the URIs list
+          // If Spotify is active and connected, use Spotify context
+          if app.active_source == crate::core::source::Source::Spotify && app.spotify_connected {
+            let track_playable_id = track.uri.clone();
+            let context_id = current_playlist_context_id(app);
+            if let Some(playable_id) = track_playable_id {
+              if let Some(context_uri) = context_id {
+                app.apply(Action::PlayTrackInContext {
+                  context: context_uri,
+                  track: playable_id,
+                });
+              } else {
+                app.apply(Action::PlayUris {
+                  uris: vec![playable_id],
+                  offset: Some(0),
+                });
+              }
+            } else if let Some(context_uri) = context_id {
+              app.apply(Action::PlayContext {
+                uri: context_uri,
+                offset: app.selected_playlist_track_position(),
               });
             }
-          } else if let Some(context_uri) = context_id {
-            // Fallback to context playback with offset
-            app.apply(Action::PlayContext {
-              uri: context_uri,
-              offset: app.selected_playlist_track_position(),
-            });
+          } else {
+            // EchoVena YouTube-first playback: queue all tracks and start at selected
+            let (uris, offset) = common_key_events::uri_playback_request(
+              tracks.iter().map(|track| track.uri.clone().or_else(|| track.id.clone())),
+              *selected_index,
+            );
+            if !uris.is_empty() {
+              app.apply(Action::PlayUris {
+                uris,
+                offset: Some(offset.unwrap_or(0)),
+              });
+            }
           }
-          // The no-id, no-uri degenerate case (unreachable through normal
-          // navigation) is skipped rather than dispatched as a bare resume
-          // with an offset.
         };
       }
       TrackTableContext::RecommendedTracks => {
@@ -306,11 +325,24 @@ fn on_enter(app: &mut App) {
         }
       }
       TrackTableContext::SavedTracks => {
-        if let Some((all_playable_ids, absolute_offset)) = saved_tracks_playback_request(app) {
-          app.apply(Action::PlayUris {
-            uris: all_playable_ids,
-            offset: Some(absolute_offset),
-          });
+        if app.active_source == crate::core::source::Source::Spotify && app.spotify_connected {
+          if let Some((all_playable_ids, absolute_offset)) = saved_tracks_playback_request(app) {
+            app.apply(Action::PlayUris {
+              uris: all_playable_ids,
+              offset: Some(absolute_offset),
+            });
+          }
+        } else {
+          let (uris, offset) = common_key_events::uri_playback_request(
+            tracks.iter().map(|track| track.uri.clone().or_else(|| track.id.clone())),
+            *selected_index,
+          );
+          if !uris.is_empty() {
+            app.apply(Action::PlayUris {
+              uris,
+              offset: Some(offset.unwrap_or(0)),
+            });
+          }
         }
       }
       TrackTableContext::AlbumSearch => {}

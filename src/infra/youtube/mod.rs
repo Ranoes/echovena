@@ -214,6 +214,48 @@ pub fn video_id_from_uri(uri: &str) -> Result<&str> {
   Ok(id)
 }
 
+/// Extract an 11-character YouTube video ID from arbitrary text (URL, URI, or raw ID).
+pub fn extract_youtube_video_id(input: &str) -> Option<String> {
+  let trimmed = input.trim();
+  if trimmed.is_empty() {
+    return None;
+  }
+  // 1. Bare 11-char ID
+  if trimmed.len() == 11 && trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+    return Some(trimmed.to_string());
+  }
+  // 2. youtube: prefix
+  if let Some(id) = trimmed.strip_prefix(YOUTUBE_PREFIX) {
+    let id = id.trim();
+    if id.len() == 11 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+      return Some(id.to_string());
+    }
+  }
+  // 3. URLs
+  if let Ok(url) = url::Url::parse(trimmed) {
+    if url.host_str().is_some_and(|h| h.contains("youtu.be")) {
+      let path = url.path().trim_start_matches('/');
+      if path.len() >= 11 {
+        let candidate = &path[..11];
+        if candidate.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+          return Some(candidate.to_string());
+        }
+      }
+    }
+    if url.host_str().is_some_and(|h| h.contains("youtube.com")) {
+      for (k, v) in url.query_pairs() {
+        if k == "v" && v.len() >= 11 {
+          let candidate = &v[..11];
+          if candidate.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+            return Some(candidate.to_string());
+          }
+        }
+      }
+    }
+  }
+  None
+}
+
 /// Build the `youtube:` URI for a video id.
 pub fn uri_for_video_id(id: &str) -> String {
   format!("{YOUTUBE_PREFIX}{id}")
