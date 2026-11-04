@@ -502,7 +502,9 @@ impl YouTubeSource {
 
     // Use an isolated staging directory so yt-dlp can use .part files, atomic renames,
     // and extract audio without sharing violations against open file handles.
-    let stage_dir = std::env::temp_dir().join(format!("echovena_yt_{}_{}", std::process::id(), video_id));
+    let base_temp = crate::core::paths::audio_cache_dir()
+      .unwrap_or_else(std::env::temp_dir);
+    let stage_dir = base_temp.join(format!("echovena_yt_{}_{}", std::process::id(), video_id));
     let _ = std::fs::create_dir_all(&stage_dir);
     let stage_file = stage_dir.join(format!("{video_id}.m4a"));
     let stage_str = stage_file

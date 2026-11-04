@@ -667,6 +667,34 @@ async fn acquire_player(app: &Arc<Mutex<App>>) -> Option<Arc<LocalPlayer>> {
   }
 }
 
+/// Safely allocate a temporary file, prioritizing the application audio cache dir over system %TEMP%.
+fn create_audio_tempfile(suffix: &str) -> Result<NamedTempFile> {
+  if let Some(dir) = crate::core::paths::audio_cache_dir() {
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(tmp) = tempfile::Builder::new().suffix(suffix).tempfile_in(&dir) {
+      return Ok(tmp);
+    }
+    if let Ok(tmp) = tempfile::Builder::new().tempfile_in(&dir) {
+      return Ok(tmp);
+    }
+  }
+  if let Ok(tmp) = NamedTempFile::with_suffix(suffix) {
+    return Ok(tmp);
+  }
+  if let Ok(tmp) = NamedTempFile::new() {
+    return Ok(tmp);
+  }
+  if let Some(dir) = crate::core::paths::app_cache_dir() {
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(tmp) = tempfile::Builder::new().tempfile_in(&dir) {
+      return Ok(tmp);
+    }
+  }
+  tempfile::Builder::new()
+    .tempfile_in(".")
+    .context("creating temp file for YouTube audio")
+}
+
 /// Download a video's audio into a fresh tempfile (or load from disk cache),
 /// with the metadata yt-dlp printed for it when it could be read. Must be awaited
 /// **without** holding the `App` lock (this is the slowest download of any source).
@@ -675,7 +703,7 @@ async fn download_audio(
   video_id: &str,
 ) -> Result<(NamedTempFile, std::path::PathBuf, Option<TrackInfo>)> {
   if let Some(cached) = super::cached_audio_path(video_id) {
-    let tmp = NamedTempFile::with_suffix(".m4a").context("creating temp file for YouTube audio")?;
+    let tmp = create_audio_tempfile(".m4a")?;
     return Ok((tmp, cached, None));
   }
   // Check local offline archive in SQLite
@@ -689,13 +717,13 @@ async fn download_audio(
       if let Some(archive_path_str) = res.local_archive_path {
         let p = std::path::PathBuf::from(archive_path_str);
         if p.exists() {
-          let tmp = NamedTempFile::with_suffix(".flac").context("creating temp file for YouTube audio")?;
+          let tmp = create_audio_tempfile(".flac")?;
           return Ok((tmp, p, None));
         }
       }
     }
   }
-  let tmp = NamedTempFile::with_suffix(".m4a").context("creating temp file for YouTube audio")?;
+  let tmp = create_audio_tempfile(".m4a")?;
   let tmp_path = tmp.path().to_path_buf();
   let resolved = source.download_audio(video_id, &tmp_path).await?;
   let play_path = if let Some(cached) = super::cached_audio_path(video_id) {
