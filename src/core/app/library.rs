@@ -433,8 +433,17 @@ impl App {
       // 1. Load downloaded tracks from disk/SQLite
       if let Ok(downloaded) = db.list_downloaded_tracks() {
         for (i, d) in downloaded.into_iter().enumerate() {
+          let file_path = std::path::Path::new(&d.file_path);
+          let is_on_disk = file_path.exists();
+          let uri = if is_on_disk {
+            url::Url::from_file_path(file_path)
+              .map(|u| u.to_string())
+              .unwrap_or_else(|_| format!("file://{}", d.file_path))
+          } else {
+            d.source_track_id.clone()
+          };
           local_tracks.push(crate::core::plugin_api::TrackInfo {
-            uri: Some(d.source_track_id.clone()),
+            uri: Some(uri),
             name: d.title,
             artists: vec![d.artist],
             album: d.album.unwrap_or_default(),
@@ -443,7 +452,7 @@ impl App {
             album_id: None,
             artist_refs: Vec::new(),
             is_playable: true,
-            is_local: true,
+            is_local: is_on_disk,
             track_number: (i + 1) as u32,
             explicit: false,
             image_url: d.cover_art_url,
