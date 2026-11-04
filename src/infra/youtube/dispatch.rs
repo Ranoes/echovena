@@ -82,6 +82,14 @@ pub async fn route_youtube_event(app: &Arc<Mutex<App>>, event: &IoEvent) -> bool
       remove_track_from_playlist(app, playlist_ref, video_ref).await;
       true
     }
+    IoEvent::FetchAlbumDetail(album_id, title) => {
+      fetch_album_drilldown(app, album_id, title).await;
+      true
+    }
+    IoEvent::FetchArtistDetail(artist_id, name) => {
+      fetch_artist_drilldown(app, artist_id, name).await;
+      true
+    }
     // Start a queue of videos: handle if YouTube URI or if Spotify is not active & connected
     IoEvent::StartPlayback(None, Some(uris), offset) => {
       let is_yt = uris.first().is_some_and(|u| is_youtube_uri(u)) || matches!(app.lock().await.track_table.context, Some(crate::core::app::TrackTableContext::YouTubePlaylist));
@@ -1343,7 +1351,7 @@ pub(crate) async fn refetch_active_karaoke_lyrics(
   app: Arc<Mutex<App>>,
   force: bool,
 ) {
-  let (title, artist, duration_ms, provider_idx) = {
+  let (title, artist, duration_ms, _provider_idx) = {
     let guard = app.lock().await;
     let playing = if let Some(queue_track) = if let Some(crate::infra::queue::QueueNowPlaying::Decoded(d)) = guard.queue_now.as_ref() {
       Some(&d.track)
@@ -1365,7 +1373,7 @@ pub(crate) async fn refetch_active_karaoke_lyrics(
     };
 
     match playing {
-      Some((t, a, d)) => (t, a, d.unwrap_or(0), guard.view.karaoke_provider_index),
+      Some((t, a, d)) => (t, a, d.unwrap_or(0), ()),
       None => return,
     }
   };
@@ -1392,56 +1400,30 @@ pub(crate) async fn refetch_active_karaoke_lyrics(
     }
   }
 
-  // Fetch using the selected provider
-  let fetch_res: Option<crate::lyrics::KaraokeTimeline> = match provider_idx {
-    0 => {
-      // LRCLIB
-      let client = crate::lyrics::lrclib_elrc::LrclibClient::new("https://lrclib.net/api/get");
-      client.fetch_lyrics(&clean_title, &clean_artist, None, dur_sec).await.ok()
-    }
-    1 => {
-      // Paxsenix
-      let query_str = format!("{} {}", clean_artist, clean_title);
-      let url = "https://lyrics.paxsenix.org/lyrics";
-      let client = reqwest::Client::new();
-      if let Ok(resp) = client.get(url).query(&[("q", &query_str)]).send().await {
-        if let Ok(text) = resp.text().await {
-          if text.trim_start().starts_with('<') {
-            crate::lyrics::paxsenix_ttml::parse_apple_music_ttml(&text, "paxsenix_ttml").ok()
-          } else {
-            crate::lyrics::paxsenix_ttml::parse_musixmatch_richsync(&text, "paxsenix_richsync").ok()
-          }
+  // Auto Waterfall: Priority LRCLIB -> Paxsenix
+  let client = crate::lyrics::lrclib_elrc::LrclibClient::new("https://lrclib.net/api/get");
+  let mut timeline = client.fetch_lyrics(&clean_title, &clean_artist, None, dur_sec).await.ok();
+
+  // If not found with title + artist, try with clean title
+  if timeline.is_none() {
+    timeline = client.fetch_lyrics(&clean_title, "", None, dur_sec).await.ok();
+  }
+
+  // If still not found, try Paxsenix
+  if timeline.is_none() {
+    let query_str = format!("{} {}", clean_artist, clean_title);
+    let url = "https://lyrics.paxsenix.org/lyrics";
+    let http = reqwest::Client::new();
+    if let Ok(resp) = http.get(url).query(&[("q", &query_str)]).send().await {
+      if let Ok(text) = resp.text().await {
+        if text.trim_start().starts_with('<') {
+          timeline = crate::lyrics::paxsenix_ttml::parse_apple_music_ttml(&text, "paxsenix_ttml").ok();
         } else {
-          None
+          timeline = crate::lyrics::paxsenix_ttml::parse_musixmatch_richsync(&text, "paxsenix_richsync").ok();
         }
-      } else {
-        None
       }
     }
-    2 => {
-      // Spotify
-      let client = crate::lyrics::spotify_lyrics::SpotifyLyricsClient::new();
-      client.fetch_bypass_lyrics("http://127.0.0.1:8082", &track_key).await.ok()
-    }
-    3 => {
-      // NetEase
-      let client = crate::lyrics::lrclib_elrc::LrclibClient::new("https://lrclib.net/api/get");
-      client.fetch_lyrics(&clean_title, &clean_artist, None, dur_sec).await.ok()
-    }
-    _ => {
-      let client = crate::lyrics::lrclib_elrc::LrclibClient::new("https://lrclib.net/api/get");
-      client.fetch_lyrics(&clean_title, &clean_artist, None, dur_sec).await.ok()
-    }
-  };
-
-  // Fallback to LRCLIB if chosen provider returned nothing
-  let timeline = match fetch_res {
-    Some(tl) => Some(tl),
-    None => {
-      let client = crate::lyrics::lrclib_elrc::LrclibClient::new("https://lrclib.net/api/get");
-      client.fetch_lyrics(&clean_title, &clean_artist, None, dur_sec).await.ok()
-    }
-  };
+  }
 
   if let Some(mut tl) = timeline {
     tl.ensure_romanization();
@@ -1470,10 +1452,135 @@ pub(crate) async fn refetch_active_karaoke_lyrics(
     let mut guard = app.lock().await;
     guard.view.active_karaoke_timeline = Some(tl);
     guard.set_lyrics(crate::core::app::LyricsStatus::Found, Some(lines), true);
-    guard.set_status_message(format!("Lyrics loaded from {} ({} lines)", prov, count), 4);
+    guard.set_status_message(format!("Lyrics loaded from {} ({} lines) (Auto)", prov, count), 4);
   } else {
     let mut guard = app.lock().await;
     guard.set_status_message(format!("No lyrics found for '{}' by '{}'", clean_title, clean_artist), 4);
+  }
+}
+
+pub(crate) async fn fetch_album_drilldown(app: &Arc<Mutex<App>>, album_id: &str, title: &str) {
+  let client = crate::sources::youtube_search::InnerTubeClient::new();
+  let mut tracks = Vec::new();
+
+  let clean_bid = album_id.strip_prefix("yt:browse:").unwrap_or(album_id);
+  if clean_bid.starts_with("MPREb_") || clean_bid.starts_with("VL") {
+    let importer = crate::sources::lossless_relay::youtube_importer::YouTubeImporter::new();
+    if let Ok((_pl, pl_tracks)) = importer.fetch_innertube_playlist(clean_bid).await {
+      for t in pl_tracks {
+        tracks.push(TrackInfo {
+          uri: Some(t.source_track_id.clone()),
+          name: t.clean_title,
+          artists: vec![t.artist],
+          album: title.to_string(),
+          duration_ms: t.duration_ms as u64,
+          id: Some(t.source_track_id),
+          album_id: Some(album_id.to_string()),
+          artist_refs: Vec::new(),
+          is_playable: true,
+          is_local: false,
+          track_number: 1,
+          explicit: false,
+          image_url: t.cover_art_url,
+          release_date: None,
+          generated_name: None,
+        });
+      }
+    }
+  }
+
+  if tracks.is_empty() {
+    let query = format!("{} album", title);
+    if let Ok(results) = client.search(&query, crate::sources::youtube_search::types::SearchScope::Music).await {
+      for r in results {
+        if let Some(vid) = r.video_id {
+          let uri = format!("yt:video:{}", vid);
+          tracks.push(TrackInfo {
+            uri: Some(uri.clone()),
+            name: r.title,
+            artists: vec![r.artist],
+            album: r.album.unwrap_or_else(|| title.to_string()),
+            duration_ms: r.duration_ms.max(0) as u64,
+            id: Some(uri),
+            album_id: Some(album_id.to_string()),
+            artist_refs: Vec::new(),
+            is_playable: true,
+            is_local: false,
+            track_number: 1,
+            explicit: false,
+            image_url: r.thumbnail_url,
+            release_date: None,
+            generated_name: None,
+          });
+        }
+      }
+    }
+  }
+
+  let mut guard = app.lock().await;
+  if let crate::core::app::SearchDrilldown::AlbumDetail {
+    tracks: ref mut cur_tracks,
+    album_id: ref cur_id,
+    ..
+  } = guard.view.search_drilldown {
+    if cur_id == album_id || cur_tracks.is_empty() {
+      *cur_tracks = tracks;
+    }
+  }
+}
+
+pub(crate) async fn fetch_artist_drilldown(app: &Arc<Mutex<App>>, artist_id: &str, name: &str) {
+  let client = crate::sources::youtube_search::InnerTubeClient::new();
+  let mut top_songs = Vec::new();
+  if let Ok(results) = client.search(name, crate::sources::youtube_search::types::SearchScope::Music).await {
+    for r in results.into_iter().take(20) {
+      if let Some(vid) = r.video_id {
+        let uri = format!("yt:video:{}", vid);
+        top_songs.push(TrackInfo {
+          uri: Some(uri.clone()),
+          name: r.title,
+          artists: vec![r.artist],
+          album: r.album.unwrap_or_default(),
+          duration_ms: r.duration_ms.max(0) as u64,
+          id: Some(uri),
+          album_id: None,
+          artist_refs: Vec::new(),
+          is_playable: true,
+          is_local: false,
+          track_number: 1,
+          explicit: false,
+          image_url: r.thumbnail_url,
+          release_date: None,
+          generated_name: None,
+        });
+      }
+    }
+  }
+
+  let mut albums = Vec::new();
+  if let Ok(results) = client.search(name, crate::sources::youtube_search::types::SearchScope::Album).await {
+    for r in results.into_iter().take(15) {
+      let id = r.playlist_id.unwrap_or_else(|| r.id.clone());
+      albums.push(crate::core::app::AlbumDetailHeader {
+        id,
+        title: r.title,
+        year: None,
+        track_count: 0,
+      });
+    }
+  }
+
+  let mut guard = app.lock().await;
+  if let crate::core::app::SearchDrilldown::ArtistDetail {
+    top_songs: ref mut cur_songs,
+    albums: ref mut cur_albums,
+    artist_id: ref cur_id,
+    ..
+  } = guard.view.search_drilldown {
+    if cur_id == artist_id || cur_songs.is_empty() {
+      *cur_songs = top_songs;
+      *cur_albums = albums;
+    }
   }
 }
 

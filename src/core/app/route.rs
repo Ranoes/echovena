@@ -81,6 +81,7 @@ pub enum ActiveBlock {
   LocalBrowser,
   Stats,
   PlaylistSync,
+  Playlists,
   /// The AI DJ screen's prompt + transcript.
   #[cfg(feature = "ai-dj")]
   AiDj,
@@ -164,6 +165,7 @@ pub enum RouteId {
   LocalBrowser,
   Stats,
   PlaylistSync,
+  Playlists,
   #[cfg(feature = "ai-dj")]
   AiDj,
   /// A plugin-registered custom screen, keyed by its registered name.

@@ -167,15 +167,8 @@ pub fn handle_app(key: Key, app: &mut App) {
         app.view.karaoke_show_romanization = app.view.karaoke_display_mode != crate::core::app::LyricsDisplayMode::Original;
         app.set_status_message(format!("Lyrics Mode: {}", app.view.karaoke_display_mode.label()), 3);
       }
-      Key::Char('P') | Key::Char('p') => {
-        app.view.karaoke_provider_index = (app.view.karaoke_provider_index + 1) % crate::core::app::LYRIC_PROVIDERS.len();
-        let provider_name = crate::core::app::LYRIC_PROVIDERS[app.view.karaoke_provider_index];
-        app.set_status_message(format!("Switched Lyric Provider to {} — re-fetching...", provider_name), 4);
-        app.dispatch(crate::infra::network::IoEvent::RefetchKaraokeLyrics { force: true });
-      }
       Key::Char('R') | Key::Char('r') => {
-        let provider_name = crate::core::app::LYRIC_PROVIDERS[app.view.karaoke_provider_index];
-        app.set_status_message(format!("Re-fetching lyrics via {}...", provider_name), 4);
+        app.set_status_message("Re-fetching lyrics via auto waterfall...".to_string(), 4);
         app.dispatch(crate::infra::network::IoEvent::RefetchKaraokeLyrics { force: true });
       }
       Key::Char('[') => {
@@ -485,7 +478,11 @@ pub fn handle_app(key: Key, app: &mut App) {
   // First handle any global event and then move to block event
   match key {
     Key::Esc => {
-      if app.get_current_route().active_block == ActiveBlock::Settings {
+      if app.view.search_drilldown != crate::core::app::SearchDrilldown::None {
+        search_results::handler(key, app);
+      } else if app.get_current_route().active_block == ActiveBlock::Playlists {
+        app.pop_navigation_stack();
+      } else if app.get_current_route().active_block == ActiveBlock::Settings {
         settings::handler(key, app);
       } else {
         handle_escape(app);
@@ -1066,7 +1063,7 @@ fn handle_block_events(key: Key, app: &mut App) {
     ActiveBlock::Input => {
       input::handler(key, app);
     }
-    ActiveBlock::MyPlaylists => {
+    ActiveBlock::MyPlaylists | ActiveBlock::Playlists => {
       playlist::handler(key, app);
     }
     ActiveBlock::TrackTable => {
@@ -1203,7 +1200,21 @@ fn handle_escape(app: &mut App) {
     #[cfg(feature = "ai-dj")]
     ActiveBlock::AiDj => ai_dj::handler(Key::Esc, app),
     ActiveBlock::SearchResultBlock => {
-      app.view.search_selected_block = SearchResultBlock::Empty;
+      if app.view.search_drilldown != crate::core::app::SearchDrilldown::None {
+        match &app.view.search_drilldown {
+          crate::core::app::SearchDrilldown::AlbumDetail { from_artist: Some(prev), .. } => {
+            app.view.search_drilldown = *prev.clone();
+          }
+          _ => {
+            app.view.search_drilldown = crate::core::app::SearchDrilldown::None;
+          }
+        }
+      } else {
+        app.view.search_selected_block = SearchResultBlock::Empty;
+      }
+    }
+    ActiveBlock::Playlists => {
+      app.pop_navigation_stack();
     }
     ActiveBlock::ArtistBlock => {
       if let Some(artist) = &mut app.artist {

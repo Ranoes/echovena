@@ -323,6 +323,10 @@ pub enum IoEvent {
   /// Remove a video (bare id or `youtube:` URI) from a local YouTube playlist.
   #[cfg_attr(not(feature = "youtube"), allow(dead_code))]
   RemoveTrackFromYouTubePlaylist(String, String),
+  /// Fetch songs for an album drilldown view via InnerTube
+  FetchAlbumDetail(String, String),
+  /// Fetch top songs and albums for an artist drilldown view via InnerTube
+  FetchArtistDetail(String, String),
   /// Run the configured playlist-sync links on a detached task.
   RunPlaylistSync {
     /// Search again for tracks the last run found no candidate for.
@@ -573,6 +577,8 @@ impl Network {
         | IoEvent::DeleteYouTubePlaylist(_)
         | IoEvent::AddTrackToYouTubePlaylist(..)
         | IoEvent::RemoveTrackFromYouTubePlaylist(..)
+        | IoEvent::FetchAlbumDetail(..)
+        | IoEvent::FetchArtistDetail(..)
         | IoEvent::RunPlaylistSync { .. }
         | IoEvent::LinkPlaylist(..)
         | IoEvent::RemovePlaylistSyncLink(_)
@@ -1144,7 +1150,9 @@ impl Network {
       | IoEvent::CreateYouTubePlaylist(_)
       | IoEvent::DeleteYouTubePlaylist(_)
       | IoEvent::AddTrackToYouTubePlaylist(..)
-      | IoEvent::RemoveTrackFromYouTubePlaylist(..) => {}
+      | IoEvent::RemoveTrackFromYouTubePlaylist(..)
+      | IoEvent::FetchAlbumDetail(..)
+      | IoEvent::FetchArtistDetail(..) => {}
       IoEvent::RunPlaylistSync { retry_unmatched } => {
         crate::sources::sync::SyncWorker::spawn_background_sync(Arc::clone(&self.app));
         crate::infra::playlist_sync::spawn_run(

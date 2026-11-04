@@ -585,6 +585,8 @@ pub fn open_album_drilldown(app: &mut App, album_id: &str, title: &str, year: &O
     }
   }
 
+  let need_fetch = tracks.is_empty();
+
   app.view.search_drilldown = SearchDrilldown::AlbumDetail {
     album_id: album_id.to_string(),
     title: title.to_string(),
@@ -595,6 +597,13 @@ pub fn open_album_drilldown(app: &mut App, album_id: &str, title: &str, year: &O
     selected_index: 0,
     from_artist: prev_drilldown,
   };
+
+  if need_fetch {
+    app.dispatch(crate::infra::network::IoEvent::FetchAlbumDetail(
+      album_id.to_string(),
+      title.to_string(),
+    ));
+  }
 }
 
 pub fn open_artist_drilldown(app: &mut App, artist_id: &str, name: &str) {
@@ -621,6 +630,8 @@ pub fn open_artist_drilldown(app: &mut App, artist_id: &str, name: &str) {
     }
   }
 
+  let need_fetch = top_songs.is_empty() || albums.is_empty();
+
   app.view.search_drilldown = SearchDrilldown::ArtistDetail {
     artist_id: artist_id.to_string(),
     name: name.to_string(),
@@ -629,11 +640,28 @@ pub fn open_artist_drilldown(app: &mut App, artist_id: &str, name: &str) {
     focus_section: ArtistDetailSection::TopSongs,
     selected_index: 0,
   };
+
+  if need_fetch {
+    app.dispatch(crate::infra::network::IoEvent::FetchArtistDetail(
+      artist_id.to_string(),
+      name.to_string(),
+    ));
+  }
 }
 
 fn handle_drilldown_events(key: Key, app: &mut App) {
   match key {
-    Key::Esc | Key::Char('q') => {
+    Key::Esc | Key::Char('q') | Key::Backspace => {
+      match &app.view.search_drilldown {
+        SearchDrilldown::AlbumDetail { from_artist: Some(prev), .. } => {
+          app.view.search_drilldown = *prev.clone();
+        }
+        _ => {
+          app.view.search_drilldown = SearchDrilldown::None;
+        }
+      }
+    }
+    k if k == app.user_config.keys.back => {
       match &app.view.search_drilldown {
         SearchDrilldown::AlbumDetail { from_artist: Some(prev), .. } => {
           app.view.search_drilldown = *prev.clone();

@@ -244,7 +244,7 @@ impl YouTubeImporter {
     }
 
     /// Primary Extraction: YouTube Music InnerTube browse endpoint
-    async fn fetch_innertube_playlist(
+    pub async fn fetch_innertube_playlist(
         &self,
         playlist_id: &str,
     ) -> Result<(ImportedPlaylist, Vec<PlaylistTrack>)> {

@@ -746,6 +746,7 @@ pub fn route_name(route: &crate::core::app::Route) -> String {
     RouteId::LocalBrowser => "local_browser",
     RouteId::Stats => "stats",
     RouteId::PlaylistSync => "playlist_sync",
+    RouteId::Playlists => "playlists",
     #[cfg(feature = "ai-dj")]
     RouteId::AiDj => "ai_dj",
     RouteId::PluginScreen(name) => return format!("plugin:{name}"),

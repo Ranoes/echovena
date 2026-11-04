@@ -504,12 +504,8 @@ fn select_clicked_library_item(mouse_row: u16, list_area: Rect, app: &mut App) {
     return;
   };
 
-  let was_selected = selected_index == clicked_index;
   library::select_row(app, clicked_index);
-
-  if was_selected {
-    library::activate_selected(app);
-  }
+  library::activate_selected(app);
 }
 
 fn select_clicked_playlist(mouse_row: u16, list_area: Rect, app: &mut App) {
@@ -536,13 +532,8 @@ fn select_clicked_playlist(mouse_row: u16, list_area: Rect, app: &mut App) {
     return;
   };
 
-  let was_selected = app.view.selected_playlist_index == Some(clicked_index);
   app.view.selected_playlist_index = Some(clicked_index);
-
-  // Open the selected item when clicking it again.
-  if was_selected {
-    playlist::activate_selected(app);
-  }
+  playlist::activate_selected(app);
 }
 
 fn select_clicked_content_table_item(
@@ -560,6 +551,7 @@ fn select_clicked_content_table_item(
   // re-deriving one from the selection.
   let anchored_offset = match active_block {
     ActiveBlock::TrackTable => Some(app.view.track_table_scroll_offset.get()),
+    ActiveBlock::Playlists => Some(app.view.playlist_scroll_offset.get()),
     _ => None,
   };
 
@@ -575,13 +567,34 @@ fn select_clicked_content_table_item(
 
   let was_selected = content_table_selected_index(active_block, app) == clicked_index;
   set_content_table_selected_index(active_block, clicked_index, app);
-  if was_selected {
+  if was_selected || matches!(active_block, ActiveBlock::Playlists | ActiveBlock::SearchResultBlock) {
     super::handle_block_events(Key::Enter, app);
   }
 }
 
 fn content_table_item_count(active_block: ActiveBlock, app: &App) -> usize {
   match active_block {
+    ActiveBlock::Playlists => crate::tui::handlers::playlist::get_playlist_tree_items(app).len(),
+    ActiveBlock::SearchResultBlock => {
+      match &app.view.search_drilldown {
+        crate::core::app::SearchDrilldown::AlbumDetail { tracks, .. } => tracks.len(),
+        crate::core::app::SearchDrilldown::ArtistDetail { top_songs, albums, focus_section, .. } => {
+          match focus_section {
+            crate::core::app::ArtistDetailSection::TopSongs => top_songs.len(),
+            crate::core::app::ArtistDetailSection::Albums => albums.len(),
+          }
+        }
+        crate::core::app::SearchDrilldown::None => {
+          if !app.live_search_items.is_empty() {
+            app.live_search_items.len()
+          } else if let Some(ref tracks) = app.search_results().tracks {
+            tracks.items.len()
+          } else {
+            0
+          }
+        }
+      }
+    }
     ActiveBlock::AlbumList => app
       .library()
       .saved_albums
@@ -625,6 +638,20 @@ fn content_table_item_count(active_block: ActiveBlock, app: &App) -> usize {
 
 fn content_table_selected_index(active_block: ActiveBlock, app: &App) -> usize {
   match active_block {
+    ActiveBlock::Playlists => app.view.selected_playlist_index.unwrap_or(0),
+    ActiveBlock::SearchResultBlock => {
+      match &app.view.search_drilldown {
+        crate::core::app::SearchDrilldown::AlbumDetail { selected_index, .. } => *selected_index,
+        crate::core::app::SearchDrilldown::ArtistDetail { selected_index, .. } => *selected_index,
+        crate::core::app::SearchDrilldown::None => {
+          if !app.live_search_items.is_empty() {
+            app.live_search_selected_index
+          } else {
+            app.view.search_selected_tracks_index.unwrap_or(0)
+          }
+        }
+      }
+    }
     ActiveBlock::AlbumList => app.view.album_list_index,
     ActiveBlock::TrackTable => app.view.track_table_index,
     ActiveBlock::AlbumTracks => match app.album_table_context {
@@ -645,6 +672,26 @@ fn content_table_selected_index(active_block: ActiveBlock, app: &App) -> usize {
 
 fn set_content_table_selected_index(active_block: ActiveBlock, index: usize, app: &mut App) {
   match active_block {
+    ActiveBlock::Playlists => {
+      app.view.selected_playlist_index = Some(index);
+    }
+    ActiveBlock::SearchResultBlock => {
+      match &mut app.view.search_drilldown {
+        crate::core::app::SearchDrilldown::AlbumDetail { selected_index, .. } => {
+          *selected_index = index;
+        }
+        crate::core::app::SearchDrilldown::ArtistDetail { selected_index, .. } => {
+          *selected_index = index;
+        }
+        crate::core::app::SearchDrilldown::None => {
+          if !app.live_search_items.is_empty() {
+            app.live_search_selected_index = index;
+          } else {
+            app.view.search_selected_tracks_index = Some(index);
+          }
+        }
+      }
+    }
     ActiveBlock::AlbumList => app.view.album_list_index = index,
     ActiveBlock::TrackTable => {
       app.forget_pending_row_selection();

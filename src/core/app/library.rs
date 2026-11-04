@@ -620,7 +620,7 @@ impl App {
         self.push_navigation_stack(RouteId::Search, ActiveBlock::SearchResultBlock);
       }
       LibraryTarget::Playlists => {
-        self.push_navigation_stack(RouteId::Home, ActiveBlock::MyPlaylists);
+        self.push_navigation_stack(RouteId::Playlists, ActiveBlock::Playlists);
       }
       LibraryTarget::Settings => {
         self.push_navigation_stack(RouteId::Settings, ActiveBlock::Settings);

@@ -51,8 +51,8 @@ pub fn draw_search_drilldown(f: &mut Frame<'_>, app: &App, area: Rect) {
       let mut rows = Vec::new();
       if tracks.is_empty() {
         rows.push(Line::from(Span::styled(
-          "  (Loading album tracks or no tracks found...)",
-          Style::default().fg(Color::Yellow),
+          "  ⟳ Querying album tracklist from InnerTube / Lossless Relay...",
+          Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
         )));
       } else {
         for (idx, track) in tracks.iter().enumerate() {
@@ -151,7 +151,7 @@ pub fn draw_search_drilldown(f: &mut Frame<'_>, app: &App, area: Rect) {
 
       let mut song_rows = Vec::new();
       if top_songs.is_empty() {
-        song_rows.push(Line::from(Span::styled("  (No songs found)", Style::default().fg(Color::DarkGray))));
+        song_rows.push(Line::from(Span::styled("  ⟳ Fetching top songs...", Style::default().fg(Color::Yellow))));
       } else {
         for (idx, track) in top_songs.iter().enumerate() {
           let is_selected = is_songs_focused && idx == *selected_index;
@@ -184,7 +184,7 @@ pub fn draw_search_drilldown(f: &mut Frame<'_>, app: &App, area: Rect) {
 
       let mut album_rows = Vec::new();
       if albums.is_empty() {
-        album_rows.push(Line::from(Span::styled("  (No albums found)", Style::default().fg(Color::DarkGray))));
+        album_rows.push(Line::from(Span::styled("  ⟳ Fetching artist albums...", Style::default().fg(Color::Yellow))));
       } else {
         for (idx, album) in albums.iter().enumerate() {
           let is_selected = is_albums_focused && idx == *selected_index;

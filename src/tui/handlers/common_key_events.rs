@@ -112,6 +112,7 @@ pub fn content_active_block_for_route(route_id: &RouteId) -> Option<ActiveBlock>
     RouteId::LocalBrowser => Some(ActiveBlock::LocalBrowser),
     RouteId::Stats => Some(ActiveBlock::Stats),
     RouteId::PlaylistSync => Some(ActiveBlock::PlaylistSync),
+    RouteId::Playlists => Some(ActiveBlock::Playlists),
     // Without this the right-arrow from the sidebar silently does nothing: the
     // match has a `_ => None` fallthrough, so it compiles either way.
     #[cfg(feature = "ai-dj")]

@@ -83,6 +83,12 @@ fn key_reaches_handlers_before_back(app: &App, key: Key) -> bool {
   if app.view.url_import_visible || app.view.relay_status_visible || app.view.karaoke_stage_visible || app.view.sync_auth_modal.is_some() {
     return true;
   }
+  if app.view.search_drilldown != crate::core::app::SearchDrilldown::None {
+    return true;
+  }
+  if app.get_current_route().active_block == ActiveBlock::Playlists {
+    return true;
+  }
   if modal_captures_key_before_back(app) {
     return true;
   }

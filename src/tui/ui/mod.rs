@@ -13,6 +13,7 @@ pub mod library;
 pub mod lyrics;
 pub mod player;
 pub mod playlist_sync;
+pub mod playlist_tree;
 pub mod plugin_screen;
 pub mod popups;
 pub mod retro;
@@ -128,6 +129,9 @@ fn draw_route_content(f: &mut Frame<'_>, app: &App, content_area: Rect) {
     }
     RouteId::Stats => {
       draw_stats(f, app, content_area);
+    }
+    RouteId::Playlists => {
+      playlist_tree::draw_playlist_tree_view(f, app, content_area);
     }
     RouteId::PlaylistSync => {
       draw_playlist_sync(f, app, content_area);

@@ -84,13 +84,15 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
 
     let mode_str = app.view.karaoke_display_mode.label();
     let align_str = app.view.karaoke_alignment.label();
-    let provider_str = crate::core::app::LYRIC_PROVIDERS
-        .get(app.view.karaoke_provider_index)
-        .copied()
-        .unwrap_or("LRCLIB (.elrc)");
+    let provider_str = app
+        .view
+        .active_karaoke_timeline
+        .as_ref()
+        .map(|tl| tl.provider.as_str())
+        .unwrap_or("Auto Waterfall");
 
     let title_line = format!(
-        " EchoVena — KARAOKE STAGE (60 FPS) | Mode: {} [T] | Align: {} [K] | Provider: {} [P] | Offset: {} | [Esc/k] Exit ",
+        " EchoVena — KARAOKE STAGE (60 FPS) | Mode: {} [T] | Align: {} [K] | Source: {} (Auto) | [R] Re-fetch | Offset: {} | [Esc/q] Exit ",
         mode_str, align_str, provider_str, offset_str
     );
 
