@@ -343,26 +343,19 @@ fn handle_enter_event_on_selected_block(app: &mut App) {
         };
         paged.items.clone()
       };
-      // No selection: an out-of-range index yields `offset: None`.
+      // No selection: an out-of-range index yields None
       let selected = app
         .view
         .search_selected_tracks_index
         .unwrap_or(items.len());
-      let (uris, offset) = common_key_events::uri_playback_request(
-        items.iter().map(|track| track.uri.clone()),
-        selected,
-      );
-
-      // Populate native queue with upcoming search tracks so search results become the active queue
-      app.native_queue.clear();
-      for i in (selected + 1)..items.len() {
-        app.native_queue.push(items[i].clone());
+      if let Some(track) = items.get(selected) {
+        if let Some(ref uri) = track.uri {
+          app.apply(Action::PlayUris {
+            uris: vec![uri.clone()],
+            offset: Some(0),
+          });
+        }
       }
-      for i in 0..selected {
-        app.native_queue.push(items[i].clone());
-      }
-
-      app.apply(Action::PlayUris { uris, offset });
     }
     SearchResultBlock::ArtistSearch => {
       if let Some((id, name)) = selected_search_artist_identity(app) {

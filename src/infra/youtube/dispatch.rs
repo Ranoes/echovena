@@ -703,7 +703,9 @@ async fn download_audio(
   video_id: &str,
 ) -> Result<(NamedTempFile, std::path::PathBuf, Option<TrackInfo>)> {
   if let Some(cached) = super::cached_audio_path(video_id) {
-    let tmp = create_audio_tempfile(".m4a")?;
+    let ext = cached.extension().and_then(|e| e.to_str()).unwrap_or("m4a");
+    let tmp = create_audio_tempfile(&format!(".{ext}"))?;
+    let _ = std::fs::copy(&cached, tmp.path());
     return Ok((tmp, cached, None));
   }
   // Check local offline archive in SQLite
@@ -717,7 +719,9 @@ async fn download_audio(
       if let Some(archive_path_str) = res.local_archive_path {
         let p = std::path::PathBuf::from(archive_path_str);
         if p.exists() {
-          let tmp = create_audio_tempfile(".flac")?;
+          let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("flac");
+          let tmp = create_audio_tempfile(&format!(".{ext}"))?;
+          let _ = std::fs::copy(&p, tmp.path());
           return Ok((tmp, p, None));
         }
       }
@@ -729,8 +733,11 @@ async fn download_audio(
   let play_path = if let Some(cached) = super::cached_audio_path(video_id) {
     cached
   } else {
-    tmp_path
+    tmp_path.clone()
   };
+  if play_path != tmp_path && play_path.exists() {
+    let _ = std::fs::copy(&play_path, &tmp_path);
+  }
   Ok((tmp, play_path, resolved))
 }
 
@@ -740,7 +747,11 @@ async fn download_audio(
 #[allow(dead_code)]
 pub(crate) async fn download_for_queue(source: &YouTubeSource, uri: &str) -> Result<NamedTempFile> {
   let video_id = video_id_from_uri(uri)?.to_string();
-  download_audio(source, &video_id).await.map(|(tmp, _, _)| tmp)
+  let (tmp, play_path, _) = download_audio(source, &video_id).await?;
+  if play_path != tmp.path() && play_path.exists() {
+    let _ = std::fs::copy(&play_path, tmp.path());
+  }
+  Ok(tmp)
 }
 
 pub(crate) async fn download_for_queue_track(
@@ -749,7 +760,11 @@ pub(crate) async fn download_for_queue_track(
   track: &TrackInfo,
 ) -> Result<NamedTempFile> {
   let video_id = resolve_or_extract_video_id(app, track).await?;
-  download_audio(source, &video_id).await.map(|(tmp, _, _)| tmp)
+  let (tmp, play_path, _) = download_audio(source, &video_id).await?;
+  if play_path != tmp.path() && play_path.exists() {
+    let _ = std::fs::copy(&play_path, tmp.path());
+  }
+  Ok(tmp)
 }
 
 /// Decode-failure hint: without ffmpeg on `$PATH`, yt-dlp leaves the download

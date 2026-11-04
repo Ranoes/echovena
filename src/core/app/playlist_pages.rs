@@ -393,22 +393,14 @@ impl App {
       let name = track.display_name(self.strings()).to_owned();
       self.set_status_message(format!("Playing \"{}\"", name), 3);
 
-      // Populate track table with the search list
+      // Populate track table with the search list for browsing
       self.track_table.tracks = self.live_search_items.iter().map(|it| it.to_track_info()).collect();
       self.track_table.context = Some(crate::core::app::TrackTableContext::YouTubePlaylist);
 
-      // Populate native queue with upcoming search tracks so search results become the active queue
-      self.native_queue.clear();
-      let offset = self.live_search_selected_index;
-      for i in (offset + 1)..self.live_search_items.len() {
-        self.native_queue.push(self.live_search_items[i].to_track_info());
+      // Play only the selected track without wiping or queueing all search results
+      if let Some(ref uri) = track.uri {
+        self.start_playback_uris(vec![uri.clone()], Some(0));
       }
-      for i in 0..offset {
-        self.native_queue.push(self.live_search_items[i].to_track_info());
-      }
-
-      let uris: Vec<String> = self.live_search_items.iter().filter_map(|it| it.to_track_info().uri).collect();
-      self.start_playback_uris(uris, Some(offset));
     }
   }
 

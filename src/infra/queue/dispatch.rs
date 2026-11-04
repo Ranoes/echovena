@@ -406,6 +406,7 @@ async fn play_queued_subsonic(app: &Arc<Mutex<App>>, track: &TrackInfo, uri: &st
   let Some(player) = acquire_queue_player(app).await else {
     return false;
   };
+  player.pause();
   let fetch_id = publish_pending_decoded(app, &player, track).await;
   // Fetch off the IoEvent pump: awaiting the download here would freeze every
   // other event (skips included, for every source) for its whole duration.
@@ -432,6 +433,7 @@ async fn play_queued_qobuz(app: &Arc<Mutex<App>>, track: &TrackInfo, uri: &str) 
   let Some(player) = acquire_queue_player(app).await else {
     return false;
   };
+  player.pause();
   let fetch_id = publish_pending_decoded(app, &player, track).await;
   let quality = app.lock().await.user_config.behavior.qobuz_quality;
   // Fetch off the IoEvent pump, like Subsonic: a Qobuz track is a long download.
@@ -455,6 +457,7 @@ async fn play_queued_youtube(app: &Arc<Mutex<App>>, track: &TrackInfo, _uri: &st
   let Some(player) = acquire_queue_player(app).await else {
     return false;
   };
+  player.pause();
   let fetch_id = publish_pending_decoded(app, &player, track).await;
   {
     let mut guard = app.lock().await;

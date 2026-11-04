@@ -58,11 +58,7 @@ impl App {
       return;
     }
     let name = track.display_name(self.strings()).to_owned();
-    self.native_queue.push(track.clone());
-    #[cfg(feature = "youtube")]
-    if let Some(ref mut s) = self.youtube_playback {
-      s.tracks.push(track);
-    }
+    self.native_queue.push(track);
     info!(
       "queued {uri} at position {} of the native queue",
       self.native_queue.len()
@@ -104,12 +100,7 @@ impl App {
       return;
     }
     let name = track.display_name(self.strings()).to_owned();
-    self.native_queue.insert(0, track.clone());
-    #[cfg(feature = "youtube")]
-    if let Some(ref mut s) = self.youtube_playback {
-      let insert_pos = (s.index + 1).min(s.tracks.len());
-      s.tracks.insert(insert_pos, track);
-    }
+    self.native_queue.insert(0, track);
     info!("queued next {uri} at head of the native queue");
     self.set_status_message(format!("Queued next: \"{}\"", name), 3);
     #[cfg(feature = "streaming")]
