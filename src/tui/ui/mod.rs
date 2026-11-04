@@ -17,6 +17,7 @@ pub mod plugin_screen;
 pub mod popups;
 pub mod retro;
 pub mod search;
+pub mod search_drilldown;
 pub mod settings;
 pub mod stats;
 pub mod tables;

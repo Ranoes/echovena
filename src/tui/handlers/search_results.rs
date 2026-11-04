@@ -1,8 +1,9 @@
 use super::common_key_events;
 use crate::core::action::{Action, OpenTarget};
-use crate::core::app::{ActiveBlock, App, DialogContext, RouteId, SearchResultBlock};
+use crate::core::app::{ActiveBlock, App, ArtistDetailSection, DialogContext, RouteId, SearchDrilldown, SearchResultBlock};
 use crate::core::plugin_api::{ShowInfo, TrackInfo};
 use crate::core::source::Source;
+use crate::sources::youtube_search::SearchScope;
 use crate::tui::event::Key;
 
 fn handle_down_press_on_selected_block(app: &mut App) {
@@ -329,11 +330,17 @@ fn selected_search_show_id(app: &App) -> Option<String> {
 fn handle_enter_event_on_selected_block(app: &mut App) {
   match &app.view.search_selected_block {
     SearchResultBlock::AlbumSearch => {
+      if let Some(idx) = app.view.search_selected_album_index {
+        if let Some(album) = app.search_results().albums.as_ref().and_then(|a| a.items.get(idx)) {
+          let id = album.id.clone().unwrap_or_default();
+          let title = album.name.clone();
+          let year = album.release_date.clone();
+          open_album_drilldown(app, &id, &title, &year);
+          return;
+        }
+      }
       if let Some(id) = selected_search_album_id(app) {
-        app.apply(Action::Open(OpenTarget::Album {
-          id,
-          from_search: true,
-        }));
+        open_album_drilldown(app, &id, "Album", &None);
       }
     }
     SearchResultBlock::SongSearch => {
@@ -359,7 +366,7 @@ fn handle_enter_event_on_selected_block(app: &mut App) {
     }
     SearchResultBlock::ArtistSearch => {
       if let Some((id, name)) = selected_search_artist_identity(app) {
-        app.apply(Action::Open(OpenTarget::Artist { id, name }));
+        open_artist_drilldown(app, &id, &name);
       }
     }
     SearchResultBlock::PlaylistSearch => {
@@ -535,7 +542,210 @@ fn handle_radio_key(key: Key, app: &mut App) {
   }
 }
 
+pub fn open_album_drilldown(app: &mut App, album_id: &str, title: &str, year: &Option<String>) {
+  let prev_drilldown = if matches!(app.view.search_drilldown, SearchDrilldown::ArtistDetail { .. }) {
+    Some(Box::new(app.view.search_drilldown.clone()))
+  } else {
+    None
+  };
+
+  let mut tracks = Vec::new();
+  if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+    if let Ok(pl_tracks) = db.get_playlist_tracks(album_id) {
+      for t in pl_tracks {
+        tracks.push(TrackInfo {
+          uri: Some(t.source_track_id.clone()),
+          name: t.clean_title,
+          artists: vec![t.artist],
+          album: title.to_string(),
+          duration_ms: t.duration_ms as u64,
+          id: Some(t.source_track_id),
+          album_id: Some(album_id.to_string()),
+          artist_refs: Vec::new(),
+          is_playable: true,
+          is_local: false,
+          track_number: 1,
+          explicit: false,
+          image_url: t.cover_art_url,
+          release_date: None,
+          generated_name: None,
+        });
+      }
+    }
+  }
+
+  // Populate from existing search results if album has matching tracks
+  if tracks.is_empty() {
+    if let Some(ref paged) = app.search_results().tracks {
+      for t in &paged.items {
+        if t.album.to_lowercase().contains(&title.to_lowercase()) {
+          tracks.push(t.clone());
+        }
+      }
+    }
+  }
+
+  app.view.search_drilldown = SearchDrilldown::AlbumDetail {
+    album_id: album_id.to_string(),
+    title: title.to_string(),
+    artist: String::new(),
+    year: year.clone(),
+    cover_art_url: None,
+    tracks,
+    selected_index: 0,
+    from_artist: prev_drilldown,
+  };
+}
+
+pub fn open_artist_drilldown(app: &mut App, artist_id: &str, name: &str) {
+  let mut top_songs = Vec::new();
+  let mut albums = Vec::new();
+
+  if let Some(ref paged) = app.search_results().tracks {
+    for t in &paged.items {
+      if t.artists.iter().any(|a| a.to_lowercase().contains(&name.to_lowercase())) {
+        top_songs.push(t.clone());
+      }
+    }
+  }
+  if let Some(ref paged_albums) = app.search_results().albums {
+    for a in &paged_albums.items {
+      if a.artists.iter().any(|ar| ar.name.to_lowercase().contains(&name.to_lowercase())) {
+        albums.push(crate::core::app::AlbumDetailHeader {
+          id: a.id.clone().unwrap_or_default(),
+          title: a.name.clone(),
+          year: a.release_date.clone(),
+          track_count: 0,
+        });
+      }
+    }
+  }
+
+  app.view.search_drilldown = SearchDrilldown::ArtistDetail {
+    artist_id: artist_id.to_string(),
+    name: name.to_string(),
+    albums,
+    top_songs,
+    focus_section: ArtistDetailSection::TopSongs,
+    selected_index: 0,
+  };
+}
+
+fn handle_drilldown_events(key: Key, app: &mut App) {
+  match key {
+    Key::Esc | Key::Char('q') => {
+      match &app.view.search_drilldown {
+        SearchDrilldown::AlbumDetail { from_artist: Some(prev), .. } => {
+          app.view.search_drilldown = *prev.clone();
+        }
+        _ => {
+          app.view.search_drilldown = SearchDrilldown::None;
+        }
+      }
+    }
+    k if common_key_events::down_event(k, &app.user_config.keys) => {
+      match &mut app.view.search_drilldown {
+        SearchDrilldown::AlbumDetail { tracks, selected_index, .. } => {
+          if !tracks.is_empty() {
+            *selected_index = (*selected_index + 1).min(tracks.len().saturating_sub(1));
+          }
+        }
+        SearchDrilldown::ArtistDetail { top_songs, albums, focus_section, selected_index, .. } => {
+          match focus_section {
+            ArtistDetailSection::TopSongs => {
+              if !top_songs.is_empty() {
+                *selected_index = (*selected_index + 1).min(top_songs.len().saturating_sub(1));
+              }
+            }
+            ArtistDetailSection::Albums => {
+              if !albums.is_empty() {
+                *selected_index = (*selected_index + 1).min(albums.len().saturating_sub(1));
+              }
+            }
+          }
+        }
+        _ => {}
+      }
+    }
+    k if common_key_events::up_event(k, &app.user_config.keys) => {
+      match &mut app.view.search_drilldown {
+        SearchDrilldown::AlbumDetail { selected_index, .. } => {
+          *selected_index = selected_index.saturating_sub(1);
+        }
+        SearchDrilldown::ArtistDetail { selected_index, .. } => {
+          *selected_index = selected_index.saturating_sub(1);
+        }
+        _ => {}
+      }
+    }
+    Key::Tab | Key::BackTab | Key::Char('h') | Key::Char('l') | Key::Left | Key::Right => {
+      if let SearchDrilldown::ArtistDetail { focus_section, selected_index, .. } = &mut app.view.search_drilldown {
+        *focus_section = match focus_section {
+          ArtistDetailSection::TopSongs => ArtistDetailSection::Albums,
+          ArtistDetailSection::Albums => ArtistDetailSection::TopSongs,
+        };
+        *selected_index = 0;
+      }
+    }
+    Key::Enter => {
+      let drilldown_clone = app.view.search_drilldown.clone();
+      match drilldown_clone {
+        SearchDrilldown::AlbumDetail { tracks, selected_index, title, .. } => {
+          if let Some(track) = tracks.get(selected_index) {
+            let uris: Vec<String> = tracks.iter().filter_map(|t| t.uri.clone().or_else(|| t.id.clone())).collect();
+            if !uris.is_empty() {
+              app.apply(Action::PlayUris {
+                uris,
+                offset: Some(selected_index),
+              });
+              app.set_status_message(format!("Playing '{}' from album '{}'", track.name, title), 4);
+            }
+          }
+        }
+        SearchDrilldown::ArtistDetail { top_songs, albums, focus_section, selected_index, .. } => {
+          match focus_section {
+            ArtistDetailSection::TopSongs => {
+              if let Some(track) = top_songs.get(selected_index) {
+                if let Some(ref uri) = track.uri {
+                  app.apply(Action::PlayUris { uris: vec![uri.clone()], offset: Some(0) });
+                  app.set_status_message(format!("Playing '{}'", track.name), 4);
+                }
+              }
+            }
+            ArtistDetailSection::Albums => {
+              if let Some(album) = albums.get(selected_index) {
+                open_album_drilldown(app, &album.id, &album.title, &album.year);
+              }
+            }
+          }
+        }
+        _ => {}
+      }
+    }
+    Key::Char('z') => {
+      let track_opt = match &app.view.search_drilldown {
+        SearchDrilldown::AlbumDetail { tracks, selected_index, .. } => tracks.get(*selected_index).cloned(),
+        SearchDrilldown::ArtistDetail { top_songs, selected_index, focus_section: ArtistDetailSection::TopSongs, .. } => {
+          top_songs.get(*selected_index).cloned()
+        }
+        _ => None,
+      };
+      if let Some(track) = track_opt {
+        let name = track.name.clone();
+        app.apply(Action::QueueTrack(track));
+        app.set_status_message(format!("Queued '{}'", name), 3);
+      }
+    }
+    _ => {}
+  }
+}
+
 pub fn handler(key: Key, app: &mut App) {
+  if app.view.search_drilldown != SearchDrilldown::None {
+    handle_drilldown_events(key, app);
+    return;
+  }
+
   if app.active_source == Source::Radio {
     handle_radio_key(key, app);
     return;
@@ -570,6 +780,23 @@ pub fn handler(key: Key, app: &mut App) {
         return;
       }
       Key::Enter => {
+        if let Some(item) = app.selected_live_search_item().cloned() {
+          match item.scope {
+            SearchScope::Album => {
+              let id = item.playlist_id.as_deref().unwrap_or(&item.id);
+              open_album_drilldown(app, id, &item.title, &None);
+              return;
+            }
+            SearchScope::Artist => {
+              open_artist_drilldown(app, &item.id, &item.title);
+              return;
+            }
+            _ => {
+              app.play_selected_live_search_item();
+              return;
+            }
+          }
+        }
         app.play_selected_live_search_item();
         return;
       }

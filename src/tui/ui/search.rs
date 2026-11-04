@@ -180,6 +180,11 @@ fn draw_radio_station_results(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) 
 }
 
 pub fn draw_live_youtube_search(f: &mut Frame<'_>, app: &App, area: Rect) {
+  if let crate::core::app::SearchDrilldown::AlbumDetail { .. } | crate::core::app::SearchDrilldown::ArtistDetail { .. } = &app.view.search_drilldown {
+    super::search_drilldown::draw_search_drilldown(f, app, area);
+    return;
+  }
+
   let [scope_area, content_area] = area.layout(&Layout::vertical([
     Constraint::Length(3),
     Constraint::Min(4),
@@ -497,6 +502,11 @@ pub fn draw_live_youtube_search(f: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 pub fn draw_search_results(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
+  if let crate::core::app::SearchDrilldown::AlbumDetail { .. } | crate::core::app::SearchDrilldown::ArtistDetail { .. } = &app.view.search_drilldown {
+    super::search_drilldown::draw_search_drilldown(f, app, layout_chunk);
+    return;
+  }
+
   if app.active_source == crate::core::source::Source::Radio {
     draw_radio_station_results(f, app, layout_chunk);
     return;
