@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
 PackageIdentifier: Ranoes.EchoVena
-PackageVersion: 1.0.0
+PackageVersion: 1.1.0
 PackageLocale: en-US
 Publisher: Ranoes
 PublisherUrl: https://github.com/Ranoes
@@ -28,6 +28,6 @@ Tags:
   - youtube
   - karaoke
   - audio
-ReleaseNotesUrl: https://github.com/Ranoes/echovena/releases/tag/v1.0.0
+ReleaseNotesUrl: https://github.com/Ranoes/echovena/releases/tag/v1.1.0
 ManifestType: defaultLocale
 ManifestVersion: 1.6.0

@@ -2,7 +2,7 @@
 <package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
   <metadata>
     <id>echovena</id>
-    <version>1.0.0</version>
+    <version>1.1.0</version>
     <packageSourceUrl>https://github.com/Ranoes/echovena/tree/main/packaging/chocolatey</packageSourceUrl>
     <owners>Ranoes</owners>
     <title>EchoVena</title>
@@ -26,7 +26,7 @@ EchoVena is a lossless Hi-Res terminal music streamer, multi-platform (Spotify a
 - Local FLAC + .elrc Archiver
 - Dynamic Provider Registry (~/.config/echovena/providers.json)
     </description>
-    <releaseNotes>https://github.com/Ranoes/echovena/releases/tag/v1.0.0</releaseNotes>
+    <releaseNotes>https://github.com/Ranoes/echovena/releases/tag/v1.1.0</releaseNotes>
   </metadata>
   <files>
     <file src="tools\**" target="tools" />
