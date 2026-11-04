@@ -346,8 +346,10 @@ impl App {
     // A saved Apple Music scope can outlive the build that offered it. Restore
     // only a source the current picker can select, keeping both mirrors in sync.
     let sources = Source::picker_sources();
-    if !sources.contains(&runtime_state.active_source) {
-      runtime_state.active_source = sources[0];
+    if !sources.contains(&runtime_state.active_source)
+      || (!spotify_connected && runtime_state.active_source == Source::Spotify)
+    {
+      runtime_state.active_source = Source::YouTube;
     }
     let active_source = runtime_state.active_source;
     // Same reason: read before the move. The config only seeds the DJ's filter;

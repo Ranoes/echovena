@@ -201,7 +201,7 @@ fn play_random_song(app: &mut App) {
           .track_table
           .tracks
           .iter()
-          .filter_map(|track| track.uri.clone())
+          .filter_map(|track| track.uri.clone().or_else(|| track.id.clone()))
           .collect();
         if !playable_ids.is_empty() {
           let rand_idx = rand::random_range(0..playable_ids.len());
@@ -223,7 +223,7 @@ fn play_random_song(app: &mut App) {
           .track_table
           .tracks
           .iter()
-          .filter_map(|track| track.uri.clone())
+          .filter_map(|track| track.uri.clone().or_else(|| track.id.clone()))
           .collect();
         if !playable_ids.is_empty() {
           let rand_idx = rand::random_range(0..playable_ids.len());
@@ -248,7 +248,7 @@ fn play_random_song(app: &mut App) {
             app.track_table.context != Some(TrackTableContext::AppleMusicPlaylist)
               || track.is_playable
           })
-          .filter_map(|track| track.uri.clone())
+          .filter_map(|track| track.uri.clone().or_else(|| track.id.clone()))
           .collect();
         if !playable_ids.is_empty() {
           let rand_idx = rand::random_range(0..playable_ids.len());

@@ -252,7 +252,7 @@ impl App {
         IoEvent::GetQobuzTracks(uri),
       )
     } else {
-      // Unknown scheme: silent no-op, like the other opening paths.
+      self.set_status_message("Playlist not found in local library. Sync or import first.".to_string(), 4);
       return;
     };
     self.dispatch(event);

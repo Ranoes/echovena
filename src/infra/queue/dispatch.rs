@@ -331,7 +331,26 @@ async fn try_play_queued(app: &Arc<Mutex<App>>, track: &TrackInfo) -> bool {
     #[cfg(feature = "youtube")]
     QueueItemSource::YouTube => play_queued_youtube(app, track, &uri).await,
     #[cfg(feature = "streaming")]
-    QueueItemSource::Spotify => play_queued_spotify(app, track, &uri).await,
+    QueueItemSource::Spotify => {
+      let spotify_playable = {
+        let guard = app.lock().await;
+        guard.active_source == Source::Spotify
+          && (guard.native_backend_parked()
+            || guard.streaming_player.as_ref().is_some_and(|p| p.is_available()))
+      };
+      if spotify_playable {
+        play_queued_spotify(app, track, &uri).await
+      } else {
+        #[cfg(feature = "youtube")]
+        {
+          play_queued_youtube(app, track, &uri).await
+        }
+        #[cfg(not(feature = "youtube"))]
+        {
+          play_queued_spotify(app, track, &uri).await
+        }
+      }
+    }
     // `add_track_to_native_queue` refuses these; a hand-edited session file
     // is the only other way in.
     QueueItemSource::AppleMusic => {

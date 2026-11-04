@@ -228,12 +228,12 @@ pub(super) async fn prepare_frontend(boot: Boot) -> FrontendHandles {
   // say so once, before the first key press reaches the auth gate.
   {
     let mut app_mut = app.lock().await;
+    if spotify.is_none() && app_mut.active_source == crate::core::source::Source::Spotify {
+      app_mut.active_source = crate::core::source::Source::YouTube;
+    }
     if app_mut.status_message().is_none() {
       if let Some(message) = startup_notice {
         app_mut.set_status_message(message, 15);
-      } else if spotify.is_none() && app_mut.active_source == crate::core::source::Source::Spotify {
-        let message = app_mut.strings().status.app.spotify_not_connected;
-        app_mut.set_status_message(message, 8);
       }
     }
   }

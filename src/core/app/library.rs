@@ -428,41 +428,70 @@ impl App {
       if let Some(root) = crate::core::paths::music_archive_dir() {
         crate::sources::lossless_relay::archiver::scan_and_sync_local_downloads(&db, &root);
       }
-      if let Ok(downloaded) = db.list_downloaded_tracks() {
-        if !downloaded.is_empty() {
-          let local_tracks: Vec<crate::core::plugin_api::TrackInfo> = downloaded
-            .into_iter()
-            .enumerate()
-            .map(|(i, d)| crate::core::plugin_api::TrackInfo {
-              uri: Some(d.source_track_id.clone()),
-              name: d.title,
-              artists: vec![d.artist],
-              album: d.album.unwrap_or_default(),
-              duration_ms: d.duration_ms,
-              id: Some(d.source_track_id),
-              album_id: None,
-              artist_refs: Vec::new(),
-              is_playable: true,
-              is_local: true,
-              track_number: (i + 1) as u32,
-              explicit: false,
-              image_url: d.cover_art_url,
-              release_date: None,
-              generated_name: None,
-            })
-            .collect();
+      let mut local_tracks: Vec<crate::core::plugin_api::TrackInfo> = Vec::new();
 
-          if self.track_table.tracks.is_empty() {
-            self.track_table.tracks = local_tracks;
-          } else {
-            for lt in local_tracks {
-              if !self.track_table.tracks.iter().any(|t| t.uri == lt.uri || t.id == lt.id) {
-                self.track_table.tracks.push(lt);
-              }
+      // 1. Load downloaded tracks from disk/SQLite
+      if let Ok(downloaded) = db.list_downloaded_tracks() {
+        for (i, d) in downloaded.into_iter().enumerate() {
+          local_tracks.push(crate::core::plugin_api::TrackInfo {
+            uri: Some(d.source_track_id.clone()),
+            name: d.title,
+            artists: vec![d.artist],
+            album: d.album.unwrap_or_default(),
+            duration_ms: d.duration_ms,
+            id: Some(d.source_track_id),
+            album_id: None,
+            artist_refs: Vec::new(),
+            is_playable: true,
+            is_local: true,
+            track_number: (i + 1) as u32,
+            explicit: false,
+            image_url: d.cover_art_url,
+            release_date: None,
+            generated_name: None,
+          });
+        }
+      }
+
+      // 2. Load synced Liked Songs from database if available
+      let liked_candidates = ["spotify:personal:liked_songs", "liked_songs", "collection:tracks"];
+      for cand in &liked_candidates {
+        if let Ok(tracks) = db.get_playlist_tracks(cand) {
+          for t in tracks {
+            if !local_tracks.iter().any(|existing| existing.id.as_deref() == Some(&t.source_track_id) || existing.uri.as_deref() == Some(&t.source_track_id)) {
+              local_tracks.push(crate::core::plugin_api::TrackInfo {
+                uri: Some(t.source_track_id.clone()),
+                name: t.clean_title,
+                artists: vec![t.artist],
+                album: t.album.unwrap_or_default(),
+                duration_ms: t.duration_ms as u64,
+                id: Some(t.source_track_id),
+                album_id: None,
+                artist_refs: Vec::new(),
+                is_playable: true,
+                is_local: false,
+                track_number: (local_tracks.len() + 1) as u32,
+                explicit: false,
+                image_url: t.cover_art_url,
+                release_date: None,
+                generated_name: None,
+              });
             }
           }
-          self.track_table.context = Some(TrackTableContext::SavedTracks);
         }
+      }
+
+      if !local_tracks.is_empty() {
+        if self.track_table.tracks.is_empty() {
+          self.track_table.tracks = local_tracks;
+        } else {
+          for lt in local_tracks {
+            if !self.track_table.tracks.iter().any(|t| t.uri == lt.uri || t.id == lt.id) {
+              self.track_table.tracks.push(lt);
+            }
+          }
+        }
+        self.track_table.context = Some(TrackTableContext::SavedTracks);
       }
     }
   }
@@ -481,7 +510,11 @@ impl App {
   /// Refresh the table from the Liked Songs cache only while the table still shows Liked Songs.
   pub(crate) fn refresh_saved_tracks_table(&mut self) {
     if self.track_table.context == Some(TrackTableContext::SavedTracks) {
-      self.set_saved_tracks_to_table_continuous();
+      if self.library.saved_tracks.pages.is_empty() {
+        self.populate_saved_tracks_from_local_and_db();
+      } else {
+        self.set_saved_tracks_to_table_continuous();
+      }
     } else {
       self.library.saved_tracks.index = self.saved_tracks_prefix().1;
     }
@@ -597,7 +630,7 @@ impl App {
     }
 
     if self.library.saved_tracks.pages.is_empty() {
-      self.track_table.tracks.clear();
+      self.populate_saved_tracks_from_local_and_db();
       self.view.track_table_index = 0;
       return;
     }

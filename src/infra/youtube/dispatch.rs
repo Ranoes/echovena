@@ -85,12 +85,13 @@ pub async fn route_youtube_event(app: &Arc<Mutex<App>>, event: &IoEvent) -> bool
     // Start a queue of videos: handle if YouTube URI or if Spotify is not active & connected
     IoEvent::StartPlayback(None, Some(uris), offset) => {
       let is_yt = uris.first().is_some_and(|u| is_youtube_uri(u)) || matches!(app.lock().await.track_table.context, Some(crate::core::app::TrackTableContext::YouTubePlaylist));
-      let is_foreign = uris.first().is_some_and(|u| u.starts_with("spotify:") || u.starts_with("radio:") || u.starts_with("local:"));
+      let is_foreign = uris.first().is_some_and(|u| u.starts_with("radio:") || u.starts_with("local:"));
       let spotify_active = {
         let guard = app.lock().await;
         guard.active_source == Source::Spotify && guard.spotify_connected
       };
-      if is_yt || (!spotify_active && !is_foreign) {
+      let is_spotify = uris.first().is_some_and(|u| u.starts_with("spotify:"));
+      if is_yt || (!is_foreign && (!is_spotify || !spotify_active)) {
         start_youtube_queue(app, uris, offset.unwrap_or(0)).await;
         true
       } else {
@@ -101,12 +102,13 @@ pub async fn route_youtube_event(app: &Arc<Mutex<App>>, event: &IoEvent) -> bool
     // Context with specific track(s) in queue
     IoEvent::StartPlayback(Some(_ctx), Some(uris), offset) => {
       let is_yt = uris.first().is_some_and(|u| is_youtube_uri(u)) || matches!(app.lock().await.track_table.context, Some(crate::core::app::TrackTableContext::YouTubePlaylist));
-      let is_foreign = uris.first().is_some_and(|u| u.starts_with("spotify:") || u.starts_with("radio:") || u.starts_with("local:"));
+      let is_foreign = uris.first().is_some_and(|u| u.starts_with("radio:") || u.starts_with("local:"));
       let spotify_active = {
         let guard = app.lock().await;
         guard.active_source == Source::Spotify && guard.spotify_connected
       };
-      if is_yt || (!spotify_active && !is_foreign) {
+      let is_spotify = uris.first().is_some_and(|u| u.starts_with("spotify:"));
+      if is_yt || (!is_foreign && (!is_spotify || !spotify_active)) {
         start_youtube_queue(app, uris, offset.unwrap_or(0)).await;
         true
       } else {
@@ -117,12 +119,13 @@ pub async fn route_youtube_event(app: &Arc<Mutex<App>>, event: &IoEvent) -> bool
     // Context URI or single video with no surrounding list
     IoEvent::StartPlayback(Some(uri), None, offset) => {
       let is_yt = is_youtube_uri(uri) || matches!(app.lock().await.track_table.context, Some(crate::core::app::TrackTableContext::YouTubePlaylist));
-      let is_foreign = uri.starts_with("spotify:") || uri.starts_with("radio:") || uri.starts_with("local:");
+      let is_foreign = uri.starts_with("radio:") || uri.starts_with("local:");
       let spotify_active = {
         let guard = app.lock().await;
         guard.active_source == Source::Spotify && guard.spotify_connected
       };
-      if is_yt || (!spotify_active && !is_foreign) {
+      let is_spotify = uri.starts_with("spotify:");
+      if is_yt || (!is_foreign && (!is_spotify || !spotify_active)) {
         let table_uris: Vec<String> = {
           let guard = app.lock().await;
           guard.track_table.tracks.iter().filter_map(|t| t.uri.clone().or_else(|| t.id.clone())).collect()
@@ -726,6 +729,22 @@ async fn download_audio(
         }
       }
     }
+    if let Ok(downloaded) = db.list_downloaded_tracks() {
+      if let Some(dt) = downloaded.into_iter().find(|d| {
+        d.source_track_id == video_id
+          || d.source_track_id == format!("youtube:{}", video_id)
+          || d.source_track_id == format!("yt:video:{}", video_id)
+          || d.file_path.contains(video_id)
+      }) {
+        let p = std::path::PathBuf::from(&dt.file_path);
+        if p.exists() {
+          let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("flac");
+          let tmp = create_audio_tempfile(&format!(".{ext}"))?;
+          let _ = std::fs::copy(&p, tmp.path());
+          return Ok((tmp, p, None));
+        }
+      }
+    }
   }
   let tmp = create_audio_tempfile(".m4a")?;
   let tmp_path = tmp.path().to_path_buf();
@@ -814,12 +833,23 @@ async fn resolve_or_extract_video_id(
   }
 
   // 3. Search via YouTube InnerTube (fast, zero API keys)
-  let query = format!("{} {}", track.name, track.artists.join(" "));
+  let mut track_name = track.name.clone();
+  let mut track_artists = track.artists.clone();
+  if track_artists.is_empty() || track_name.starts_with("spotify:") {
+    if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+      if let Ok(Some((title, artist))) = db.find_track_metadata(&track_key) {
+        track_name = title;
+        track_artists = vec![artist];
+      }
+    }
+  }
+
+  let query = format!("{} {}", track_name, track_artists.join(" "));
   let clean_query = query.trim();
   if !clean_query.is_empty() {
     {
       let mut guard = app.lock().await;
-      guard.set_status_message(format!("\u{1F50D} Resolving '{}' on YouTube...", track.name), 15);
+      guard.set_status_message(format!("\u{1F50D} Resolving '{}' on YouTube...", track_name), 15);
     }
 
     let client = crate::sources::youtube_search::InnerTubeClient::new();

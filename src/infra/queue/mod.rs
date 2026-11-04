@@ -36,7 +36,12 @@ pub fn snapshot_tracks(
   uris
     .iter()
     .map(|uri| {
-      let matches = |t: &&TrackInfo| t.uri.as_deref() == Some(uri.as_str());
+      let matches = |t: &&TrackInfo| {
+        t.uri.as_deref() == Some(uri.as_str())
+          || t.id.as_deref() == Some(uri.as_str())
+          || t.id.as_deref().is_some_and(|id| uri == &format!("spotify:track:{id}"))
+          || uri.strip_prefix("spotify:track:") == t.id.as_deref()
+      };
       table
         .iter()
         .find(matches)

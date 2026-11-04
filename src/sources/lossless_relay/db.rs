@@ -571,6 +571,35 @@ impl Database {
         }
         Ok(tracks)
     }
+
+    /// Retrieve track title and artist metadata from local database (downloaded or playlist tracks).
+    pub fn find_track_metadata(&self, source_track_id: &str) -> Result<Option<(String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let clean_id = source_track_id
+            .strip_prefix("spotify:track:")
+            .unwrap_or(source_track_id);
+        let spotify_id = format!("spotify:track:{}", clean_id);
+
+        // 1. Check downloaded_tracks
+        let mut stmt = conn.prepare(
+            "SELECT title, artist FROM downloaded_tracks WHERE source_track_id = ?1 OR source_track_id = ?2 LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![source_track_id, spotify_id])?;
+        if let Some(row) = rows.next()? {
+            return Ok(Some((row.get(0)?, row.get(1)?)));
+        }
+
+        // 2. Check playlist_tracks
+        let mut stmt2 = conn.prepare(
+            "SELECT clean_title, artist FROM playlist_tracks WHERE source_track_id = ?1 OR source_track_id = ?2 LIMIT 1",
+        )?;
+        let mut rows2 = stmt2.query(params![source_track_id, spotify_id])?;
+        if let Some(row) = rows2.next()? {
+            return Ok(Some((row.get(0)?, row.get(1)?)));
+        }
+
+        Ok(None)
+    }
 }
 
 #[cfg(test)]

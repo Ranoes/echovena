@@ -1,8 +1,6 @@
 //! The serial IoEvent pump: source routing by URI scheme, the service lane,
 //! and the party-relay drain. Every frontend drives `App` through this.
 
-#[cfg(test)]
-use crate::core::app::SPOTIFY_NOT_CONNECTED_STATUS;
 use crate::core::queue::{
   missing_source_feature, queue_item_source, source_available, QueueItemSource,
 };
@@ -37,17 +35,17 @@ fn start_playback_has_taker(event: &IoEvent, spotify_session: bool) -> bool {
       // Radio is never queued, so `queue_item_source` does not know its scheme.
       Some(uri) if uri.starts_with("radio:") => cfg!(feature = "internet-radio"),
       Some(uri) => match queue_item_source(uri) {
-        QueueItemSource::Spotify => spotify_session,
-        source => source_available(source),
+        QueueItemSource::Spotify => spotify_session || cfg!(feature = "youtube"),
+        source => source_available(source) || cfg!(feature = "youtube"),
       },
-      None => spotify_session,
+      None => spotify_session || cfg!(feature = "youtube"),
     },
     _ => true,
   }
 }
 
 /// Why the gate dropped a start: the source feature this build lacks, else
-/// the missing Spotify session.
+/// the unplayable entry status.
 #[cfg_attr(not(feature = "tui"), allow(dead_code))]
 fn dropped_start_status(event: &IoEvent, strings: &crate::core::i18n::Strings) -> String {
   if start_playback_uri(event).is_some_and(|uri| uri.starts_with("applemusic:"))
@@ -64,7 +62,7 @@ fn dropped_start_status(event: &IoEvent, strings: &crate::core::i18n::Strings) -
   };
   match missing_feature {
     Some(feature) => strings.status.runtime.feature_missing(feature),
-    None => strings.status.app.spotify_not_connected.to_string(),
+    None => strings.status.app.entry_not_playable.to_string(),
   }
 }
 
@@ -283,18 +281,26 @@ mod tests {
   }
 
   #[test]
-  fn a_spotify_start_needs_a_session() {
+  fn a_spotify_start_has_taker_with_youtube_or_session() {
     let start = IoEvent::StartPlayback(None, Some(vec!["spotify:track:x".to_string()]), Some(0));
 
     assert!(start_playback_has_taker(&start, true));
-    assert!(!start_playback_has_taker(&start, false));
+    if cfg!(feature = "youtube") {
+      assert!(start_playback_has_taker(&start, false));
+    } else {
+      assert!(!start_playback_has_taker(&start, false));
+    }
   }
 
   #[test]
-  fn an_empty_start_has_no_taker_without_a_session() {
+  fn an_empty_start_has_taker_status() {
     let empty = IoEvent::StartPlayback(None, Some(vec![]), Some(0));
 
-    assert!(!start_playback_has_taker(&empty, false));
+    if cfg!(feature = "youtube") {
+      assert!(start_playback_has_taker(&empty, false));
+    } else {
+      assert!(!start_playback_has_taker(&empty, false));
+    }
   }
 
   #[cfg(feature = "local-files")]
@@ -351,7 +357,7 @@ mod tests {
 
     assert_eq!(
       dropped_start_status(&start, &crate::core::i18n::EN),
-      SPOTIFY_NOT_CONNECTED_STATUS
+      crate::core::i18n::EN.status.app.entry_not_playable
     );
   }
 
