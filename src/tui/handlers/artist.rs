@@ -423,6 +423,16 @@ pub fn handler(key: Key, app: &mut App) {
           .filter(|artist| artist.artist_selected_block == ArtistBlock::TopTracks)
           .and_then(selected_top_track);
         if let Some(track) = track {
+          app.apply(Action::QueueTrackNext(track));
+        }
+      }
+      Key::Char('Z') => {
+        let track = app
+          .artist
+          .as_ref()
+          .filter(|artist| artist.artist_selected_block == ArtistBlock::TopTracks)
+          .and_then(selected_top_track);
+        if let Some(track) = track {
           app.apply(Action::QueueTrack(track));
         }
       }

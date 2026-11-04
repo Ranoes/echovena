@@ -58,15 +58,60 @@ impl App {
       return;
     }
     let name = track.display_name(self.strings()).to_owned();
-    self.native_queue.push(track);
+    self.native_queue.push(track.clone());
+    #[cfg(feature = "youtube")]
+    if let Some(ref mut s) = self.youtube_playback {
+      s.tracks.push(track);
+    }
     info!(
       "queued {uri} at position {} of the native queue",
       self.native_queue.len()
     );
-    self.set_status_message(self.strings().status.app.queued(&name), 3);
+    self.set_status_message(format!("Added to queue: \"{}\"", name), 3);
     // Keep the Spotify mirror queue ([`Self::queue`]) current while a native
     // Spotify context is playing: it is the snapshot source for the resume
     // target when this newly-queued item later suspends the context.
+    #[cfg(feature = "streaming")]
+    if self.is_native_streaming_active_for_playback() && !self.queue_owns_playback() {
+      self.dispatch(IoEvent::GetQueue);
+    }
+  }
+
+  /// Add a track to the head of the native cross-source queue (play next).
+  pub fn add_track_to_queue_next(&mut self, track: TrackInfo) {
+    if self.apple_music_owns_playback() {
+      self.set_status_message(self.strings().status.app.music_cannot_queue, 4);
+      return;
+    }
+    let Some(uri) = track.uri.clone() else {
+      self.set_status_message(self.strings().status.app.queue_no_uri, 3);
+      return;
+    };
+    if uri.starts_with("radio:") {
+      self.set_status_message(self.strings().status.app.radio_cannot_queue, 3);
+      return;
+    }
+    if uri.starts_with("applemusic:") {
+      self.set_status_message(self.strings().status.app.music_cannot_queue, 3);
+      return;
+    }
+    if matches!(
+      crate::core::queue::queue_item_source(&uri),
+      crate::core::queue::QueueItemSource::Spotify
+    ) && self.spotify_external_device_active()
+    {
+      self.dispatch(IoEvent::AddItemToQueue(uri));
+      return;
+    }
+    let name = track.display_name(self.strings()).to_owned();
+    self.native_queue.insert(0, track.clone());
+    #[cfg(feature = "youtube")]
+    if let Some(ref mut s) = self.youtube_playback {
+      let insert_pos = (s.index + 1).min(s.tracks.len());
+      s.tracks.insert(insert_pos, track);
+    }
+    info!("queued next {uri} at head of the native queue");
+    self.set_status_message(format!("Queued next: \"{}\"", name), 3);
     #[cfg(feature = "streaming")]
     if self.is_native_streaming_active_for_playback() && !self.queue_owns_playback() {
       self.dispatch(IoEvent::GetQueue);

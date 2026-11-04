@@ -269,6 +269,21 @@ fn handle_add_item_to_queue(app: &mut App) {
         .and_then(|tracks| tracks.items.get(index).cloned())
     });
     if let Some(track) = track {
+      app.apply(Action::QueueTrackNext(track));
+    }
+  }
+}
+
+fn handle_add_item_to_queue_end(app: &mut App) {
+  if let SearchResultBlock::SongSearch = app.view.search_selected_block {
+    let track = app.view.search_selected_tracks_index.and_then(|index| {
+      app
+        .search_results()
+        .tracks
+        .as_ref()
+        .and_then(|tracks| tracks.items.get(index).cloned())
+    });
+    if let Some(track) = track {
       app.apply(Action::QueueTrack(track));
     }
   }
@@ -322,18 +337,31 @@ fn handle_enter_event_on_selected_block(app: &mut App) {
       }
     }
     SearchResultBlock::SongSearch => {
-      let Some(paged) = app.search_results().tracks.as_ref() else {
-        return;
+      let items: Vec<TrackInfo> = {
+        let Some(paged) = app.search_results().tracks.as_ref() else {
+          return;
+        };
+        paged.items.clone()
       };
       // No selection: an out-of-range index yields `offset: None`.
       let selected = app
         .view
         .search_selected_tracks_index
-        .unwrap_or(paged.items.len());
+        .unwrap_or(items.len());
       let (uris, offset) = common_key_events::uri_playback_request(
-        paged.items.iter().map(|track| track.uri.clone()),
+        items.iter().map(|track| track.uri.clone()),
         selected,
       );
+
+      // Populate native queue with upcoming search tracks so search results become the active queue
+      app.native_queue.clear();
+      for i in (selected + 1)..items.len() {
+        app.native_queue.push(items[i].clone());
+      }
+      for i in 0..selected {
+        app.native_queue.push(items[i].clone());
+      }
+
       app.apply(Action::PlayUris { uris, offset });
     }
     SearchResultBlock::ArtistSearch => {
@@ -553,7 +581,11 @@ pub fn handler(key: Key, app: &mut App) {
         return;
       }
       Key::Char('z') => {
-        app.queue_selected_live_search_item();
+        app.queue_selected_live_search_item_next();
+        return;
+      }
+      Key::Char('Z') => {
+        app.queue_selected_live_search_item_end();
         return;
       }
       _ => {}
@@ -730,6 +762,7 @@ pub fn handler(key: Key, app: &mut App) {
     },
     Key::Char('r') => handle_recommended_tracks(app),
     _ if key == app.user_config.keys.add_item_to_queue => handle_add_item_to_queue(app),
+    Key::Char('Z') => handle_add_item_to_queue_end(app),
     Key::Char('s') => handle_save_track_event(app),
     _ => {}
   }

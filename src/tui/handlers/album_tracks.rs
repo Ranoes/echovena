@@ -68,6 +68,11 @@ pub fn handler(key: Key, app: &mut App) {
     }
     _ if key == app.user_config.keys.add_item_to_queue => {
       if let Some(track) = selected_album_track(app).cloned() {
+        app.apply(Action::QueueTrackNext(track));
+      }
+    }
+    Key::Char('Z') => {
+      if let Some(track) = selected_album_track(app).cloned() {
         app.apply(Action::QueueTrack(track));
       }
     }

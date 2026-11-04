@@ -120,8 +120,8 @@ fn frame_cursor_position(app: &App, active_block: ActiveBlock) -> Option<(u16, u
 fn dispatch_key(key: Key, app: &mut App) -> bool {
   let current_active_block = app.get_current_route().active_block;
 
-  // Immediate unconditional quit shortcut ('Q', Ctrl+C, Ctrl+Q) when not typing inside an input field
-  if matches!(key, Key::Ctrl('c') | Key::Ctrl('q') | Key::Char('Q')) && current_active_block != ActiveBlock::Input && !app.view.url_import_visible && app.view.sync_auth_modal.is_none() {
+  // Immediate unconditional quit shortcut (Ctrl+C, Ctrl+Q) when not typing inside an input field
+  if matches!(key, Key::Ctrl('c') | Key::Ctrl('q')) && current_active_block != ActiveBlock::Input && !app.view.url_import_visible && app.view.sync_auth_modal.is_none() {
     app.close_io_channel();
     return true;
   }

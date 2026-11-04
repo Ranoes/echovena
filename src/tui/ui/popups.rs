@@ -484,6 +484,11 @@ fn context_preview_lines(app: &App, max: usize) -> Vec<String> {
     return spotify_mirror(max);
   }
 
+  #[cfg(feature = "youtube")]
+  if let Some(s) = app.youtube_playback.as_ref() {
+    return track_rows(&s.tracks, s.index + 1, max);
+  }
+
   Vec::new()
 }
 
@@ -495,11 +500,23 @@ pub fn draw_queue(f: &mut Frame<'_>, app: &App) {
   let style = app.user_config.theme.base_style();
   let mut items: Vec<ListItem> = Vec::new();
 
+  let preview = context_preview_lines(app, 15);
+
   // Row 0: "Now playing" header. Prefer the native queue slot's current track;
-  // fall back to the Spotify Web-API mirror (external Connect device) otherwise.
+  // fall back to YouTube playback or Spotify Web-API mirror otherwise.
   let now_text = app
     .queue_now_display()
     .or_else(|| {
+      #[cfg(feature = "youtube")]
+      if let Some(yt) = app.youtube_playback.as_ref() {
+        if let Some(track) = yt.current() {
+          return Some(format!(
+            "{} - {}",
+            track.display_name(app.strings()),
+            track.artists.join(", ")
+          ));
+        }
+      }
       app
         .queue
         .as_ref()
@@ -529,7 +546,7 @@ pub fn draw_queue(f: &mut Frame<'_>, app: &App) {
           items.push(ListItem::new(queue_item_line(item, app.strings())).style(style));
         }
       }
-    } else if !app.queue_owns_playback() {
+    } else if !app.queue_owns_playback() && preview.is_empty() {
       // While the queue owns playback the last queued track is the "Now playing"
       // row above, so an "empty" hint would contradict it — omit it there.
       items.push(
@@ -564,7 +581,6 @@ pub fn draw_queue(f: &mut Frame<'_>, app: &App) {
   // appended after the selectable native-queue rows; selection stays confined to
   // those rows (queue_menu.rs counts only `1 + native_queue.len()` rows), so
   // these extra rows never receive the highlight.
-  let preview = context_preview_lines(app, 5);
   if !preview.is_empty() {
     let header_style = Style::default().fg(app.user_config.theme.hint.into());
     let row_style = Style::default()

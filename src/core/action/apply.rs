@@ -75,6 +75,7 @@ impl App {
       }
       Action::AddToQueue(uri) => self.add_to_spotify_queue(uri),
       Action::QueueTrack(track) => self.add_track_to_native_queue(track),
+      Action::QueueTrackNext(track) => self.add_track_to_queue_next(track),
       Action::PlayQueueItem { uri, position } => self.play_queue_item(&uri, position),
       Action::RemoveFromQueue { uri, position } => {
         self.remove_queue_item(&uri, position);

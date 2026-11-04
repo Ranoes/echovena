@@ -450,7 +450,7 @@ async fn play_queued_qobuz(app: &Arc<Mutex<App>>, track: &TrackInfo, uri: &str) 
 }
 
 #[cfg(feature = "youtube")]
-async fn play_queued_youtube(app: &Arc<Mutex<App>>, track: &TrackInfo, uri: &str) -> bool {
+async fn play_queued_youtube(app: &Arc<Mutex<App>>, track: &TrackInfo, _uri: &str) -> bool {
   release_librespot(app, Source::YouTube).await;
   let Some(player) = acquire_queue_player(app).await else {
     return false;
@@ -467,10 +467,10 @@ async fn play_queued_youtube(app: &Arc<Mutex<App>>, track: &TrackInfo, uri: &str
   // Fetch off the IoEvent pump: awaiting yt-dlp here would freeze every other
   // event (skips included, for every source) for its whole duration.
   let app_for_spawn = Arc::clone(app);
-  let uri = uri.to_string();
+  let track_clone = track.clone();
   let name = track.name.clone();
   let handle = tokio::spawn(async move {
-    let result = crate::infra::youtube::dispatch::download_for_queue(&source, &uri)
+    let result = crate::infra::youtube::dispatch::download_for_queue_track(&app_for_spawn, &source, &track_clone)
       .await
       .map(|tmp| (tmp, None));
     finish_decoded_fetch(&app_for_spawn, fetch_id, result, &name).await;

@@ -122,6 +122,8 @@ pub enum Action {
   /// Add one track to the native cross-source queue (the queue key). Distinct
   /// from [`Action::AddToQueue`], the Spotify Web API queue.
   QueueTrack(TrackInfo),
+  /// Add one track to the head of the native queue (play next).
+  QueueTrackNext(TrackInfo),
   /// Jump to one native-queue item, addressed by URI with the 0-based position
   /// as the tie-breaker for duplicates.
   PlayQueueItem {

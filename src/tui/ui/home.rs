@@ -616,7 +616,8 @@ fn build_changelog_lines(
     ("  s / S        ", "Offline archive (s: current track, S: full playlist with .elrc)"),
     ("  Tab          ", "Cycle active panel focus (Quick Menu / Playlists / Main / Player)"),
     ("  h / j / k / l", "Pure Vim navigation | p: paste clipboard text | ?: help"),
-    ("  Q            ", "Immediately quit EchoVena"),
+    ("  Q            ", "Show playback queue"),
+    ("  Ctrl+c / q   ", "Immediately quit EchoVena"),
   ];
 
   for (key, desc) in shortcuts {

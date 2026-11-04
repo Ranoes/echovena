@@ -120,11 +120,25 @@ pub fn handler(key: Key, app: &mut App) {
     Key::Down | Key::Ctrl('n') => {
       if app.view.input_context == InputContext::GlobalSearch {
         app.move_live_search_down();
+        if !app.live_search_items.is_empty() {
+          app.view.search_selected_tracks_index = Some(app.live_search_selected_index);
+          app.set_current_route_state(
+            Some(ActiveBlock::SearchResultBlock),
+            Some(ActiveBlock::SearchResultBlock),
+          );
+        }
       }
     }
     Key::Up | Key::Ctrl('p') => {
       if app.view.input_context == InputContext::GlobalSearch {
         app.move_live_search_up();
+        if !app.live_search_items.is_empty() {
+          app.view.search_selected_tracks_index = Some(app.live_search_selected_index);
+          app.set_current_route_state(
+            Some(ActiveBlock::SearchResultBlock),
+            Some(ActiveBlock::SearchResultBlock),
+          );
+        }
       }
     }
     Key::Esc => match app.view.input_context {

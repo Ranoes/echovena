@@ -392,17 +392,42 @@ impl App {
       let track = item.to_track_info();
       let name = track.display_name(self.strings()).to_owned();
       self.set_status_message(format!("Playing \"{}\"", name), 3);
-      let uris: Vec<String> = self.live_search_items.iter().filter_map(|it| it.to_track_info().uri).collect();
+
+      // Populate track table with the search list
+      self.track_table.tracks = self.live_search_items.iter().map(|it| it.to_track_info()).collect();
+      self.track_table.context = Some(crate::core::app::TrackTableContext::YouTubePlaylist);
+
+      // Populate native queue with upcoming search tracks so search results become the active queue
+      self.native_queue.clear();
       let offset = self.live_search_selected_index;
+      for i in (offset + 1)..self.live_search_items.len() {
+        self.native_queue.push(self.live_search_items[i].to_track_info());
+      }
+      for i in 0..offset {
+        self.native_queue.push(self.live_search_items[i].to_track_info());
+      }
+
+      let uris: Vec<String> = self.live_search_items.iter().filter_map(|it| it.to_track_info().uri).collect();
       self.start_playback_uris(uris, Some(offset));
     }
   }
 
-  pub fn queue_selected_live_search_item(&mut self) {
+  pub fn queue_selected_live_search_item_next(&mut self) {
+    if let Some(item) = self.selected_live_search_item().cloned() {
+      let track = item.to_track_info();
+      self.add_track_to_queue_next(track);
+    }
+  }
+
+  pub fn queue_selected_live_search_item_end(&mut self) {
     if let Some(item) = self.selected_live_search_item().cloned() {
       let track = item.to_track_info();
       self.add_track_to_native_queue(track);
     }
+  }
+
+  pub fn queue_selected_live_search_item(&mut self) {
+    self.queue_selected_live_search_item_next();
   }
 
   pub fn reset_playlist_tracks_view(

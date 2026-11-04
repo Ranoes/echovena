@@ -143,6 +143,7 @@ pub fn handler(key: Key, app: &mut App) {
       handle_recommended_tracks(app);
     }
     _ if key == app.user_config.keys.add_item_to_queue => on_queue(app),
+    Key::Char('Z') => on_queue_end(app),
     // Open sort menu
     Key::Char(',') => {
       super::sort_menu::open_sort_menu(app, crate::core::sort::SortContext::PlaylistTracks);
@@ -376,6 +377,21 @@ fn on_queue(app: &mut App) {
   // native cross-source queue, which routes by URI scheme (Spotify tracks on an
   // external device still fall back to the Web-API queue). AlbumSearch rows lack
   // full track info, so it stays a no-op.
+  match app.track_table.context {
+    Some(TrackTableContext::AlbumSearch) | None => return,
+    Some(_) => {}
+  }
+  if let Some(track) = app
+    .track_table
+    .tracks
+    .get(app.view.track_table_index)
+    .cloned()
+  {
+    app.apply(Action::QueueTrackNext(track));
+  }
+}
+
+fn on_queue_end(app: &mut App) {
   match app.track_table.context {
     Some(TrackTableContext::AlbumSearch) | None => return,
     Some(_) => {}

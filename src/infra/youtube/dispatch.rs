@@ -701,8 +701,18 @@ async fn download_audio(
 /// Download the audio for `uri` into a tempfile, for the native queue engine's
 /// off-pump fetch (playing is the queue's job — it re-checks that the queue
 /// slot is still current before touching the shared player).
+#[allow(dead_code)]
 pub(crate) async fn download_for_queue(source: &YouTubeSource, uri: &str) -> Result<NamedTempFile> {
   let video_id = video_id_from_uri(uri)?.to_string();
+  download_audio(source, &video_id).await.map(|(tmp, _, _)| tmp)
+}
+
+pub(crate) async fn download_for_queue_track(
+  app: &Arc<Mutex<App>>,
+  source: &YouTubeSource,
+  track: &TrackInfo,
+) -> Result<NamedTempFile> {
+  let video_id = resolve_or_extract_video_id(app, track).await?;
   download_audio(source, &video_id).await.map(|(tmp, _, _)| tmp)
 }
 

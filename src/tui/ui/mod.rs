@@ -239,13 +239,13 @@ pub fn draw_action_bar(f: &mut Frame<'_>, app: &App, area: Rect) {
     ("Space", "Play/Pause"),
     ("Enter", "Play"),
     ("/", "Search"),
-    ("p", "Paste URL"),
-    ("W", "Add Playing"),
+    ("z", "Queue Next"),
+    ("Z", "Queue End"),
+    ("Q", "Queue"),
     ("K", "Karaoke"),
     ("s", "Download"),
-    ("d", "Sources"),
     ("?", "Help"),
-    ("q", "Quit"),
+    ("q", "Back"),
   ];
 
   for (i, (key, label)) in items.iter().enumerate() {
