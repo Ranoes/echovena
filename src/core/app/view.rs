@@ -250,6 +250,72 @@ pub struct ViewState {
   pub remap_input: Vec<char>,
   pub remap_track_id: Option<String>,
   pub remap_track_name: Option<String>,
+
+  // Tree-like Playlist Dropdown state
+  pub expanded_playlists: std::collections::HashSet<String>,
+
+  // Search Results Drilldown (Album & Artist detail view in same panel)
+  pub search_drilldown: SearchDrilldown,
+
+  // Karaoke stage alignment and display mode
+  pub karaoke_display_mode: LyricsDisplayMode,
+  pub karaoke_alignment: KaraokeAlignment,
+  pub karaoke_provider_index: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum LyricsDisplayMode {
+  #[default]
+  Original,
+  Romanized,
+  Both,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum KaraokeAlignment {
+  Left,
+  #[default]
+  Center,
+  Right,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum SearchDrilldown {
+  #[default]
+  None,
+  AlbumDetail {
+    album_id: String,
+    title: String,
+    artist: String,
+    year: Option<String>,
+    cover_art_url: Option<String>,
+    tracks: Vec<crate::core::plugin_api::TrackInfo>,
+    selected_index: usize,
+    from_artist: Option<Box<SearchDrilldown>>,
+  },
+  ArtistDetail {
+    artist_id: String,
+    name: String,
+    albums: Vec<AlbumDetailHeader>,
+    top_songs: Vec<crate::core::plugin_api::TrackInfo>,
+    focus_section: ArtistDetailSection,
+    selected_index: usize,
+  },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ArtistDetailSection {
+  #[default]
+  TopSongs,
+  Albums,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AlbumDetailHeader {
+  pub id: String,
+  pub title: String,
+  pub year: Option<String>,
+  pub track_count: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -2,78 +2,252 @@ use super::common_key_events;
 use crate::core::action::{Action, OpenTarget};
 use crate::core::app::{ActiveBlock, RouteId, SidebarBlock};
 use crate::core::app::{App, DialogContext, PlaylistFolderItem};
+use crate::core::plugin_api::TrackInfo;
 use crate::core::source::Source;
 use crate::tui::event::Key;
 
-/// Returns the formatted playlist list items for the active playlist panel tab.
-pub fn get_playlist_tab_items(app: &App) -> Vec<String> {
+#[derive(Clone, Debug)]
+pub enum PlaylistTreeItem {
+  ActionItem {
+    label: String,
+    action_id: usize, // 0: Add, 1: Import
+  },
+  PlaylistHeader {
+    id: String,
+    title: String,
+    track_count: usize,
+    platform: String,
+    is_expanded: bool,
+  },
+  TrackLeaf {
+    playlist_id: String,
+    track_id: String,
+    title: String,
+    artist: String,
+    duration_ms: u64,
+    position: usize,
+    uri: Option<String>,
+    is_last: bool,
+  },
+}
+
+/// Builds the hierarchical tree structure for playlists and their expanded tracklists.
+pub fn get_playlist_tree_items(app: &App) -> Vec<PlaylistTreeItem> {
+  let mut items = Vec::new();
+
   match app.view.playlist_panel_tab {
-    // Tab 0: EchoVena Playlists
+    // Tab 0: All & EchoVena Playlists
     0 => {
-      let mut items = vec![
-        "+ Add Playlist [Key A]".to_string(),
-        "+ Import URL [Key U]".to_string(),
-      ];
+      items.push(PlaylistTreeItem::ActionItem {
+        label: "+ Add Playlist [Key A]".to_string(),
+        action_id: 0,
+      });
+      items.push(PlaylistTreeItem::ActionItem {
+        label: "+ Import URL [Key U]".to_string(),
+        action_id: 1,
+      });
+
       if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
         if let Ok(playlists) = db.list_imported_playlists() {
           for p in playlists {
-            let label = match p.platform.as_str() {
-              "spotify_synced" | "spotify" => "Playlist: Spotify",
-              "youtube" | "ytmusic" => "Playlist: YouTube",
-              _ => "Playlist: EchoVena",
-            };
-            items.push(format!("\u{2728} [{label}] {} ({} tracks)", p.title, p.track_count));
+            let is_expanded = app.view.expanded_playlists.contains(&p.id);
+            items.push(PlaylistTreeItem::PlaylistHeader {
+              id: p.id.clone(),
+              title: p.title.clone(),
+              track_count: p.track_count as usize,
+              platform: p.platform.clone(),
+              is_expanded,
+            });
+
+            if is_expanded {
+              if let Ok(tracks) = db.get_playlist_tracks(&p.id) {
+                let track_count = tracks.len();
+                for (idx, t) in tracks.into_iter().enumerate() {
+                  items.push(PlaylistTreeItem::TrackLeaf {
+                    playlist_id: p.id.clone(),
+                    track_id: t.source_track_id.clone(),
+                    title: t.clean_title,
+                    artist: t.artist,
+                    duration_ms: t.duration_ms as u64,
+                    position: idx,
+                    uri: Some(t.source_track_id),
+                    is_last: idx == track_count.saturating_sub(1),
+                  });
+                }
+              }
+            }
           }
         }
       }
+
       for p in app.local_playlists() {
-        items.push(format!("\u{1F4C1} [Playlist: EchoVena (Local)] {}", p.name));
+        let is_expanded = app.view.expanded_playlists.contains(&p.uri);
+        items.push(PlaylistTreeItem::PlaylistHeader {
+          id: p.uri.clone(),
+          title: p.name.clone(),
+          track_count: p.track_count as usize,
+          platform: "local".to_string(),
+          is_expanded,
+        });
       }
-      items
     }
     // Tab 1: Spotify Playlists
     1 => {
-      let mut items = vec!["+ Import Spotify URL [Key U]".to_string()];
-      let mut found_any = false;
+      items.push(PlaylistTreeItem::ActionItem {
+        label: "+ Import Spotify URL [Key U]".to_string(),
+        action_id: 1,
+      });
+
       if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
         if let Ok(playlists) = db.list_imported_playlists() {
           for p in playlists.into_iter().filter(|p| p.platform.starts_with("spotify")) {
-            found_any = true;
-            items.push(format!("\u{1F504} [Playlist: Spotify] {} ({} tracks)", p.title, p.track_count));
+            let is_expanded = app.view.expanded_playlists.contains(&p.id);
+            items.push(PlaylistTreeItem::PlaylistHeader {
+              id: p.id.clone(),
+              title: p.title.clone(),
+              track_count: p.track_count as usize,
+              platform: "spotify".to_string(),
+              is_expanded,
+            });
+
+            if is_expanded {
+              if let Ok(tracks) = db.get_playlist_tracks(&p.id) {
+                let count = tracks.len();
+                for (idx, t) in tracks.into_iter().enumerate() {
+                  items.push(PlaylistTreeItem::TrackLeaf {
+                    playlist_id: p.id.clone(),
+                    track_id: t.source_track_id.clone(),
+                    title: t.clean_title,
+                    artist: t.artist,
+                    duration_ms: t.duration_ms as u64,
+                    position: idx,
+                    uri: Some(t.source_track_id),
+                    is_last: idx == count.saturating_sub(1),
+                  });
+                }
+              }
+            }
           }
         }
       }
+
       for p in app.all_playlists() {
-        found_any = true;
-        items.push(format!("\u{1F3B5} [Playlist: Spotify] {} ({} tracks)", p.name, p.track_count));
+        let id_str = p.id.clone().unwrap_or_else(|| p.name.clone());
+        let is_expanded = app.view.expanded_playlists.contains(&id_str);
+        items.push(PlaylistTreeItem::PlaylistHeader {
+          id: id_str.clone(),
+          title: p.name.clone(),
+          track_count: p.track_count as usize,
+          platform: "spotify".to_string(),
+          is_expanded,
+        });
       }
-      if !found_any {
-        items.push("(No Spotify playlists \u{2014} press 'U' to import playlist URL)".to_string());
-      }
-      items
     }
     // Tab 2: YouTube Playlists
     _ => {
-      let mut items = vec!["+ New YouTube Playlist [Key A]".to_string()];
-      let mut found_any = false;
+      items.push(PlaylistTreeItem::ActionItem {
+        label: "+ New YouTube Playlist [Key A]".to_string(),
+        action_id: 0,
+      });
+
       for p in app.youtube_playlists() {
-        found_any = true;
-        items.push(format!("\u{1F4FC} [Playlist: YouTube] {} ({} tracks)", p.name, p.track_count));
+        let is_expanded = app.view.expanded_playlists.contains(&p.uri);
+        items.push(PlaylistTreeItem::PlaylistHeader {
+          id: p.uri.clone(),
+          title: p.name.clone(),
+          track_count: p.track_count as usize,
+          platform: "youtube".to_string(),
+          is_expanded,
+        });
       }
+
       if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
         if let Ok(playlists) = db.list_imported_playlists() {
           for p in playlists.into_iter().filter(|p| p.platform == "youtube" || p.platform == "ytmusic") {
-            found_any = true;
-            items.push(format!("\u{1F4FC} [Playlist: YouTube (Saved)] {} ({} tracks)", p.title, p.track_count));
+            let is_expanded = app.view.expanded_playlists.contains(&p.id);
+            items.push(PlaylistTreeItem::PlaylistHeader {
+              id: p.id.clone(),
+              title: p.title.clone(),
+              track_count: p.track_count as usize,
+              platform: "youtube".to_string(),
+              is_expanded,
+            });
+
+            if is_expanded {
+              if let Ok(tracks) = db.get_playlist_tracks(&p.id) {
+                let count = tracks.len();
+                for (idx, t) in tracks.into_iter().enumerate() {
+                  items.push(PlaylistTreeItem::TrackLeaf {
+                    playlist_id: p.id.clone(),
+                    track_id: t.source_track_id.clone(),
+                    title: t.clean_title,
+                    artist: t.artist,
+                    duration_ms: t.duration_ms as u64,
+                    position: idx,
+                    uri: Some(t.source_track_id),
+                    is_last: idx == count.saturating_sub(1),
+                  });
+                }
+              }
+            }
           }
         }
       }
-      if !found_any {
-        items.push("(No YouTube playlists \u{2014} press 'U' to import or 'w' to save)".to_string());
-      }
-      items
     }
   }
+
+  items
+}
+
+/// Returns the formatted playlist list items for the active playlist panel tab.
+pub fn get_playlist_tab_items(app: &App) -> Vec<String> {
+  let tree = get_playlist_tree_items(app);
+  if tree.is_empty() {
+    return vec!["(No playlists — press 'A' to create or 'U' to import)".to_string()];
+  }
+
+  tree
+    .into_iter()
+    .map(|item| match item {
+      PlaylistTreeItem::ActionItem { label, .. } => label,
+      PlaylistTreeItem::PlaylistHeader {
+        title,
+        track_count,
+        platform,
+        is_expanded,
+        ..
+      } => {
+        let arrow = if is_expanded { "\u{25BC}" } else { "\u{25B6}" };
+        let tag = match platform.as_str() {
+          "spotify" | "spotify_synced" => "Spotify",
+          "youtube" | "ytmusic" => "YouTube",
+          "local" => "Local",
+          _ => "EchoVena",
+        };
+        format!("{arrow} [{tag}] {title} ({track_count} tracks)")
+      }
+      PlaylistTreeItem::TrackLeaf {
+        title,
+        artist,
+        duration_ms,
+        is_last,
+        ..
+      } => {
+        let branch = if is_last {
+          "  \u{2514}\u{2500}\u{2500} "
+        } else {
+          "  \u{251C}\u{2500}\u{2500} "
+        };
+        let dur_str = if duration_ms > 0 {
+          let s = duration_ms / 1000;
+          format!(" [{}:{:02}]", s / 60, s % 60)
+        } else {
+          String::new()
+        };
+        format!("{branch}{title} \u{2014} {artist}{dur_str}")
+      }
+    })
+    .collect()
 }
 
 /// Total rows in the sidebar Playlists panel for the active tab.
@@ -84,7 +258,7 @@ pub(crate) fn total_display_count(app: &App) -> usize {
     Source::Radio => app.radio_stations().len(),
     Source::Qobuz => app.qobuz_playlists().len(),
     Source::AppleMusic => app.apple_music_playlists().len(),
-    _ => get_playlist_tab_items(app).len(),
+    _ => get_playlist_tree_items(app).len(),
   }
 }
 
@@ -388,6 +562,86 @@ pub fn handler(key: Key, app: &mut App) {
       common_key_events::remember_sidebar_block(app, ActiveBlock::MyPlaylists);
       activate_selected(app);
     }
+    Key::Char('l') | Key::Right => {
+      let tree = get_playlist_tree_items(app);
+      if let Some(idx) = app.view.selected_playlist_index {
+        if let Some(PlaylistTreeItem::PlaylistHeader { id, is_expanded: false, .. }) = tree.get(idx) {
+          app.view.expanded_playlists.insert(id.clone());
+        }
+      }
+    }
+    Key::Char('h') | Key::Left => {
+      let tree = get_playlist_tree_items(app);
+      if let Some(idx) = app.view.selected_playlist_index {
+        if let Some(item) = tree.get(idx) {
+          match item {
+            PlaylistTreeItem::PlaylistHeader { id, is_expanded: true, .. } => {
+              app.view.expanded_playlists.remove(id);
+            }
+            PlaylistTreeItem::TrackLeaf { playlist_id, .. } => {
+              if let Some(parent_idx) = tree.iter().position(|it| matches!(it, PlaylistTreeItem::PlaylistHeader { id, .. } if id == playlist_id)) {
+                app.view.selected_playlist_index = Some(parent_idx);
+              }
+            }
+            _ => {}
+          }
+        }
+      }
+    }
+    Key::Char('z') => {
+      let tree = get_playlist_tree_items(app);
+      if let Some(idx) = app.view.selected_playlist_index {
+        if let Some(PlaylistTreeItem::TrackLeaf { title, artist, uri, track_id, duration_ms, .. }) = tree.get(idx) {
+          let track_info = TrackInfo {
+            uri: uri.clone(),
+            name: title.clone(),
+            artists: vec![artist.clone()],
+            album: String::new(),
+            duration_ms: *duration_ms,
+            id: Some(track_id.clone()),
+            album_id: None,
+            artist_refs: Vec::new(),
+            is_playable: true,
+            is_local: false,
+            track_number: 1,
+            explicit: false,
+            image_url: None,
+            release_date: None,
+            generated_name: None,
+          };
+          app.apply(Action::QueueTrack(track_info));
+          app.set_status_message(format!("Queued '{}'", title), 3);
+        }
+      }
+    }
+    Key::Char('s') => {
+      let tree = get_playlist_tree_items(app);
+      if let Some(idx) = app.view.selected_playlist_index {
+        if let Some(PlaylistTreeItem::TrackLeaf { title, artist, track_id, duration_ms, .. }) = tree.get(idx) {
+          let pl_track = crate::sources::lossless_relay::db::PlaylistTrack {
+            playlist_id: "playlist".to_string(),
+            position: 0,
+            source_track_id: track_id.clone(),
+            raw_title: title.clone(),
+            clean_title: title.clone(),
+            artist: artist.clone(),
+            album: None,
+            duration_ms: *duration_ms as i64,
+            isrc: None,
+            cover_art_url: None,
+          };
+          let dl_source = app.active_download_source;
+          app.set_status_message(format!("Archiving '{} - {}' [{}] to ~/Music/EchoVena...", title, artist, dl_source.label()), 4);
+          tokio::spawn(async move {
+            if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+              if let Some(root) = crate::core::paths::music_archive_dir() {
+                let _ = crate::sources::lossless_relay::archiver::resolve_and_archive_track_with_source(&db, &pl_track, &root, dl_source).await;
+              }
+            }
+          });
+        }
+      }
+    }
     Key::Char('a') | Key::Char('n') | Key::Char('N') | Key::Char('c') => {
       app.push_navigation_stack(RouteId::CreatePlaylist, ActiveBlock::CreatePlaylistForm);
     }
@@ -397,7 +651,25 @@ pub fn handler(key: Key, app: &mut App) {
       app.view.url_import_status = None;
       app.view.url_import_in_progress = false;
     }
-    Key::Char('d') | Key::Char('D') | Key::Delete => {
+    Key::Char('d') | Key::Char('D') | Key::Char('x') | Key::Delete => {
+      let tree = get_playlist_tree_items(app);
+      if let Some(idx) = app.view.selected_playlist_index {
+        if let Some(PlaylistTreeItem::TrackLeaf { playlist_id, position, title, .. }) = tree.get(idx) {
+          if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+            if let Ok(mut tracks) = db.get_playlist_tracks(playlist_id) {
+              if *position < tracks.len() {
+                tracks.remove(*position);
+                for (new_pos, t) in tracks.iter_mut().enumerate() {
+                  t.position = new_pos as i64;
+                }
+                let _ = db.replace_playlist_tracks(playlist_id, &tracks);
+                app.set_status_message(format!("Removed '{}' from playlist", title), 4);
+              }
+            }
+          }
+          return;
+        }
+      }
       handle_delete_playlist(app);
     }
     _ => {}
@@ -457,99 +729,44 @@ pub(super) fn activate_selected(app: &mut App) {
     _ => {}
   }
 
-  match app.view.playlist_panel_tab {
-    // Tab 0: EchoVena Playlists
-    0 => {
-      match idx {
+  let tree = get_playlist_tree_items(app);
+  let Some(item) = tree.get(idx).cloned() else {
+    return;
+  };
+
+  match item {
+    PlaylistTreeItem::ActionItem { action_id, .. } => {
+      match action_id {
         0 => {
-          // "+ Add Playlist"
           app.push_navigation_stack(RouteId::CreatePlaylist, ActiveBlock::CreatePlaylistForm);
         }
-        1 => {
-          // "+ Import URL [Key U]"
+        _ => {
           app.view.url_import_visible = true;
           app.view.url_import_input.clear();
           app.view.url_import_status = None;
           app.view.url_import_in_progress = false;
         }
-        _ => {
-          let db_playlists = crate::sources::lossless_relay::db::Database::open_default()
-            .ok()
-            .and_then(|db| db.list_imported_playlists().ok())
-            .unwrap_or_default();
-          let db_len = db_playlists.len();
-          let relative_idx = idx.saturating_sub(2);
-          if relative_idx < db_len {
-            let uri = db_playlists[relative_idx].id.clone();
-            open_source_playlist(app, Some(uri));
-          } else {
-            let local_idx = relative_idx.saturating_sub(db_len);
-            let uri = app.local_playlists().get(local_idx).map(|p| p.uri.clone());
-            open_source_playlist(app, uri);
-          }
-        }
       }
     }
-    // Tab 1: Spotify Playlists
-    1 => {
-      if idx == 0 {
-        // "+ Import Spotify URL"
-        app.view.url_import_visible = true;
-        app.view.url_import_input.clear();
-        app.view.url_import_status = None;
-        app.view.url_import_in_progress = false;
+    PlaylistTreeItem::PlaylistHeader { id, is_expanded, .. } => {
+      // Toggle expansion inline in tree!
+      if is_expanded {
+        app.view.expanded_playlists.remove(&id);
       } else {
-        let spotify_db_playlists: Vec<_> = crate::sources::lossless_relay::db::Database::open_default()
-          .ok()
-          .and_then(|db| db.list_imported_playlists().ok())
-          .unwrap_or_default()
-          .into_iter()
-          .filter(|p| p.platform.starts_with("spotify"))
-          .collect();
-        let db_len = spotify_db_playlists.len();
-        let relative_idx = idx.saturating_sub(1);
-        if relative_idx < db_len {
-          let uri = spotify_db_playlists[relative_idx].id.clone();
-          open_source_playlist(app, Some(uri));
-        } else {
-          let spotify_idx = relative_idx.saturating_sub(db_len);
-          let id_opt = app.all_playlists().get(spotify_idx).and_then(|p| p.id.clone());
-          if let Some(id_str) = id_opt {
-            app.view.active_playlist_index = Some(spotify_idx);
-            if app.active_source == crate::core::source::Source::Spotify && app.spotify_connected {
-              app.apply(Action::Open(OpenTarget::Playlist {
-                id: id_str,
-                from_search: false,
-              }));
-            } else {
-              open_source_playlist(app, Some(id_str));
-            }
-          }
-        }
+        app.view.expanded_playlists.insert(id);
       }
     }
-    // Tab 2: YouTube Playlists
-    _ => {
-      if idx == 0 {
-        // "+ New YouTube Playlist"
-        app.push_navigation_stack(RouteId::CreatePlaylist, ActiveBlock::CreatePlaylistForm);
-      } else {
-        let yt_local_len = app.youtube_playlists().len();
-        let relative_idx = idx.saturating_sub(1);
-        if relative_idx < yt_local_len {
-          let uri = app.youtube_playlists().get(relative_idx).map(|p| p.uri.clone());
-          open_source_playlist(app, uri);
-        } else {
-          let yt_db_playlists: Vec<_> = crate::sources::lossless_relay::db::Database::open_default()
-            .ok()
-            .and_then(|db| db.list_imported_playlists().ok())
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|p| p.platform == "youtube" || p.platform == "ytmusic")
-            .collect();
-          let db_idx = relative_idx.saturating_sub(yt_local_len);
-          if let Some(pl) = yt_db_playlists.get(db_idx) {
-            open_source_playlist(app, Some(pl.id.clone()));
+    PlaylistTreeItem::TrackLeaf { playlist_id, position, title, .. } => {
+      // Play selected track from playlist and queue all upcoming tracks
+      if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+        if let Ok(tracks) = db.get_playlist_tracks(&playlist_id) {
+          let uris: Vec<String> = tracks.iter().map(|t| t.source_track_id.clone()).collect();
+          if !uris.is_empty() {
+            app.apply(Action::PlayUris {
+              uris,
+              offset: Some(position),
+            });
+            app.set_status_message(format!("Playing '{}' from playlist", title), 4);
           }
         }
       }
