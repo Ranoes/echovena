@@ -374,18 +374,22 @@ pub(super) async fn prepare_frontend(boot: Boot) -> FrontendHandles {
   // Registered without a Spotify session, like MPRIS, so decoded sources get media keys too.
   #[cfg(all(feature = "windows-media", target_os = "windows"))]
   let windows_media_manager: Option<Arc<smtc_tokio::WindowsMediaManager>> =
-    match smtc_tokio::WindowsMediaManager::new() {
-      Ok(mgr) => {
-        info!("windows smtc com registered - media keys enabled");
-        Some(Arc::new(mgr))
+    if user_config.behavior.enable_media_keys {
+      match smtc_tokio::WindowsMediaManager::new() {
+        Ok(mgr) => {
+          info!("windows smtc com registered - media keys enabled");
+          Some(Arc::new(mgr))
+        }
+        Err(e) => {
+          info!(
+            "failed to initialize windows smtc com: {} - media keys disabled",
+            e
+          );
+          None
+        }
       }
-      Err(e) => {
-        info!(
-          "failed to initialize windows smtc com: {} - media keys disabled",
-          e
-        );
-        None
-      }
+    } else {
+      None
     };
 
   #[cfg(feature = "discord-rpc")]
@@ -486,13 +490,12 @@ pub(super) async fn prepare_frontend(boot: Boot) -> FrontendHandles {
           // external device or a decoded source (over paused librespot) is
           // polled here from the snapshot.
           if app.native_track_info.is_none() || app.active_decoded_source() {
-            let (is_playing, position_ms) =
+            let (is_playing, _position_ms) =
               snapshot_state.unwrap_or((false, app.song_progress_ms as u64));
             if last_playing != Some(is_playing) {
               windows_media_for_metadata.set_playback_status(is_playing);
               last_playing = Some(is_playing);
             }
-            windows_media_for_metadata.set_position(position_ms);
           } else {
             last_playing = Some(app.native_is_playing.unwrap_or(false));
           }
@@ -1613,15 +1616,19 @@ async fn handle_windows_media_events(
           .dispatch_spotify_fallback(IoEvent::PausePlayback);
       }
       WindowsMediaEvent::SetPosition(pos) => {
-        if let Some(player) = &player_opt {
-          if is_native_loaded {
-            player.seek(pos as u32);
-            continue;
+        let current = app.lock().await.song_progress_ms as i64;
+        let requested = pos as i64;
+        if (current - requested).abs() > 2000 {
+          if let Some(player) = &player_opt {
+            if is_native_loaded {
+              player.seek(pos as u32);
+              continue;
+            }
           }
+          let mut app_lock = app.lock().await;
+          app_lock.song_progress_ms = pos as u128;
+          app_lock.dispatch_spotify_fallback(IoEvent::Seek(pos as u32));
         }
-        let mut app_lock = app.lock().await;
-        app_lock.song_progress_ms = pos as u128;
-        app_lock.dispatch_spotify_fallback(IoEvent::Seek(pos as u32));
       }
     }
   }
@@ -1670,8 +1677,12 @@ async fn route_decoded_windows_event(
       app_lock.dispatch(IoEvent::PreviousTrack);
     }
     WindowsMediaEvent::SetPosition(pos) => {
-      app_lock.song_progress_ms = *pos as u128;
-      app_lock.dispatch(IoEvent::Seek(*pos as u32));
+      let current = app_lock.song_progress_ms as i64;
+      let requested = *pos as i64;
+      if (current - requested).abs() > 2000 {
+        app_lock.song_progress_ms = *pos as u128;
+        app_lock.dispatch(IoEvent::Seek(*pos as u32));
+      }
     }
   }
   true

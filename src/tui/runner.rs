@@ -565,7 +565,6 @@ pub async fn start_ui(
       PushKeyboardEnhancementFlags(
         KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
           | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
-          | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
       )
     )
     .is_ok();
