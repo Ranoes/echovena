@@ -572,6 +572,23 @@ impl Database {
         Ok(tracks)
     }
 
+    pub fn delete_downloaded_track(&self, source_track_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let clean_id = source_track_id
+            .strip_prefix("spotify:track:")
+            .unwrap_or(source_track_id);
+        let spotify_id = format!("spotify:track:{}", clean_id);
+        conn.execute(
+            "DELETE FROM downloaded_tracks WHERE source_track_id = ?1 OR source_track_id = ?2;",
+            params![source_track_id, spotify_id],
+        )?;
+        conn.execute(
+            "DELETE FROM playlist_tracks WHERE playlist_id = 'spotify:personal:liked_songs' AND (source_track_id = ?1 OR source_track_id = ?2);",
+            params![source_track_id, spotify_id],
+        )?;
+        Ok(())
+    }
+
     /// Retrieve track title and artist metadata from local database (downloaded or playlist tracks).
     pub fn find_track_metadata(&self, source_track_id: &str) -> Result<Option<(String, String)>> {
         let conn = self.conn.lock().unwrap();

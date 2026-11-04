@@ -1,7 +1,8 @@
 extern crate unicode_width;
 
 use crate::core::action::{Action, OpenTarget};
-use crate::core::app::{ActiveBlock, App, InputContext, RouteId};
+use crate::core::app::{ActiveBlock, App, InputContext, RouteId, SearchResultBlock};
+use crate::core::plugin_api::TrackInfo;
 use crate::tui::event::Key;
 use rspotify::prelude::Id;
 use std::convert::TryInto;
@@ -159,13 +160,40 @@ pub fn handler(key: Key, app: &mut App) {
     },
     Key::Enter => {
       let input_str: String = app.view.input.iter().collect();
-      if app.view.input_context == InputContext::GlobalSearch && !app.live_search_items.is_empty() {
-        app.view.search_selected_tracks_index = Some(app.live_search_selected_index);
-        app.play_selected_live_search_item();
-        app.set_current_route_state(
-          Some(ActiveBlock::SearchResultBlock),
-          Some(ActiveBlock::SearchResultBlock),
-        );
+      if app.view.input_context == InputContext::GlobalSearch {
+        // If it's a direct URL or YouTube/Spotify command, process immediately
+        if input_str.contains("://")
+          || input_str.starts_with("youtube:")
+          || input_str.starts_with("spotify:")
+        {
+          process_input(app, input_str);
+        } else {
+          // Normal search query: DO NOT auto-play the top result.
+          // Transfer live search results to main search results panel and focus it
+          if !app.live_search_items.is_empty() {
+            let tracks: Vec<TrackInfo> = app.live_search_items.iter().map(|it| it.to_track_info()).collect();
+            let total = tracks.len() as u32;
+            let mut res = crate::core::app::SearchResult::default();
+            res.tracks = Some(crate::core::pagination::Paged {
+              items: tracks,
+              limit: total,
+              total,
+              offset: 0,
+              next: None,
+              previous: None,
+            });
+            app.set_search_results(res);
+            let idx = app.live_search_selected_index.min(app.live_search_items.len().saturating_sub(1));
+            app.view.search_selected_tracks_index = Some(idx);
+          } else if !input_str.trim().is_empty() {
+            process_input(app, input_str);
+          }
+          app.view.search_selected_block = SearchResultBlock::SongSearch;
+          app.set_current_route_state(
+            Some(ActiveBlock::SearchResultBlock),
+            Some(ActiveBlock::SearchResultBlock),
+          );
+        }
       } else {
         process_input(app, input_str);
       }

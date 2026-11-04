@@ -381,12 +381,29 @@ impl App {
   /// Open the add-to-playlist picker for the item playing now, through the
   /// ownership order. A queued Spotify track stages the slot's own track.
   pub fn begin_add_playing_track_to_playlist_flow(&mut self) {
+    #[cfg(feature = "audio-decode-queue")]
+    if let Some(crate::infra::queue::QueueNowPlaying::Decoded(d)) = self.queue_now.as_ref() {
+      let track_id = d.track.uri.clone().or_else(|| d.track.id.as_ref().map(|id| format!("youtube:video:{}", id)));
+      let track_name = d.track.name.clone();
+      self.begin_add_track_to_playlist_flow(track_id, track_name);
+      return;
+    }
+
     #[cfg(feature = "youtube")]
     if let Some(yt_track) = self.youtube_playback.as_ref().and_then(|yt| yt.current()) {
       let track_id = yt_track.uri.clone().or_else(|| yt_track.id.as_ref().map(|id| format!("youtube:video:{}", id)));
       let track_name = yt_track.name.clone();
       self.begin_add_track_to_playlist_flow(track_id, track_name);
       return;
+    }
+
+    if let Some(lossless) = self.lossless_playback.as_ref() {
+      if let Some(ref t) = lossless.current_track {
+        let track_id = Some(t.source_track_id.clone());
+        let track_name = t.clean_title.clone();
+        self.begin_add_track_to_playlist_flow(track_id, track_name);
+        return;
+      }
     }
 
     match self.playing_item() {

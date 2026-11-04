@@ -38,7 +38,7 @@ use crate::core::source::{Searcher, Source};
 use crate::infra::audio::LocalPlayer;
 use crate::infra::network::IoEvent;
 use crate::infra::queue::{
-  advance_index, apply_resolved, is_placeholder, replay_file, snapshot_tracks,
+  advance_index, apply_resolved, replay_file, snapshot_tracks,
 };
 
 /// Skip direction within the YouTube queue.
@@ -922,6 +922,10 @@ async fn resolve_or_extract_video_id(
 
 /// Begin playing a queue of YouTube videos, taking over the session and
 /// starting at `start_idx` (clamped into range).
+fn is_livestream(track: &TrackInfo) -> bool {
+  track.uri.as_deref().is_some_and(|u| u.starts_with("youtube:live:") || u.contains("live=1"))
+}
+
 async fn start_youtube_queue(app: &Arc<Mutex<App>>, uris: &[String], start_idx: usize) {
   // Snapshot the track metadata under one short lock, from whichever browse
   // view the request came from.
@@ -956,11 +960,8 @@ async fn start_youtube_queue(app: &Arc<Mutex<App>>, uris: &[String], start_idx: 
   }
   let index = start_idx.min(tracks.len() - 1);
 
-  // A livestream (duration 0 in the search row) never finishes downloading —
-  // the tempfile fetch would just spin until the timeout. Refuse up front. A
-  // placeholder for an off-screen URI also reads 0, but only because its
-  // duration is unknown: that one downloads (#716).
-  if tracks[index].duration_ms == 0 && !is_placeholder(&tracks[index]) {
+  // A livestream never finishes downloading — refuse up front.
+  if is_livestream(&tracks[index]) {
     set_error(
       app,
       crate::infra::app_strings(app)
@@ -1173,7 +1174,7 @@ pub(crate) async fn play_index(app: &Arc<Mutex<App>>, target: usize) {
     }
   };
 
-  if track.duration_ms == 0 && !is_placeholder(&track) {
+  if is_livestream(&track) {
     teardown_youtube(app).await;
     set_error(
       app,
@@ -1191,8 +1192,21 @@ pub(crate) async fn play_index(app: &Arc<Mutex<App>>, target: usize) {
   let video_id = match resolve_or_extract_video_id(app, &track).await {
     Ok(id) => id,
     Err(e) => {
-      teardown_youtube(app).await;
-      set_error(app, e.to_string()).await;
+      log::warn!("Could not resolve video id for track '{}': {e:#}", track.name);
+      let next_target = target + 1;
+      let has_next = {
+        let guard = app.lock().await;
+        guard.youtube_playback.as_ref().is_some_and(|s| next_target < s.tracks.len())
+      };
+      if has_next {
+        let mut guard = app.lock().await;
+        guard.set_status_message(format!("Skipping unresolvable track '{}'...", track.name), 4);
+        drop(guard);
+        Box::pin(play_index(app, next_target)).await;
+      } else {
+        teardown_youtube(app).await;
+        set_error(app, e.to_string()).await;
+      }
       return;
     }
   };
@@ -1213,16 +1227,28 @@ pub(crate) async fn play_index(app: &Arc<Mutex<App>>, target: usize) {
     Ok(t) => t,
     Err(e) => {
       log::error!("YouTube advance download failed for {video_id}: {e:#}");
-      teardown_youtube(app).await;
-      set_error(
-        app,
-        crate::infra::app_strings(app)
-          .await
-          .status
-          .infra
-          .youtube_download_failed(&e.to_string()),
-      )
-      .await;
+      let next_target = target + 1;
+      let has_next = {
+        let guard = app.lock().await;
+        guard.youtube_playback.as_ref().is_some_and(|s| next_target < s.tracks.len())
+      };
+      if has_next {
+        let mut guard = app.lock().await;
+        guard.set_status_message(format!("Skipping unavailable track '{}'...", name), 4);
+        drop(guard);
+        Box::pin(play_index(app, next_target)).await;
+      } else {
+        teardown_youtube(app).await;
+        set_error(
+          app,
+          crate::infra::app_strings(app)
+            .await
+            .status
+            .infra
+            .youtube_download_failed(&e.to_string()),
+        )
+        .await;
+      }
       return;
     }
   };

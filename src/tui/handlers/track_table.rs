@@ -110,8 +110,8 @@ pub fn handler(key: Key, app: &mut App) {
     Key::Char('w') | Key::Char('a') => {
       app.apply(Action::OpenAddTrackDialog);
     }
-    Key::Char('D') | Key::Char('x') | Key::Delete => {
-      app.apply(Action::OpenRemoveTrackDialog);
+    Key::Char('d') | Key::Char('D') | Key::Char('x') | Key::Delete => {
+      handle_delete_track(app);
     }
     // `handle_app` routes to `handle_escape` first, so `Esc` handling here unreachable.
     Key::Char('q') if app.is_playlist_track_filter_active() => {
@@ -260,6 +260,61 @@ fn play_random_song(app: &mut App) {
       }
     }
   };
+}
+
+fn handle_delete_track(app: &mut App) {
+  if app.track_table.context == Some(TrackTableContext::SavedTracks) {
+    let idx = app.view.track_table_index;
+    if let Some(track) = app.track_table.tracks.get(idx).cloned() {
+      let title = track.name.clone();
+      let artist = track.artists.join(", ");
+      let track_id = track.uri.clone().or_else(|| track.id.clone()).unwrap_or_else(|| title.clone());
+
+      // 1. Delete from SQLite database (both downloaded_tracks and liked_songs)
+      if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+        let _ = db.delete_downloaded_track(&track_id);
+        if let Some(ref uri) = track.uri {
+          let _ = db.delete_downloaded_track(uri);
+        }
+        let track_key = format!("{}:{}", artist.to_lowercase(), title.to_lowercase());
+        let _ = db.delete_downloaded_track(&track_key);
+      }
+
+      // 2. Delete local audio file from disk if present
+      if let Some(ref uri) = track.uri {
+        if let Some(path_str) = uri.strip_prefix("file://") {
+          let p = std::path::PathBuf::from(path_str);
+          if p.exists() {
+            let _ = std::fs::remove_file(&p);
+          }
+        }
+      }
+      if let Some(root) = crate::core::paths::music_archive_dir() {
+        let candidate_opus = root.join(format!("{}.opus", title));
+        if candidate_opus.exists() {
+          let _ = std::fs::remove_file(&candidate_opus);
+        }
+        let candidate_flac = root.join(format!("{}.flac", title));
+        if candidate_flac.exists() {
+          let _ = std::fs::remove_file(&candidate_flac);
+        }
+      }
+
+      // 3. Remove from track_table.tracks
+      if idx < app.track_table.tracks.len() {
+        app.track_table.tracks.remove(idx);
+      }
+      if !app.track_table.tracks.is_empty() {
+        app.view.track_table_index = idx.min(app.track_table.tracks.len() - 1);
+      } else {
+        app.view.track_table_index = 0;
+      }
+
+      app.set_status_message(format!("Deleted '{}' from Song List", title), 4);
+    }
+  } else {
+    app.apply(Action::OpenRemoveTrackDialog);
+  }
 }
 
 fn jump_to_end(app: &mut App) {
