@@ -1330,59 +1330,151 @@ async fn commit_index(
 
 pub(crate) fn spawn_karaoke_lyrics_fetch(
   app: Arc<Mutex<App>>,
-  title: String,
-  artist: String,
-  duration_ms: u64,
+  _title: String,
+  _artist: String,
+  _duration_ms: u64,
 ) {
   tokio::spawn(async move {
-    let (clean_artist, clean_title) =
-      crate::sources::lossless_relay::youtube_importer::clean_youtube_title(&title, Some(&artist));
-    let dur_sec = if duration_ms > 0 { Some((duration_ms / 1000) as i64) } else { None };
-    let client = crate::lyrics::lrclib_elrc::LrclibClient::new("https://lrclib.net/api/get");
+    refetch_active_karaoke_lyrics(app, false).await;
+  });
+}
 
-    // 1. Check local SQLite lyrics cache
-    let cached_tl = if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
-      let track_key = format!("{}:{}", clean_artist.to_lowercase(), clean_title.to_lowercase());
+pub(crate) async fn refetch_active_karaoke_lyrics(
+  app: Arc<Mutex<App>>,
+  force: bool,
+) {
+  let (title, artist, duration_ms, provider_idx) = {
+    let guard = app.lock().await;
+    let playing = if let Some(queue_track) = if let Some(crate::infra::queue::QueueNowPlaying::Decoded(d)) = guard.queue_now.as_ref() {
+      Some(&d.track)
+    } else if let Some(crate::infra::queue::QueueNowPlaying::Spotify { track }) = guard.queue_now.as_ref() {
+      Some(track)
+    } else {
+      None
+    } {
+      Some((queue_track.name.clone(), queue_track.artists.join(", "), if queue_track.duration_ms > 0 { Some(queue_track.duration_ms) } else { None }))
+    } else if let Some(yt) = guard.youtube_playback.as_ref() {
+      yt.current().map(|t| (t.name.clone(), t.artists.join(", "), if t.duration_ms > 0 { Some(t.duration_ms) } else { None }))
+    } else if let Some(l) = guard.lossless_playback.as_ref() {
+      l.current_track.as_ref().map(|t| (t.clean_title.clone(), t.artist.clone(), if t.duration_ms > 0 { Some(t.duration_ms as u64) } else { None }))
+    } else if guard.view.track_table_index < guard.track_table.tracks.len() {
+      let t = &guard.track_table.tracks[guard.view.track_table_index];
+      Some((t.name.clone(), t.artists.join(", "), if t.duration_ms > 0 { Some(t.duration_ms) } else { None }))
+    } else {
+      None
+    };
+
+    match playing {
+      Some((t, a, d)) => (t, a, d.unwrap_or(0), guard.view.karaoke_provider_index),
+      None => return,
+    }
+  };
+
+  let (clean_artist, clean_title) =
+    crate::sources::lossless_relay::youtube_importer::clean_youtube_title(&title, Some(&artist));
+  let dur_sec = if duration_ms > 0 { Some((duration_ms / 1000) as i64) } else { None };
+  let track_key = format!("{}:{}", clean_artist.to_lowercase(), clean_title.to_lowercase());
+
+  // If not forcing, check DB cache first
+  if !force {
+    if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
       if let Ok(Some(entry)) = db.get_lyrics(&track_key) {
-        serde_json::from_str::<crate::lyrics::KaraokeTimeline>(&entry.timeline_json).ok()
+        if let Ok(mut tl) = serde_json::from_str::<crate::lyrics::KaraokeTimeline>(&entry.timeline_json) {
+          tl.ensure_romanization();
+          let lines: Vec<(u128, String)> = tl.lines.iter().map(|l| (l.start_time_ms as u128, l.text.clone())).collect();
+          let mut guard = app.lock().await;
+          guard.view.active_karaoke_timeline = Some(tl.clone());
+          guard.set_lyrics(crate::core::app::LyricsStatus::Found, Some(lines), true);
+          guard.set_status_message(format!("Lyrics cached ({})", tl.provider), 3);
+          return;
+        }
+      }
+    }
+  }
+
+  // Fetch using the selected provider
+  let fetch_res: Option<crate::lyrics::KaraokeTimeline> = match provider_idx {
+    0 => {
+      // LRCLIB
+      let client = crate::lyrics::lrclib_elrc::LrclibClient::new("https://lrclib.net/api/get");
+      client.fetch_lyrics(&clean_title, &clean_artist, None, dur_sec).await.ok()
+    }
+    1 => {
+      // Paxsenix
+      let query_str = format!("{} {}", clean_artist, clean_title);
+      let url = "https://lyrics.paxsenix.org/lyrics";
+      let client = reqwest::Client::new();
+      if let Ok(resp) = client.get(url).query(&[("q", &query_str)]).send().await {
+        if let Ok(text) = resp.text().await {
+          if text.trim_start().starts_with('<') {
+            crate::lyrics::paxsenix_ttml::parse_apple_music_ttml(&text, "paxsenix_ttml").ok()
+          } else {
+            crate::lyrics::paxsenix_ttml::parse_musixmatch_richsync(&text, "paxsenix_richsync").ok()
+          }
+        } else {
+          None
+        }
       } else {
         None
       }
-    } else {
-      None
-    };
-
-    let timeline = if let Some(tl) = cached_tl {
-      Some(tl)
-    } else if let Ok(tl) = client.fetch_lyrics(&clean_title, &clean_artist, None, dur_sec).await {
-      // Save to SQLite cache
-      if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
-        let track_key = format!("{}:{}", clean_artist.to_lowercase(), clean_title.to_lowercase());
-        let json = serde_json::to_string(&tl).unwrap_or_default();
-        let entry = crate::sources::lossless_relay::db::LyricsEntry {
-          source_track_id: track_key,
-          isrc: None,
-          provider: "lrclib".into(),
-          sync_type: "SYLLABLE".into(),
-          timeline_json: json,
-          raw_elrc: tl.raw_elrc.clone(),
-          user_offset_ms: 0,
-          fetched_at: chrono::Utc::now().timestamp(),
-        };
-        db.upsert_lyrics(&entry).ok();
-      }
-      Some(tl)
-    } else {
-      None
-    };
-
-    if let Some(tl) = timeline {
-      let lines: Vec<(u128, String)> = tl.lines.iter().map(|l| (l.start_time_ms as u128, l.text.clone())).collect();
-      let mut guard = app.lock().await;
-      guard.view.active_karaoke_timeline = Some(tl);
-      guard.set_lyrics(crate::core::app::LyricsStatus::Found, Some(lines), true);
     }
-  });
+    2 => {
+      // Spotify
+      let client = crate::lyrics::spotify_lyrics::SpotifyLyricsClient::new();
+      client.fetch_bypass_lyrics("http://127.0.0.1:8082", &track_key).await.ok()
+    }
+    3 => {
+      // NetEase
+      let client = crate::lyrics::lrclib_elrc::LrclibClient::new("https://lrclib.net/api/get");
+      client.fetch_lyrics(&clean_title, &clean_artist, None, dur_sec).await.ok()
+    }
+    _ => {
+      let client = crate::lyrics::lrclib_elrc::LrclibClient::new("https://lrclib.net/api/get");
+      client.fetch_lyrics(&clean_title, &clean_artist, None, dur_sec).await.ok()
+    }
+  };
+
+  // Fallback to LRCLIB if chosen provider returned nothing
+  let timeline = match fetch_res {
+    Some(tl) => Some(tl),
+    None => {
+      let client = crate::lyrics::lrclib_elrc::LrclibClient::new("https://lrclib.net/api/get");
+      client.fetch_lyrics(&clean_title, &clean_artist, None, dur_sec).await.ok()
+    }
+  };
+
+  if let Some(mut tl) = timeline {
+    tl.ensure_romanization();
+    if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+      let json = serde_json::to_string(&tl).unwrap_or_default();
+      let entry = crate::sources::lossless_relay::db::LyricsEntry {
+        source_track_id: track_key,
+        isrc: None,
+        provider: tl.provider.clone(),
+        sync_type: match tl.sync_type {
+          crate::lyrics::SyncType::Syllable => "SYLLABLE".into(),
+          crate::lyrics::SyncType::Line => "LINE".into(),
+          crate::lyrics::SyncType::Unsynced => "UNSYNCED".into(),
+        },
+        timeline_json: json,
+        raw_elrc: tl.raw_elrc.clone(),
+        user_offset_ms: 0,
+        fetched_at: chrono::Utc::now().timestamp(),
+      };
+      db.upsert_lyrics(&entry).ok();
+    }
+
+    let lines: Vec<(u128, String)> = tl.lines.iter().map(|l| (l.start_time_ms as u128, l.text.clone())).collect();
+    let count = tl.lines.len();
+    let prov = tl.provider.clone();
+    let mut guard = app.lock().await;
+    guard.view.active_karaoke_timeline = Some(tl);
+    guard.set_lyrics(crate::core::app::LyricsStatus::Found, Some(lines), true);
+    guard.set_status_message(format!("Lyrics loaded from {} ({} lines)", prov, count), 4);
+  } else {
+    let mut guard = app.lock().await;
+    guard.set_status_message(format!("No lyrics found for '{}' by '{}'", clean_title, clean_artist), 4);
+  }
 }
 
 /// End the YouTube session, releasing the output device and cleaning up the

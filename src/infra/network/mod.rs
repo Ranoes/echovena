@@ -334,6 +334,8 @@ pub enum IoEvent {
   RemovePlaylistSyncLink(String),
   /// Import a playlist or track URL from Spotify or YouTube in background.
   ImportPlaylistUrl(String),
+  /// Refetch lyrics for active track with selected provider
+  RefetchKaraokeLyrics { force: bool },
   /// Start an in-app Spotify login: show the pairing code, open the browser and
   /// wait for the approval off the pump. Runs without a Spotify session
   /// (bypasses the auth gate).
@@ -543,6 +545,7 @@ impl Network {
         | IoEvent::SearchFriendUsers(_)
         | IoEvent::LoadListeningStats(_)
         | IoEvent::GenerateRecap(_)
+        | IoEvent::RefetchKaraokeLyrics { .. }
         | IoEvent::StartParty(_)
         | IoEvent::JoinParty { .. }
         | IoEvent::SetPartyControlMode(_)
@@ -611,6 +614,7 @@ impl Network {
         | IoEvent::SearchFriendUsers(_)
         | IoEvent::LoadListeningStats(_)
         | IoEvent::GenerateRecap(_)
+        | IoEvent::RefetchKaraokeLyrics { .. }
     )
   }
 
@@ -1164,6 +1168,12 @@ impl Network {
         let app = Arc::clone(&self.app);
         tokio::spawn(async move {
           crate::sources::sync::worker::SyncWorker::import_url_background(app, url).await;
+        });
+      }
+      IoEvent::RefetchKaraokeLyrics { force } => {
+        let app = Arc::clone(&self.app);
+        tokio::spawn(async move {
+          crate::infra::youtube::dispatch::refetch_active_karaoke_lyrics(app, force).await;
         });
       }
     };

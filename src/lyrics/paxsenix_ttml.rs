@@ -111,7 +111,7 @@ pub fn parse_apple_music_ttml(xml: &str, provider_name: &str) -> Result<KaraokeT
 
     let has_syllables = lines.iter().any(|l| l.words.len() > 1);
 
-    Ok(KaraokeTimeline {
+    let mut timeline = KaraokeTimeline {
         provider: provider_name.to_string(),
         sync_type: if has_syllables {
             SyncType::Syllable
@@ -120,7 +120,9 @@ pub fn parse_apple_music_ttml(xml: &str, provider_name: &str) -> Result<KaraokeT
         },
         lines,
         raw_elrc: None,
-    })
+    };
+    timeline.ensure_romanization();
+    Ok(timeline)
 }
 
 /// Parses Musixmatch RichSync JSON lyrics into unified KaraokeTimeline
@@ -185,12 +187,14 @@ pub fn parse_musixmatch_richsync(json_str: &str, provider_name: &str) -> Result<
         return Err(anyhow!("no lyric lines could be extracted from RichSync JSON"));
     }
 
-    Ok(KaraokeTimeline {
+    let mut timeline = KaraokeTimeline {
         provider: provider_name.to_string(),
         sync_type: SyncType::Syllable,
         lines,
         raw_elrc: None,
-    })
+    };
+    timeline.ensure_romanization();
+    Ok(timeline)
 }
 
 #[cfg(test)]

@@ -263,6 +263,13 @@ pub struct ViewState {
   pub karaoke_provider_index: usize,
 }
 
+pub const LYRIC_PROVIDERS: [&str; 4] = [
+  "LRCLIB (.elrc)",
+  "Paxsenix (Apple Music/Musixmatch)",
+  "Spotify (Color Lyrics)",
+  "NetEase (.yrc)",
+];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum LyricsDisplayMode {
   #[default]
@@ -271,12 +278,56 @@ pub enum LyricsDisplayMode {
   Both,
 }
 
+impl LyricsDisplayMode {
+  pub fn cycle(self) -> Self {
+    match self {
+      Self::Original => Self::Romanized,
+      Self::Romanized => Self::Both,
+      Self::Both => Self::Original,
+    }
+  }
+
+  pub fn label(&self) -> &'static str {
+    match self {
+      Self::Original => "Original Only",
+      Self::Romanized => "Romanized Only",
+      Self::Both => "Both (Stacked Original & Romanized)",
+    }
+  }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum KaraokeAlignment {
   Left,
   #[default]
   Center,
   Right,
+}
+
+impl KaraokeAlignment {
+  pub fn cycle(self) -> Self {
+    match self {
+      Self::Left => Self::Center,
+      Self::Center => Self::Right,
+      Self::Right => Self::Left,
+    }
+  }
+
+  pub fn to_ratatui(self) -> ratatui::layout::Alignment {
+    match self {
+      Self::Left => ratatui::layout::Alignment::Left,
+      Self::Center => ratatui::layout::Alignment::Center,
+      Self::Right => ratatui::layout::Alignment::Right,
+    }
+  }
+
+  pub fn label(&self) -> &'static str {
+    match self {
+      Self::Left => "Left",
+      Self::Center => "Middle / Center",
+      Self::Right => "Right",
+    }
+  }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

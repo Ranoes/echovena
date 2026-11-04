@@ -82,15 +82,16 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
     let offset_ms = app.view.lyrics_view.timing_offset_ms;
     let offset_str = format!("{:+.1}s ({:+}ms)", offset_ms as f64 / 1000.0, offset_ms);
 
-    let romanization_str = if app.view.karaoke_show_romanization {
-        "ON [Key T]"
-    } else {
-        "OFF [Key T]"
-    };
+    let mode_str = app.view.karaoke_display_mode.label();
+    let align_str = app.view.karaoke_alignment.label();
+    let provider_str = crate::core::app::LYRIC_PROVIDERS
+        .get(app.view.karaoke_provider_index)
+        .copied()
+        .unwrap_or("LRCLIB (.elrc)");
 
     let title_line = format!(
-        " EchoVena — KARAOKE STAGE (60 FPS) | Offset: {} | Romanization: {} | [Esc/K] Exit ",
-        offset_str, romanization_str
+        " EchoVena — KARAOKE STAGE (60 FPS) | Mode: {} [T] | Align: {} [K] | Provider: {} [P] | Offset: {} | [Esc/k] Exit ",
+        mode_str, align_str, provider_str, offset_str
     );
 
     let stage_block = Block::default()
@@ -203,73 +204,216 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
             VocalRole::Background => Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
         };
 
-        let alignment = match line.vocal_role {
-            VocalRole::Lead1 => Alignment::Left,
-            VocalRole::Lead2 => Alignment::Right,
-            VocalRole::Background => Alignment::Center,
-        };
+        let alignment = app.view.karaoke_alignment.to_ratatui();
+        let display_mode = app.view.karaoke_display_mode;
 
         if is_active {
-            // Render word-by-word with clean, crisp pacing
-            let mut spans = Vec::new();
-
-            if line.words.is_empty() {
-                spans.push(Span::styled(
-                    &line.text,
-                    role_style.add_modifier(Modifier::BOLD).fg(Color::Yellow),
-                ));
-            } else {
-                for word in &line.words {
-                    if current_time_ms >= word.end_time_ms {
+            match display_mode {
+                crate::core::app::LyricsDisplayMode::Original => {
+                    let mut spans = Vec::new();
+                    if line.words.is_empty() {
                         spans.push(Span::styled(
-                            &word.text,
-                            role_style.add_modifier(Modifier::BOLD).fg(Color::White),
-                        ));
-                    } else if current_time_ms >= word.start_time_ms {
-                        spans.push(Span::styled(
-                            &word.text,
-                            role_style
-                                .add_modifier(Modifier::BOLD)
-                                .add_modifier(Modifier::UNDERLINED)
-                                .fg(Color::Yellow),
+                            &line.text,
+                            role_style.add_modifier(Modifier::BOLD).fg(Color::Yellow),
                         ));
                     } else {
-                        spans.push(Span::styled(
-                            &word.text,
-                            Style::default().fg(Color::DarkGray),
-                        ));
+                        for word in &line.words {
+                            if current_time_ms >= word.end_time_ms {
+                                spans.push(Span::styled(
+                                    &word.text,
+                                    role_style.add_modifier(Modifier::BOLD).fg(Color::White),
+                                ));
+                            } else if current_time_ms >= word.start_time_ms {
+                                spans.push(Span::styled(
+                                    &word.text,
+                                    role_style
+                                        .add_modifier(Modifier::BOLD)
+                                        .add_modifier(Modifier::UNDERLINED)
+                                        .fg(Color::Yellow),
+                                ));
+                            } else {
+                                spans.push(Span::styled(
+                                    &word.text,
+                                    Style::default().fg(Color::DarkGray),
+                                ));
+                            }
+                        }
                     }
+                    rendered_lines.push(Line::from(spans).alignment(alignment));
                 }
-            }
+                crate::core::app::LyricsDisplayMode::Romanized => {
+                    let mut spans = Vec::new();
+                    if line.words.is_empty() {
+                        let text = line.romanization.as_deref().unwrap_or(&line.text);
+                        spans.push(Span::styled(
+                            text,
+                            role_style.add_modifier(Modifier::BOLD).fg(Color::Yellow),
+                        ));
+                    } else {
+                        for word in &line.words {
+                            let text = word.romanization.as_deref().unwrap_or(&word.text);
+                            if current_time_ms >= word.end_time_ms {
+                                spans.push(Span::styled(
+                                    text,
+                                    role_style.add_modifier(Modifier::BOLD).fg(Color::White),
+                                ));
+                            } else if current_time_ms >= word.start_time_ms {
+                                spans.push(Span::styled(
+                                    text,
+                                    role_style
+                                        .add_modifier(Modifier::BOLD)
+                                        .add_modifier(Modifier::UNDERLINED)
+                                        .fg(Color::Yellow),
+                                ));
+                            } else {
+                                spans.push(Span::styled(
+                                    text,
+                                    Style::default().fg(Color::DarkGray),
+                                ));
+                            }
+                        }
+                    }
+                    rendered_lines.push(Line::from(spans).alignment(alignment));
+                }
+                crate::core::app::LyricsDisplayMode::Both => {
+                    // Row 1: Original text (with syllable highlight)
+                    let mut orig_spans = Vec::new();
+                    if line.words.is_empty() {
+                        orig_spans.push(Span::styled(
+                            &line.text,
+                            role_style.add_modifier(Modifier::BOLD).fg(Color::Yellow),
+                        ));
+                    } else {
+                        for word in &line.words {
+                            if current_time_ms >= word.end_time_ms {
+                                orig_spans.push(Span::styled(
+                                    &word.text,
+                                    role_style.add_modifier(Modifier::BOLD).fg(Color::White),
+                                ));
+                            } else if current_time_ms >= word.start_time_ms {
+                                orig_spans.push(Span::styled(
+                                    &word.text,
+                                    role_style
+                                        .add_modifier(Modifier::BOLD)
+                                        .add_modifier(Modifier::UNDERLINED)
+                                        .fg(Color::Yellow),
+                                ));
+                            } else {
+                                orig_spans.push(Span::styled(
+                                    &word.text,
+                                    Style::default().fg(Color::DarkGray),
+                                ));
+                            }
+                        }
+                    }
+                    rendered_lines.push(Line::from(orig_spans).alignment(alignment));
 
-            rendered_lines.push(Line::from(spans).alignment(alignment));
-
-            // Optional Romanization or Translation line
-            if app.view.karaoke_show_romanization {
-                if let Some(ref rom) = line.romanization.as_ref().or(line.translation.as_ref()) {
-                    rendered_lines.push(
-                        Line::from(Span::styled(
-                            format!("  ↳ {}", rom),
-                            Style::default()
-                                .fg(Color::LightYellow)
-                                .add_modifier(Modifier::ITALIC),
-                        ))
-                        .alignment(alignment),
-                    );
+                    // Row 2: Romanized text stacked directly beneath in sync!
+                    if let Some(ref rom_line) = line.romanization {
+                        let mut rom_spans = Vec::new();
+                        if !line.words.is_empty() {
+                            for word in &line.words {
+                                let rom_w = word.romanization.as_deref().unwrap_or(&word.text);
+                                if current_time_ms >= word.end_time_ms {
+                                    rom_spans.push(Span::styled(
+                                        rom_w,
+                                        role_style
+                                            .add_modifier(Modifier::BOLD)
+                                            .add_modifier(Modifier::ITALIC)
+                                            .fg(Color::LightCyan),
+                                    ));
+                                } else if current_time_ms >= word.start_time_ms {
+                                    rom_spans.push(Span::styled(
+                                        rom_w,
+                                        role_style
+                                            .add_modifier(Modifier::BOLD)
+                                            .add_modifier(Modifier::UNDERLINED)
+                                            .add_modifier(Modifier::ITALIC)
+                                            .fg(Color::LightYellow),
+                                    ));
+                                } else {
+                                    rom_spans.push(Span::styled(
+                                        rom_w,
+                                        Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                                    ));
+                                }
+                            }
+                        } else {
+                            rom_spans.push(Span::styled(
+                                rom_line,
+                                Style::default()
+                                    .fg(Color::LightYellow)
+                                    .add_modifier(Modifier::ITALIC),
+                            ));
+                        }
+                        rendered_lines.push(Line::from(rom_spans).alignment(alignment));
+                    }
                 }
             }
         } else if idx < active_line_idx {
             // Past line
-            rendered_lines.push(
-                Line::from(Span::styled(&line.text, Style::default().fg(Color::DarkGray)))
-                    .alignment(alignment),
-            );
+            match display_mode {
+                crate::core::app::LyricsDisplayMode::Original => {
+                    rendered_lines.push(
+                        Line::from(Span::styled(&line.text, Style::default().fg(Color::DarkGray)))
+                            .alignment(alignment),
+                    );
+                }
+                crate::core::app::LyricsDisplayMode::Romanized => {
+                    let text = line.romanization.as_deref().unwrap_or(&line.text);
+                    rendered_lines.push(
+                        Line::from(Span::styled(text, Style::default().fg(Color::DarkGray)))
+                            .alignment(alignment),
+                    );
+                }
+                crate::core::app::LyricsDisplayMode::Both => {
+                    rendered_lines.push(
+                        Line::from(Span::styled(&line.text, Style::default().fg(Color::DarkGray)))
+                            .alignment(alignment),
+                    );
+                    if let Some(ref rom) = line.romanization {
+                        rendered_lines.push(
+                            Line::from(Span::styled(
+                                rom,
+                                Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                            ))
+                            .alignment(alignment),
+                        );
+                    }
+                }
+            }
         } else {
             // Future upcoming line
-            rendered_lines.push(
-                Line::from(Span::styled(&line.text, Style::default().fg(Color::Gray)))
-                    .alignment(alignment),
-            );
+            match display_mode {
+                crate::core::app::LyricsDisplayMode::Original => {
+                    rendered_lines.push(
+                        Line::from(Span::styled(&line.text, Style::default().fg(Color::Gray)))
+                            .alignment(alignment),
+                    );
+                }
+                crate::core::app::LyricsDisplayMode::Romanized => {
+                    let text = line.romanization.as_deref().unwrap_or(&line.text);
+                    rendered_lines.push(
+                        Line::from(Span::styled(text, Style::default().fg(Color::Gray)))
+                            .alignment(alignment),
+                    );
+                }
+                crate::core::app::LyricsDisplayMode::Both => {
+                    rendered_lines.push(
+                        Line::from(Span::styled(&line.text, Style::default().fg(Color::Gray)))
+                            .alignment(alignment),
+                    );
+                    if let Some(ref rom) = line.romanization {
+                        rendered_lines.push(
+                            Line::from(Span::styled(
+                                rom,
+                                Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                            ))
+                            .alignment(alignment),
+                        );
+                    }
+                }
+            }
         }
 
         rendered_lines.push(Line::from(""));
@@ -282,14 +426,18 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
 
     // 3. Footer controls
     let footer_text = Line::from(vec![
-        Span::styled("[K]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::styled(" Toggle Stage   ", Style::default().fg(Color::White)),
-        Span::styled("[ [ ]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        Span::styled(" Offset -100ms   ", Style::default().fg(Color::White)),
-        Span::styled("[ ] ]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        Span::styled(" Offset +100ms   ", Style::default().fg(Color::White)),
+        Span::styled("[k]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(" Exit Stage   ", Style::default().fg(Color::White)),
+        Span::styled("[K]", Style::default().fg(Color::LightCyan).add_modifier(Modifier::BOLD)),
+        Span::styled(" Align (L/M/R)   ", Style::default().fg(Color::White)),
         Span::styled("[T]", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-        Span::styled(" Toggle Romanization", Style::default().fg(Color::White)),
+        Span::styled(" Lyrics (Orig/Rom/Both)   ", Style::default().fg(Color::White)),
+        Span::styled("[P]", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
+        Span::styled(" Provider   ", Style::default().fg(Color::White)),
+        Span::styled("[R]", Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD)),
+        Span::styled(" Refetch   ", Style::default().fg(Color::White)),
+        Span::styled("[ [ / ] ]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(" Timing Offset", Style::default().fg(Color::White)),
     ]);
     let footer_para = Paragraph::new(footer_text).alignment(Alignment::Center);
     f.render_widget(footer_para, chunks[2]);

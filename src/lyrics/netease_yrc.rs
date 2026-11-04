@@ -59,12 +59,14 @@ pub fn parse_netease_yrc(yrc_text: &str, provider_name: &str) -> Result<KaraokeT
         return Err(anyhow!("no .yrc lines parsed"));
     }
 
-    Ok(KaraokeTimeline {
+    let mut timeline = KaraokeTimeline {
         provider: provider_name.to_string(),
         sync_type: SyncType::Syllable,
         lines,
         raw_elrc: None,
-    })
+    };
+    timeline.ensure_romanization();
+    Ok(timeline)
 }
 
 #[derive(Debug, Deserialize)]

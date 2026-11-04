@@ -152,20 +152,37 @@ pub fn handle_app(key: Key, app: &mut App) {
   // Full-Screen Karaoke Stage View: intercept keys when visible.
   if app.view.karaoke_stage_visible {
     match key {
-      Key::Esc | Key::Char('q') | Key::Char('K') | Key::Char('k') => {
+      Key::Esc | Key::Char('q') | Key::Char('k') => {
         app.view.karaoke_stage_visible = false;
       }
       k if k == app.user_config.keys.back => {
         app.view.karaoke_stage_visible = false;
+      }
+      Key::Char('K') => {
+        app.view.karaoke_alignment = app.view.karaoke_alignment.cycle();
+        app.set_status_message(format!("Lyrics Position: {}", app.view.karaoke_alignment.label()), 3);
+      }
+      Key::Char('T') | Key::Char('t') => {
+        app.view.karaoke_display_mode = app.view.karaoke_display_mode.cycle();
+        app.view.karaoke_show_romanization = app.view.karaoke_display_mode != crate::core::app::LyricsDisplayMode::Original;
+        app.set_status_message(format!("Lyrics Mode: {}", app.view.karaoke_display_mode.label()), 3);
+      }
+      Key::Char('P') | Key::Char('p') => {
+        app.view.karaoke_provider_index = (app.view.karaoke_provider_index + 1) % crate::core::app::LYRIC_PROVIDERS.len();
+        let provider_name = crate::core::app::LYRIC_PROVIDERS[app.view.karaoke_provider_index];
+        app.set_status_message(format!("Switched Lyric Provider to {} — re-fetching...", provider_name), 4);
+        app.dispatch(crate::infra::network::IoEvent::RefetchKaraokeLyrics { force: true });
+      }
+      Key::Char('R') | Key::Char('r') => {
+        let provider_name = crate::core::app::LYRIC_PROVIDERS[app.view.karaoke_provider_index];
+        app.set_status_message(format!("Re-fetching lyrics via {}...", provider_name), 4);
+        app.dispatch(crate::infra::network::IoEvent::RefetchKaraokeLyrics { force: true });
       }
       Key::Char('[') => {
         app.view.lyrics_view.timing_offset_ms -= 100;
       }
       Key::Char(']') => {
         app.view.lyrics_view.timing_offset_ms += 100;
-      }
-      Key::Char('T') | Key::Char('t') => {
-        app.view.karaoke_show_romanization = !app.view.karaoke_show_romanization;
       }
       _ => {}
     }
@@ -649,6 +666,10 @@ pub fn handle_app(key: Key, app: &mut App) {
     Key::Char('R') => {
       if is_input_mode(app) {
         handle_block_events(key, app);
+      } else if app.view.karaoke_stage_visible {
+        let provider_name = crate::core::app::LYRIC_PROVIDERS[app.view.karaoke_provider_index];
+        app.set_status_message(format!("Re-fetching lyrics via {}...", provider_name), 4);
+        app.dispatch(crate::infra::network::IoEvent::RefetchKaraokeLyrics { force: true });
       } else {
         app.view.relay_status_visible = !app.view.relay_status_visible;
       }
@@ -666,36 +687,7 @@ pub fn handle_app(key: Key, app: &mut App) {
       } else {
         app.view.karaoke_stage_visible = !app.view.karaoke_stage_visible;
         if app.view.karaoke_stage_visible && app.view.active_karaoke_timeline.is_none() {
-          #[cfg(feature = "youtube")]
-          if let Some(yt) = app.youtube_playback.as_ref() {
-            if let Some(track) = yt.current() {
-              let title = track.name.clone();
-              let artist = track.artists.join(", ");
-              let dur_sec = if track.duration_ms > 0 { Some((track.duration_ms / 1000) as i64) } else { None };
-              app.set_status_message(format!("Fetching synced lyrics for '{}'...", title), 3);
-              tokio::spawn(async move {
-                let (clean_artist, clean_title) = crate::sources::lossless_relay::youtube_importer::clean_youtube_title(&title, Some(&artist));
-                let client = crate::lyrics::lrclib_elrc::LrclibClient::new("https://lrclib.net/api/get");
-                if let Ok(tl) = client.fetch_lyrics(&clean_title, &clean_artist, None, dur_sec).await {
-                  if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
-                    let track_key = format!("{}:{}", clean_artist.to_lowercase(), clean_title.to_lowercase());
-                    let json = serde_json::to_string(&tl).unwrap_or_default();
-                    let entry = crate::sources::lossless_relay::db::LyricsEntry {
-                      source_track_id: track_key,
-                      isrc: None,
-                      provider: "lrclib".into(),
-                      sync_type: "SYLLABLE".into(),
-                      timeline_json: json,
-                      raw_elrc: tl.raw_elrc.clone(),
-                      user_offset_ms: 0,
-                      fetched_at: chrono::Utc::now().timestamp(),
-                    };
-                    db.upsert_lyrics(&entry).ok();
-                  }
-                }
-              });
-            }
-          }
+          app.dispatch(crate::infra::network::IoEvent::RefetchKaraokeLyrics { force: false });
         }
       }
     }
@@ -717,7 +709,19 @@ pub fn handle_app(key: Key, app: &mut App) {
       if is_input_mode(app) {
         handle_block_events(key, app);
       } else {
-        app.view.karaoke_show_romanization = !app.view.karaoke_show_romanization;
+        app.view.karaoke_display_mode = app.view.karaoke_display_mode.cycle();
+        app.view.karaoke_show_romanization = app.view.karaoke_display_mode != crate::core::app::LyricsDisplayMode::Original;
+        app.set_status_message(format!("Lyrics Display Mode: {}", app.view.karaoke_display_mode.label()), 3);
+      }
+    }
+    Key::Char('P') => {
+      if is_input_mode(app) {
+        handle_block_events(key, app);
+      } else {
+        app.view.karaoke_provider_index = (app.view.karaoke_provider_index + 1) % crate::core::app::LYRIC_PROVIDERS.len();
+        let provider_name = crate::core::app::LYRIC_PROVIDERS[app.view.karaoke_provider_index];
+        app.set_status_message(format!("Switched Lyric Provider to {} — re-fetching...", provider_name), 4);
+        app.dispatch(crate::infra::network::IoEvent::RefetchKaraokeLyrics { force: true });
       }
     }
     Key::Char('s') => {

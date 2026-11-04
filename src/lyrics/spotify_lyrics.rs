@@ -115,7 +115,7 @@ pub fn parse_spotify_color_lyrics(json_str: &str, provider_name: &str) -> Result
         return Err(anyhow!("no lines in Spotify lyrics payload"));
     }
 
-    Ok(KaraokeTimeline {
+    let mut timeline = KaraokeTimeline {
         provider: provider_name.to_string(),
         sync_type: if is_syllable {
             SyncType::Syllable
@@ -124,7 +124,9 @@ pub fn parse_spotify_color_lyrics(json_str: &str, provider_name: &str) -> Result
         },
         lines,
         raw_elrc: None,
-    })
+    };
+    timeline.ensure_romanization();
+    Ok(timeline)
 }
 
 #[derive(Clone)]
@@ -245,12 +247,14 @@ impl SpotifyLyricsClient {
             }
 
             if !lines.is_empty() {
-                return Ok(KaraokeTimeline {
+                let mut timeline = KaraokeTimeline {
                     provider: "spotify_bypass_bridge".to_string(),
                     sync_type: SyncType::Line,
                     lines,
                     raw_elrc: None,
-                });
+                };
+                timeline.ensure_romanization();
+                return Ok(timeline);
             }
         }
 

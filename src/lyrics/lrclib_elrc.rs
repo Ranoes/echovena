@@ -89,7 +89,7 @@ pub fn parse_enhanced_lrc(lrc_text: &str, provider_name: &str) -> Result<Karaoke
         }
     }
 
-    Ok(KaraokeTimeline {
+    let mut timeline = KaraokeTimeline {
         provider: provider_name.to_string(),
         sync_type: if has_syllables {
             SyncType::Syllable
@@ -98,7 +98,9 @@ pub fn parse_enhanced_lrc(lrc_text: &str, provider_name: &str) -> Result<Karaoke
         },
         lines,
         raw_elrc: Some(lrc_text.to_string()),
-    })
+    };
+    timeline.ensure_romanization();
+    Ok(timeline)
 }
 
 #[derive(Debug, Deserialize)]

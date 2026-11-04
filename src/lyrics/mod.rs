@@ -1,9 +1,102 @@
 pub mod lrclib_elrc;
 pub mod netease_yrc;
 pub mod paxsenix_ttml;
+pub mod romanize;
 pub mod spotify_lyrics;
 
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum KaraokeDisplayMode {
+    #[default]
+    Original,
+    Romanized,
+    Both,
+}
+
+impl KaraokeDisplayMode {
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Original => Self::Romanized,
+            Self::Romanized => Self::Both,
+            Self::Both => Self::Original,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Original => "Original Only",
+            Self::Romanized => "Romanized Only",
+            Self::Both => "Both (Stacked Original & Romanized)",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum KaraokeAlignment {
+    Left,
+    #[default]
+    Center,
+    Right,
+}
+
+impl KaraokeAlignment {
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Left => Self::Center,
+            Self::Center => Self::Right,
+            Self::Right => Self::Left,
+        }
+    }
+
+    pub fn to_ratatui(self) -> ratatui::layout::Alignment {
+        match self {
+            Self::Left => ratatui::layout::Alignment::Left,
+            Self::Center => ratatui::layout::Alignment::Center,
+            Self::Right => ratatui::layout::Alignment::Right,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Left => "Left",
+            Self::Center => "Middle / Center",
+            Self::Right => "Right",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum LyricProviderChoice {
+    #[default]
+    Auto,      // Waterfall priority
+    Lrclib,    // LRCLIB (.elrc)
+    Paxsenix,  // Apple Music TTML / Musixmatch RichSync
+    Spotify,   // Spotify Color Lyrics
+    Netease,   // NetEase (.yrc)
+}
+
+impl LyricProviderChoice {
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Auto => Self::Lrclib,
+            Self::Lrclib => Self::Paxsenix,
+            Self::Paxsenix => Self::Spotify,
+            Self::Spotify => Self::Netease,
+            Self::Netease => Self::Auto,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Auto => "Auto (Waterfall)",
+            Self::Lrclib => "LRCLIB (.elrc)",
+            Self::Paxsenix => "Paxsenix (Apple Music/Musixmatch)",
+            Self::Spotify => "Spotify Color Lyrics",
+            Self::Netease => "NetEase (.yrc)",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SyncType {
@@ -30,6 +123,8 @@ pub struct KaraokeWord {
     pub text: String,
     pub start_time_ms: i64,
     pub end_time_ms: i64,
+    #[serde(default)]
+    pub romanization: Option<String>,
 }
 
 impl KaraokeWord {
@@ -38,6 +133,7 @@ impl KaraokeWord {
             text: text.to_string(),
             start_time_ms,
             end_time_ms,
+            romanization: None,
         }
     }
 
@@ -117,6 +213,21 @@ impl KaraokeTimeline {
         Some(self.lines.len() - 1)
     }
 
+    /// Pre-calculates and caches algorithmic romanization for all lines and words
+    /// so that live 60 FPS karaoke stage rendering has 0ms latency.
+    pub fn ensure_romanization(&mut self) {
+        for line in &mut self.lines {
+            if line.romanization.is_none() {
+                line.romanization = crate::lyrics::romanize::romanize_text(&line.text);
+            }
+            for word in &mut line.words {
+                if word.romanization.is_none() {
+                    word.romanization = crate::lyrics::romanize::romanize_text(&word.text);
+                }
+            }
+        }
+    }
+
     /// Converts the timeline into an exportable Enhanced LRC (.elrc) format
     pub fn to_enhanced_lrc(&self) -> String {
         let mut out = String::new();
@@ -173,7 +284,8 @@ impl LyricWaterfall {
     ) -> anyhow::Result<KaraokeTimeline> {
         // 1. Check local SQLite lyrics_cache
         if let Ok(Some(cached)) = db.get_lyrics(source_track_id) {
-            if let Ok(timeline) = serde_json::from_str::<KaraokeTimeline>(&cached.timeline_json) {
+            if let Ok(mut timeline) = serde_json::from_str::<KaraokeTimeline>(&cached.timeline_json) {
+                timeline.ensure_romanization();
                 return Ok(timeline);
             }
         }
