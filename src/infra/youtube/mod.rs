@@ -53,17 +53,132 @@ const DEFAULT_YTDLP: &str = "yt-dlp";
 const SEARCH_LIMIT: usize = 20;
 
 /// Audio format selector: itag 140 (AAC/M4A ~128 kbps) first — the format the
-/// bundled symphonia decoder is known to handle — then any m4a, then whatever
-/// audio exists.
-const FORMAT_SELECTOR: &str = "140/bestaudio[ext=m4a]/bestaudio";
+/// bundled symphonia decoder is known to handle — then any m4a, then 251 (Opus), then whatever audio exists.
+const FORMAT_SELECTOR: &str = "140/bestaudio[ext=m4a]/251/bestaudio";
 
 /// Extractor override for the download retry: YouTube's GVS PO-token
-/// enforcement 403s music-label content on the default player clients, while
-/// the embedded players still serve tokenless media URLs for any embeddable
-/// video — which label uploads are. Tried only after a default download
-/// fails, so healthy videos never pay for it; a non-embeddable gated video
-/// stays undownloadable without a real PO-token provider.
-const EMBEDDED_PLAYER_CLIENTS: &str = "youtube:player_client=web_embedded,tv_embedded";
+/// enforcement 403s content on default player clients, while android/web
+/// clients serve streams without tokens.
+const FALLBACK_PLAYER_CLIENTS: &str = "youtube:player_client=android,web";
+
+/// Check if ffmpeg is available on PATH or in standard package directories.
+pub fn find_ffmpeg_dir() -> Option<std::path::PathBuf> {
+  let mut cmd = std::process::Command::new("ffmpeg");
+  #[cfg(windows)]
+  {
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+  }
+  if cmd.arg("-version").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false) {
+    return None;
+  }
+
+  #[cfg(windows)]
+  {
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+      let winget_packages = std::path::Path::new(&local_app_data).join("Microsoft").join("WinGet").join("Packages");
+      if let Ok(entries) = std::fs::read_dir(&winget_packages) {
+        for entry in entries.flatten() {
+          let name = entry.file_name().to_string_lossy().to_string();
+          if name.contains("FFmpeg") {
+            let mut stack = vec![entry.path()];
+            while let Some(dir) = stack.pop() {
+              if dir.file_name().and_then(|n| n.to_str()) == Some("bin") && dir.join("ffmpeg.exe").is_file() {
+                return Some(dir);
+              }
+              if let Ok(sub_entries) = std::fs::read_dir(&dir) {
+                for sub in sub_entries.flatten() {
+                  if sub.path().is_dir() {
+                    stack.push(sub.path());
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  None
+}
+
+/// Returns true if ffmpeg is available on PATH or discovered in package directories.
+pub fn has_ffmpeg() -> bool {
+  let mut cmd = std::process::Command::new("ffmpeg");
+  #[cfg(windows)]
+  {
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+  }
+  if cmd.arg("-version").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false) {
+    return true;
+  }
+  find_ffmpeg_dir().is_some()
+}
+
+/// Resolve the actual binary path for `yt-dlp`.
+pub fn resolve_ytdlp(override_path: Option<&str>) -> String {
+  if let Some(p) = override_path {
+    let trimmed = p.trim();
+    if !trimmed.is_empty() {
+      return trimmed.to_string();
+    }
+  }
+
+  // Check default on PATH
+  let mut cmd = std::process::Command::new(DEFAULT_YTDLP);
+  #[cfg(windows)]
+  {
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+  }
+  if cmd.arg("--version").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false) {
+    return DEFAULT_YTDLP.to_string();
+  }
+
+  #[cfg(windows)]
+  {
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+      let winget_packages = std::path::Path::new(&local_app_data).join("Microsoft").join("WinGet").join("Packages");
+      if let Ok(entries) = std::fs::read_dir(&winget_packages) {
+        for entry in entries.flatten() {
+          let name = entry.file_name().to_string_lossy().to_string();
+          if name.contains("yt-dlp") {
+            let candidate = entry.path().join("yt-dlp.exe");
+            if candidate.is_file() {
+              return candidate.to_string_lossy().to_string();
+            }
+          }
+        }
+      }
+      let windows_apps = std::path::Path::new(&local_app_data).join("Microsoft").join("WindowsApps").join("yt-dlp.exe");
+      if windows_apps.is_file() {
+        return windows_apps.to_string_lossy().to_string();
+      }
+    }
+
+    if let Ok(program_data) = std::env::var("ProgramData") {
+      let choco = std::path::Path::new(&program_data).join("chocolatey").join("bin").join("yt-dlp.exe");
+      if choco.is_file() {
+        return choco.to_string_lossy().to_string();
+      }
+    }
+
+    if let Ok(userprofile) = std::env::var("USERPROFILE") {
+      let scoop = std::path::Path::new(&userprofile).join("scoop").join("shims").join("yt-dlp.exe");
+      if scoop.is_file() {
+        return scoop.to_string_lossy().to_string();
+      }
+      let local_bin = std::path::Path::new(&userprofile).join(".local").join("bin").join("yt-dlp.exe");
+      if local_bin.is_file() {
+        return local_bin.to_string_lossy().to_string();
+      }
+    }
+  }
+
+  DEFAULT_YTDLP.to_string()
+}
 
 /// What the download prints on stdout once yt-dlp has the video's page: the
 /// fields [`YtVideo`] reads, as one JSON object. The download already resolves
@@ -309,8 +424,9 @@ pub struct YouTubeSource {
 impl YouTubeSource {
   /// `ytdlp_path` is the user's `behavior.ytdlp_path` override, if any.
   pub fn new(ytdlp_path: Option<String>) -> Self {
+    let resolved = resolve_ytdlp(ytdlp_path.as_deref());
     YouTubeSource {
-      ytdlp: ytdlp_path.unwrap_or_else(|| DEFAULT_YTDLP.to_string()),
+      ytdlp: resolved,
     }
   }
 
@@ -320,13 +436,14 @@ impl YouTubeSource {
   /// without resolving each video page, keeping the search to one remote
   /// round-trip.
   pub async fn search_videos(&self, query: &str) -> Result<Vec<YtVideo>> {
+    let query_arg = format!("ytsearch{SEARCH_LIMIT}:{query}");
     let stdout = self
       .run(
-        &[
+        [
           "--flat-playlist",
           "--dump-json",
           "--no-warnings",
-          &format!("ytsearch{SEARCH_LIMIT}:{query}"),
+          query_arg.as_str(),
         ],
         SEARCH_TIMEOUT,
       )
@@ -381,24 +498,70 @@ impl YouTubeSource {
       return Ok(None);
     }
 
-    let dest_str = dest
-      .to_str()
-      .ok_or_else(|| anyhow!("Non-UTF-8 tempfile path"))?;
     let url = format!("https://www.youtube.com/watch?v={video_id}");
 
-    let stdout = run_with_embedded_fallback(|embedded| {
-      let args = download_args(dest_str, &url, embedded);
-      async move { self.run(&args, DOWNLOAD_TIMEOUT).await }
+    // Use an isolated staging directory so yt-dlp can use .part files, atomic renames,
+    // and extract audio without sharing violations against open file handles.
+    let stage_dir = std::env::temp_dir().join(format!("echovena_yt_{}_{}", std::process::id(), video_id));
+    let _ = std::fs::create_dir_all(&stage_dir);
+    let stage_file = stage_dir.join(format!("{video_id}.m4a"));
+    let stage_str = stage_file
+      .to_str()
+      .ok_or_else(|| anyhow!("Non-UTF-8 staging path"))?;
+
+    let stdout_result = run_with_embedded_fallback(|fallback| {
+      let args = download_args(stage_str, &url, fallback);
+      async move { self.run(args, DOWNLOAD_TIMEOUT).await }
     })
-    .await?;
+    .await;
 
-    if let Some(cache_dir) = crate::core::paths::audio_cache_dir() {
-      let _ = std::fs::create_dir_all(&cache_dir);
-      let target_path = cache_dir.join(format!("{video_id}.m4a"));
-      let _ = std::fs::copy(dest, &target_path);
+    // Locate the downloaded file in stage_dir (which might have been saved as .m4a, .webm, or .opus)
+    let downloaded_file = if stage_file.exists() && stage_file.metadata().map(|m| m.len() > 1024).unwrap_or(false) {
+      Some(stage_file.clone())
+    } else {
+      let mut found = None;
+      if let Ok(entries) = std::fs::read_dir(&stage_dir) {
+        for entry in entries.flatten() {
+          let p = entry.path();
+          if p.is_file() {
+            if let Ok(m) = p.metadata() {
+              if m.len() > 1024 {
+                found = Some(p);
+                break;
+              }
+            }
+          }
+        }
+      }
+      found
+    };
+
+    match stdout_result {
+      Ok(stdout) => {
+        if let Some(dl) = downloaded_file {
+          // Copy to requested destination
+          let _ = std::fs::copy(&dl, dest);
+
+          // Also persist into audio cache directory
+          if let Some(cache_dir) = crate::core::paths::audio_cache_dir() {
+            let _ = std::fs::create_dir_all(&cache_dir);
+            let ext = dl.extension().and_then(|e| e.to_str()).unwrap_or("m4a");
+            let target_path = cache_dir.join(format!("{video_id}.{ext}"));
+            let _ = std::fs::copy(&dl, &target_path);
+          }
+
+          let _ = std::fs::remove_dir_all(&stage_dir);
+          Ok(track_from_download_output(&stdout, video_id))
+        } else {
+          let _ = std::fs::remove_dir_all(&stage_dir);
+          bail!("yt-dlp completed successfully but no audio file was output for {video_id}")
+        }
+      }
+      Err(e) => {
+        let _ = std::fs::remove_dir_all(&stage_dir);
+        Err(e)
+      }
     }
-
-    Ok(track_from_download_output(&stdout, video_id))
   }
 
   /// Prefetch a video's audio to the local cache directory (~/.cache/echovena/audio/).
@@ -411,28 +574,22 @@ impl YouTubeSource {
     std::fs::create_dir_all(&cache_dir)?;
 
     let target_path = cache_dir.join(format!("{video_id}.m4a"));
-    let part_path = cache_dir.join(format!("{video_id}.part"));
-    let part_str = part_path
-      .to_str()
-      .ok_or_else(|| anyhow!("Non-UTF8 cache path"))?;
-    let url = format!("https://www.youtube.com/watch?v={video_id}");
-
-    let _ = run_with_embedded_fallback(|embedded| {
-      let args = download_args(part_str, &url, embedded);
-      async move { self.run(&args, DOWNLOAD_TIMEOUT).await }
-    })
-    .await?;
-
-    if part_path.exists() {
-      std::fs::rename(&part_path, &target_path)?;
+    let _ = self.download_audio(video_id, &target_path).await?;
+    if let Some(cached) = cached_audio_path(video_id) {
+      Ok(cached)
+    } else {
+      Ok(target_path)
     }
-    Ok(target_path)
   }
 
   /// Run `yt-dlp` with `args`, returning stdout. Fails with the tail of
   /// stderr on a non-zero exit, a clear hint when the binary is missing, and
   /// kills the process on timeout (so a wedged extractor can't leak).
-  async fn run(&self, args: &[&str], timeout: Duration) -> Result<String> {
+  async fn run<I, S>(&self, args: I, timeout: Duration) -> Result<String>
+  where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+  {
     let mut command = Command::new(&self.ytdlp);
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
@@ -474,16 +631,23 @@ impl YouTubeSource {
 
     let status = status.context("waiting for yt-dlp")?;
     if !status.success() {
-      // yt-dlp's real error is the last stderr lines ("ERROR: ...").
-      let tail: String = stderr
+      // Collect errors or non-empty tail from stderr
+      let mut error_lines: Vec<_> = stderr
         .lines()
-        .rev()
-        .take(3)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<Vec<_>>()
-        .join(" | ");
+        .filter(|l| l.contains("ERROR:") || l.contains("error:") || l.contains("WARNING:"))
+        .collect();
+      if error_lines.is_empty() {
+        error_lines = stderr
+          .lines()
+          .filter(|l| !l.trim().is_empty())
+          .rev()
+          .take(3)
+          .collect::<Vec<_>>()
+          .into_iter()
+          .rev()
+          .collect();
+      }
+      let tail = error_lines.join(" | ");
       bail!(
         "yt-dlp failed ({}): {}",
         status,
@@ -499,10 +663,7 @@ impl YouTubeSource {
 }
 
 /// The download's attempt sequence: the default clients first, then one
-/// retry through the embedded players (see [`EMBEDDED_PLAYER_CLIENTS`]). On
-/// a double failure the *primary* error surfaces: it names the canonical
-/// problem (403, missing binary, dead network), where the fallback's usually
-/// degenerates to a less useful "format not available".
+/// retry through the fallback player clients (see [`FALLBACK_PLAYER_CLIENTS`]).
 async fn run_with_embedded_fallback<T, F, Fut>(mut attempt: F) -> Result<T>
 where
   F: FnMut(bool) -> Fut,
@@ -513,40 +674,50 @@ where
     Err(primary) => match attempt(true).await {
       Ok(out) => Ok(out),
       Err(fallback) => {
-        log::info!("youtube: embedded-client download fallback also failed: {fallback:#}");
+        log::info!("youtube: download fallback attempt also failed: {fallback:#}");
         Err(primary)
       }
     },
   }
 }
 
-/// Arguments for one download attempt; the retry differs from the first try
-/// only by the embedded-client extractor override.
-fn download_args<'a>(dest: &'a str, url: &'a str, embedded_fallback: bool) -> Vec<&'a str> {
-  let mut args: Vec<&str> = Vec::new();
-  if embedded_fallback {
-    args.extend_from_slice(&["--extractor-args", EMBEDDED_PLAYER_CLIENTS]);
+/// Arguments for one download attempt; the retry adds the fallback client extractor override.
+fn download_args(dest: &str, url: &str, fallback: bool) -> Vec<String> {
+  let mut args: Vec<String> = Vec::new();
+  if fallback {
+    args.push("--extractor-args".to_string());
+    args.push(FALLBACK_PLAYER_CLIENTS.to_string());
   }
-  args.extend_from_slice(&[
-    "--no-simulate",
-    "--print",
-    METADATA_TEMPLATE,
-    "-f",
-    FORMAT_SELECTOR,
-    "--concurrent-fragments",
-    "4",
-    "--no-playlist",
-    // The NamedTempFile already exists (0 bytes); overwrite it.
-    "--force-overwrites",
-    // Write straight to dest instead of a .part file next to it.
-    "--no-part",
-    "--no-warnings",
-    "--no-progress",
-    "--quiet",
-    "-o",
-    dest,
-    url,
-  ]);
+
+  // Include user youtube cookies if configured
+  for cookie_arg in crate::sources::sync::auth::YouTubeAuthHandler::ytdlp_cookie_args() {
+    args.push(cookie_arg);
+  }
+
+  if let Some(ffmpeg_dir) = find_ffmpeg_dir() {
+    args.push("--ffmpeg-location".to_string());
+    args.push(ffmpeg_dir.to_string_lossy().to_string());
+  }
+
+  args.push("--no-simulate".to_string());
+  args.push("--print".to_string());
+  args.push(METADATA_TEMPLATE.to_string());
+  args.push("-f".to_string());
+  args.push(FORMAT_SELECTOR.to_string());
+
+  if has_ffmpeg() {
+    args.push("-x".to_string());
+    args.push("--audio-format".to_string());
+    args.push("m4a".to_string());
+  }
+
+  args.push("--concurrent-fragments".to_string());
+  args.push("4".to_string());
+  args.push("--no-playlist".to_string());
+  args.push("--no-warnings".to_string());
+  args.push("-o".to_string());
+  args.push(dest.to_string());
+  args.push(url.to_string());
   args
 }
 
@@ -761,8 +932,8 @@ mod tests {
     let first_try = download_args("dest.m4a", url, false);
     let retry = download_args("dest.m4a", url, true);
 
-    assert!(!first_try.contains(&"--extractor-args"));
-    assert_eq!(retry[..2], ["--extractor-args", EMBEDDED_PLAYER_CLIENTS]);
+    assert!(!first_try.iter().any(|a| a == "--extractor-args"));
+    assert_eq!(&retry[..2], ["--extractor-args", FALLBACK_PLAYER_CLIENTS]);
     assert_eq!(retry[2..], first_try[..], "everything else stays identical");
   }
 
@@ -771,10 +942,10 @@ mod tests {
     let url = "https://www.youtube.com/watch?v=5NV6Rdv1a3I";
     for embedded in [false, true] {
       let args = download_args("dest.m4a", url, embedded);
-      let print = args.iter().position(|a| *a == "--print").unwrap();
+      let print = args.iter().position(|a| a == "--print").unwrap();
       assert_eq!(args[print + 1], METADATA_TEMPLATE);
       // Without it `--print` turns the download into a dry run.
-      assert!(args.contains(&"--no-simulate"));
+      assert!(args.iter().any(|a| a == "--no-simulate"));
       assert_eq!(args[args.len() - 3..], ["-o", "dest.m4a", url]);
     }
   }

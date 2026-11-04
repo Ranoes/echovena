@@ -38,7 +38,7 @@ use crate::core::source::{Searcher, Source};
 use crate::infra::audio::LocalPlayer;
 use crate::infra::network::IoEvent;
 use crate::infra::queue::{
-  advance_index, apply_resolved, replay_file, snapshot_tracks,
+  advance_index, apply_resolved, is_placeholder, replay_file, snapshot_tracks,
 };
 
 /// Skip direction within the YouTube queue.
@@ -85,11 +85,12 @@ pub async fn route_youtube_event(app: &Arc<Mutex<App>>, event: &IoEvent) -> bool
     // Start a queue of videos: handle if YouTube URI or if Spotify is not active & connected
     IoEvent::StartPlayback(None, Some(uris), offset) => {
       let is_yt = uris.first().is_some_and(|u| is_youtube_uri(u)) || matches!(app.lock().await.track_table.context, Some(crate::core::app::TrackTableContext::YouTubePlaylist));
+      let is_foreign = uris.first().is_some_and(|u| u.starts_with("spotify:") || u.starts_with("radio:") || u.starts_with("local:"));
       let spotify_active = {
         let guard = app.lock().await;
         guard.active_source == Source::Spotify && guard.spotify_connected
       };
-      if is_yt || !spotify_active {
+      if is_yt || (!spotify_active && !is_foreign) {
         start_youtube_queue(app, uris, offset.unwrap_or(0)).await;
         true
       } else {
@@ -100,11 +101,12 @@ pub async fn route_youtube_event(app: &Arc<Mutex<App>>, event: &IoEvent) -> bool
     // Context with specific track(s) in queue
     IoEvent::StartPlayback(Some(_ctx), Some(uris), offset) => {
       let is_yt = uris.first().is_some_and(|u| is_youtube_uri(u)) || matches!(app.lock().await.track_table.context, Some(crate::core::app::TrackTableContext::YouTubePlaylist));
+      let is_foreign = uris.first().is_some_and(|u| u.starts_with("spotify:") || u.starts_with("radio:") || u.starts_with("local:"));
       let spotify_active = {
         let guard = app.lock().await;
         guard.active_source == Source::Spotify && guard.spotify_connected
       };
-      if is_yt || !spotify_active {
+      if is_yt || (!spotify_active && !is_foreign) {
         start_youtube_queue(app, uris, offset.unwrap_or(0)).await;
         true
       } else {
@@ -115,11 +117,12 @@ pub async fn route_youtube_event(app: &Arc<Mutex<App>>, event: &IoEvent) -> bool
     // Context URI or single video with no surrounding list
     IoEvent::StartPlayback(Some(uri), None, offset) => {
       let is_yt = is_youtube_uri(uri) || matches!(app.lock().await.track_table.context, Some(crate::core::app::TrackTableContext::YouTubePlaylist));
+      let is_foreign = uri.starts_with("spotify:") || uri.starts_with("radio:") || uri.starts_with("local:");
       let spotify_active = {
         let guard = app.lock().await;
         guard.active_source == Source::Spotify && guard.spotify_connected
       };
-      if is_yt || !spotify_active {
+      if is_yt || (!spotify_active && !is_foreign) {
         let table_uris: Vec<String> = {
           let guard = app.lock().await;
           guard.track_table.tracks.iter().filter_map(|t| t.uri.clone().or_else(|| t.id.clone())).collect()
@@ -693,9 +696,14 @@ async fn download_audio(
     }
   }
   let tmp = NamedTempFile::with_suffix(".m4a").context("creating temp file for YouTube audio")?;
-  let resolved = source.download_audio(video_id, tmp.path()).await?;
-  let path = tmp.path().to_path_buf();
-  Ok((tmp, path, resolved))
+  let tmp_path = tmp.path().to_path_buf();
+  let resolved = source.download_audio(video_id, &tmp_path).await?;
+  let play_path = if let Some(cached) = super::cached_audio_path(video_id) {
+    cached
+  } else {
+    tmp_path
+  };
+  Ok((tmp, play_path, resolved))
 }
 
 /// Download the audio for `uri` into a tempfile, for the native queue engine's
@@ -875,6 +883,24 @@ async fn start_youtube_queue(app: &Arc<Mutex<App>>, uris: &[String], start_idx: 
   }
   let index = start_idx.min(tracks.len() - 1);
 
+  // A livestream (duration 0 in the search row) never finishes downloading —
+  // the tempfile fetch would just spin until the timeout. Refuse up front. A
+  // placeholder for an off-screen URI also reads 0, but only because its
+  // duration is unknown: that one downloads (#716).
+  if tracks[index].duration_ms == 0 && !is_placeholder(&tracks[index]) {
+    set_error(
+      app,
+      crate::infra::app_strings(app)
+        .await
+        .status
+        .infra
+        .youtube_no_live
+        .to_string(),
+    )
+    .await;
+    return;
+  }
+
   let video_id = match resolve_or_extract_video_id(app, &tracks[index]).await {
     Ok(id) => {
       tracks[index].uri = Some(uri_for_video_id(&id));
@@ -909,6 +935,7 @@ async fn start_youtube_queue(app: &Arc<Mutex<App>>, uris: &[String], start_idx: 
   let (tmp, path, resolved) = match download_audio(&source, &video_id).await {
     Ok(t) => t,
     Err(e) => {
+      log::error!("YouTube download failed for {video_id}: {e:#}");
       set_error(
         app,
         crate::infra::app_strings(app)
@@ -1073,6 +1100,21 @@ pub(crate) async fn play_index(app: &Arc<Mutex<App>>, target: usize) {
     }
   };
 
+  if track.duration_ms == 0 && !is_placeholder(&track) {
+    teardown_youtube(app).await;
+    set_error(
+      app,
+      crate::infra::app_strings(app)
+        .await
+        .status
+        .infra
+        .youtube_no_live
+        .to_string(),
+    )
+    .await;
+    return;
+  }
+
   let video_id = match resolve_or_extract_video_id(app, &track).await {
     Ok(id) => id,
     Err(e) => {
@@ -1097,6 +1139,7 @@ pub(crate) async fn play_index(app: &Arc<Mutex<App>>, target: usize) {
   let (tmp, path, resolved) = match download_audio(&source, &video_id).await {
     Ok(t) => t,
     Err(e) => {
+      log::error!("YouTube advance download failed for {video_id}: {e:#}");
       teardown_youtube(app).await;
       set_error(
         app,
