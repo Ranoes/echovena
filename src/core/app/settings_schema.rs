@@ -816,6 +816,12 @@ impl App {
         value: SettingValue::Action("[Press Enter to Clear Search Cache]".to_string()),
       },
       SettingItem {
+        id: "storage.clear_listening_history".to_string(),
+        name: "Clear Listening History & Stats".to_string(),
+        description: "Purge listening history log (listens.jsonl) and reset playback stats".to_string(),
+        value: SettingValue::Action("[Press Enter to Clear History]".to_string()),
+      },
+      SettingItem {
         id: "storage.purge_missing_files".to_string(),
         name: "Purge Dead / Missing File Records".to_string(),
         description: "Remove library database entries for downloaded tracks that no longer exist on disk".to_string(),

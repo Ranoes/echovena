@@ -1128,6 +1128,13 @@ fn execute_storage_action(app: &mut App, id: &str) {
       }
       app.load_settings_for_category();
     }
+    "storage.clear_listening_history" => {
+      let _ = crate::infra::history::clear_all_listening_history();
+      app.stats_data = None;
+      app.reload_stats();
+      app.set_status_message("Listening history and playback statistics cleared", 5);
+      app.load_settings_for_category();
+    }
     "storage.purge_missing_files" => {
       if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
         match db.purge_missing_files() {

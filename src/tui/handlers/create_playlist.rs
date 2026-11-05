@@ -15,16 +15,27 @@ fn handle_name_stage(key: Key, app: &mut App) {
     Key::Enter => {
       let name: String = app.view.create_playlist_name.iter().collect();
       if !name.trim().is_empty() {
-        // Under the YouTube source the playlist is a local file — create it
-        // right away; there is no Spotify-search stage (videos are added later
-        // via search + `w`).
-        if app.active_source == crate::core::source::Source::YouTube {
-          app.apply(Action::CreateYouTubePlaylist(name.trim().to_string()));
-          close_form(app);
-          return;
+        // "+ Add Playlist" always creates a native Local Playlist in SQLite
+        let now = chrono::Utc::now().timestamp_millis();
+        let rnd: u32 = rand::random_range(1000..9999);
+        let new_id = format!("local:playlist:{}_{}", now, rnd);
+        let new_playlist = crate::sources::lossless_relay::db::ImportedPlaylist {
+          id: new_id.clone(),
+          platform: "local".to_string(),
+          title: name.trim().to_string(),
+          author: Some("EchoVena".to_string()),
+          source_url: format!("local:playlist:{}", name.trim()),
+          cover_art_url: None,
+          snapshot_id: None,
+          track_count: 0,
+          last_synced_at: chrono::Utc::now().timestamp(),
+        };
+        if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+          let _ = db.upsert_imported_playlist(&new_playlist);
         }
-        app.view.create_playlist_stage = CreatePlaylistStage::AddTracks;
-        app.view.create_playlist_focus = CreatePlaylistFocus::SearchInput;
+        app.set_status_message(format!("Created local playlist '{}'", name.trim()), 4);
+        close_form(app);
+        return;
       }
     }
     Key::Esc => {

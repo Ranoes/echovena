@@ -191,10 +191,12 @@ pub fn handler(key: Key, app: &mut App) {
             process_input(app, input_str);
           }
           app.view.search_selected_block = SearchResultBlock::SongSearch;
+          app.push_navigation_stack(RouteId::Search, ActiveBlock::SearchResultBlock);
           app.set_current_route_state(
             Some(ActiveBlock::SearchResultBlock),
             Some(ActiveBlock::SearchResultBlock),
           );
+          app.clear_live_search();
         }
       } else {
         process_input(app, input_str);

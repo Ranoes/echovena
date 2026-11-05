@@ -899,6 +899,56 @@ pub fn load_listens() -> Result<Vec<ListenRecord>> {
   Ok(listens)
 }
 
+/// Removes any listen records matching the given track title, artist, or identifiers.
+pub fn remove_track_from_history(title: &str, artist: &str, ids: &[&str]) -> Result<usize> {
+  let path = listens_file_path()?;
+  if !path.exists() {
+    return Ok(0);
+  }
+
+  let file = fs::File::open(&path)?;
+  let reader = BufReader::new(file);
+  let mut retained = Vec::new();
+  let mut removed_count = 0;
+
+  for line in reader.lines() {
+    let line = line?;
+    if line.trim().is_empty() {
+      continue;
+    }
+
+    if let Ok(rec) = serde_json::from_str::<ListenRecord>(&line) {
+      let match_id = ids.iter().any(|&id| {
+        rec.item_uri.as_deref() == Some(id) || rec.item_id.as_deref() == Some(id)
+      });
+      let match_title = !title.is_empty() && rec.title.eq_ignore_ascii_case(title);
+      let match_artist = artist.is_empty() || rec.artists.iter().any(|a| a.eq_ignore_ascii_case(artist));
+
+      if match_id || (match_title && match_artist) {
+        removed_count += 1;
+        continue;
+      }
+      retained.push(line);
+    }
+  }
+
+  let mut out = fs::File::create(&path)?;
+  for line in retained {
+    writeln!(out, "{}", line)?;
+  }
+
+  Ok(removed_count)
+}
+
+/// Completely clears the local listening history file.
+pub fn clear_all_listening_history() -> Result<()> {
+  let path = listens_file_path()?;
+  if path.exists() {
+    let _ = fs::remove_file(path);
+  }
+  Ok(())
+}
+
 impl HistoryCollector {
   /// Returns the listen record appended to the history file, if any.
   fn observe(&mut self, snapshot: Option<PlaybackSnapshot>) -> Result<Option<ListenRecord>> {

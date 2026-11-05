@@ -422,9 +422,29 @@ impl App {
   /// Open the album page of the item playing now, through the ownership
   /// order (episodes open their show). A queued Spotify track resolves through
   /// the slot; any other owner answers with a status message.
+  pub(crate) fn current_non_spotify_track_info(&self) -> Option<(String, String, Option<String>)> {
+    if let Some(yt) = self.youtube_playback.as_ref().and_then(|yt| yt.current()) {
+      let artist = yt.artists.first().cloned().unwrap_or_default();
+      let album = if yt.album.is_empty() { None } else { Some(yt.album.clone()) };
+      Some((yt.name.clone(), artist, album))
+    } else if let Some(l) = self.lossless_playback.as_ref().and_then(|l| l.current_track.as_ref()) {
+      let artist = l.artist.clone();
+      let album = l.album.clone();
+      Some((l.clean_title.clone(), artist, album))
+    } else if let Some(q) = self.queue_now_track() {
+      let artist = q.artists.first().cloned().unwrap_or_default();
+      let album = if q.album.is_empty() { None } else { Some(q.album.clone()) };
+      Some((q.name.clone(), artist, album))
+    } else if let Some(ref n) = self.native_track_info {
+      let artist = n.artists.first().cloned().unwrap_or_default();
+      Some((n.name.clone(), artist, None))
+    } else {
+      None
+    }
+  }
+
   pub(crate) fn jump_to_album(&mut self) {
-    // Build the event under the borrow so only the payload is cloned, never
-    // the whole playback context.
+    let non_spotify_info = self.current_non_spotify_track_info();
     let event = match self.playing_item() {
       PlayingItem::Spotify(PlayableItem::Track(track)) => {
         Ok(IoEvent::GetAlbumTracks(Box::new(track.album.clone())))
@@ -433,8 +453,6 @@ impl App {
         Box::new(crate::core::plugin_api::ShowInfo::from(&episode.show)),
       )),
       PlayingItem::Spotify(_) => return,
-      // A track listed from an album page carries no album id of its own; the
-      // track lookup finds the album from the track instead.
       PlayingItem::QueuedSpotify(track) => {
         match (&track.album_id, track.id.as_ref().or(track.uri.as_ref())) {
           (Some(album_id), _) => Ok(IoEvent::GetAlbum(album_id.clone())),
@@ -442,8 +460,21 @@ impl App {
           (None, None) => Err(self.strings().status.app.queued_no_album),
         }
       }
-      PlayingItem::NotSpotify => Err(self.strings().status.app.jump_album_spotify),
-      PlayingItem::Nothing => Err(self.strings().status.app.nothing_playing),
+      PlayingItem::NotSpotify | PlayingItem::Nothing => {
+        if let Some((_title, artist, album_opt)) = non_spotify_info {
+          if let Some(album) = album_opt {
+            self.push_navigation_stack(RouteId::Search, ActiveBlock::SearchResultBlock);
+            Ok(IoEvent::FetchAlbumDetail(album.clone(), album))
+          } else if !artist.is_empty() {
+            self.push_navigation_stack(RouteId::Search, ActiveBlock::SearchResultBlock);
+            Ok(IoEvent::FetchArtistDetail(artist.clone(), artist))
+          } else {
+            Err(self.strings().status.app.playing_no_artist)
+          }
+        } else {
+          Err(self.strings().status.app.nothing_playing)
+        }
+      }
     };
     match event {
       Ok(event) => self.dispatch(event),
@@ -451,9 +482,9 @@ impl App {
     }
   }
 
-  /// Open the album list of the first artist of the track playing now,
-  /// through the ownership order. Episodes have no artist page.
+  /// Open the artist drilldown of the track playing now.
   pub(crate) fn jump_to_artist_album(&mut self) {
+    let non_spotify_info = self.current_non_spotify_track_info();
     let artist = match self.playing_item() {
       PlayingItem::Spotify(PlayableItem::Track(track)) => track
         .artists
@@ -471,8 +502,16 @@ impl App {
         .first()
         .and_then(|artist| artist.id.clone().map(|id| (id, artist.name.clone())))
         .ok_or(self.strings().status.app.queued_no_artist),
-      PlayingItem::NotSpotify => Err(self.strings().status.app.jump_artist_spotify),
-      PlayingItem::Nothing => Err(self.strings().status.app.nothing_playing),
+      PlayingItem::NotSpotify | PlayingItem::Nothing => {
+        if let Some((_title, artist, _)) = non_spotify_info {
+          if !artist.is_empty() {
+            self.push_navigation_stack(RouteId::Search, ActiveBlock::SearchResultBlock);
+            self.dispatch(IoEvent::FetchArtistDetail(artist.clone(), artist));
+            return;
+          }
+        }
+        Err(self.strings().status.app.playing_no_artist)
+      }
     };
     match artist {
       Ok((artist_id, artist_name)) => self.get_artist(artist_id, artist_name),
@@ -480,10 +519,7 @@ impl App {
     }
   }
 
-  /// Open the context (album/artist/playlist) that playback runs in, through
-  /// the ownership order. The queue slot plays outside any context, so a
-  /// queued track answers with a status message. A context with no item (an
-  /// ad plays) still opens.
+  /// Open the context (album/artist/playlist) that playback runs in.
   pub(crate) fn jump_to_context(&mut self) {
     match self.playing_item() {
       PlayingItem::Spotify(_) | PlayingItem::Nothing => {}
@@ -492,7 +528,7 @@ impl App {
         return;
       }
       PlayingItem::NotSpotify => {
-        self.set_status_message(self.strings().status.app.jump_context_spotify, 4);
+        self.jump_to_artist_album();
         return;
       }
     }

@@ -585,6 +585,77 @@ impl Database {
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
 
+        // 0. Locate and delete all physical audio files and sidecar .elrc from disk first
+        let mut file_paths_to_delete: Vec<std::path::PathBuf> = Vec::new();
+
+        for id in identifiers {
+            let clean = id
+                .strip_prefix("spotify:track:")
+                .or_else(|| id.strip_prefix("local:track:"))
+                .or_else(|| id.strip_prefix("yt:video:"))
+                .unwrap_or(id);
+            let sp = format!("spotify:track:{}", clean);
+            let yt = format!("yt:video:{}", clean);
+            let loc = format!("local:track:{}", clean);
+            let file_clean = id.strip_prefix("file://").unwrap_or(id);
+
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT file_path FROM downloaded_tracks WHERE source_track_id = ?1 OR source_track_id = ?2 OR source_track_id = ?3 OR source_track_id = ?4 OR file_path = ?5 OR file_path LIKE ?6;",
+            ) {
+                if let Ok(rows) = stmt.query_map(params![id, sp, yt, loc, file_clean, format!("%{}", file_clean)], |row| {
+                    row.get::<_, String>(0)
+                }) {
+                    for r in rows.flatten() {
+                        if !r.is_empty() {
+                            file_paths_to_delete.push(std::path::PathBuf::from(r));
+                        }
+                    }
+                }
+            }
+
+            if let Ok(mut stmt_res) = conn.prepare(
+                "SELECT local_archive_path FROM resolution_cache WHERE source_track_id = ?1 OR source_track_id = ?2 OR source_track_id = ?3 OR source_track_id = ?4 OR local_archive_path = ?5 OR local_archive_path LIKE ?6;",
+            ) {
+                if let Ok(rows_res) = stmt_res.query_map(params![id, sp, yt, loc, file_clean, format!("%{}", file_clean)], |row| {
+                    row.get::<_, Option<String>>(0)
+                }) {
+                    for r in rows_res.flatten().flatten() {
+                        if !r.is_empty() {
+                            file_paths_to_delete.push(std::path::PathBuf::from(r));
+                        }
+                    }
+                }
+            }
+        }
+
+        if !title.is_empty() {
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT file_path FROM downloaded_tracks WHERE LOWER(title) = LOWER(?1) AND (LOWER(artist) = LOWER(?2) OR ?2 = '' OR artist = 'Unknown Artist');",
+            ) {
+                if let Ok(rows) = stmt.query_map(params![title, artist], |row| {
+                    row.get::<_, String>(0)
+                }) {
+                    for r in rows.flatten() {
+                        if !r.is_empty() {
+                            file_paths_to_delete.push(std::path::PathBuf::from(r));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Remove disk files and companion sidecars
+        for p in file_paths_to_delete {
+            if p.exists() {
+                let _ = std::fs::remove_file(&p);
+            }
+            let elrc = p.with_extension("elrc");
+            if elrc.exists() {
+                let _ = std::fs::remove_file(&elrc);
+            }
+        }
+
+        // 1. Delete rows across all tables
         for id in identifiers {
             let clean = id
                 .strip_prefix("spotify:track:")
