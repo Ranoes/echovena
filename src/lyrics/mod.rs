@@ -1,3 +1,4 @@
+pub mod cjk_data;
 pub mod lrclib_elrc;
 pub mod netease_yrc;
 pub mod paxsenix_ttml;
@@ -25,9 +26,9 @@ impl KaraokeDisplayMode {
 
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Original => "Original Only",
-            Self::Romanized => "Romanized Only",
-            Self::Both => "Both (Stacked Original & Romanized)",
+            Self::Original => "Original",
+            Self::Romanized => "Romanized",
+            Self::Both => "Both",
         }
     }
 }

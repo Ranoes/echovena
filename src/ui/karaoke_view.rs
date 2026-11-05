@@ -92,7 +92,7 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
         .unwrap_or("Auto Waterfall");
 
     let title_line = format!(
-        " EchoVena — KARAOKE STAGE (60 FPS) | Mode: {} [T] | Align: {} [K] | Source: {} (Auto) | [R] Re-fetch | Offset: {} | [Esc/q] Exit ",
+        " EchoVena — KARAOKE (60 FPS) │ Mode: {} [T] │ Align: {} [K] │ Source: {} │ Offset: {} │ [Esc/q] Back ",
         mode_str, align_str, provider_str, offset_str
     );
 
@@ -421,7 +421,9 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
             }
         }
 
-        rendered_lines.push(Line::from(""));
+        if display_mode != crate::core::app::LyricsDisplayMode::Both {
+            rendered_lines.push(Line::from(""));
+        }
     }
 
     // Scroll so that `active_row` is always placed at the vertical midpoint (`mid_offset`)
@@ -431,14 +433,12 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
 
     // 3. Footer controls
     let footer_text = Line::from(vec![
-        Span::styled("[k]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::styled(" Exit Stage   ", Style::default().fg(Color::White)),
-        Span::styled("[K]", Style::default().fg(Color::LightCyan).add_modifier(Modifier::BOLD)),
-        Span::styled(" Align (L/M/R)   ", Style::default().fg(Color::White)),
+        Span::styled("[Esc/q]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(" Back   ", Style::default().fg(Color::White)),
         Span::styled("[T]", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-        Span::styled(" Lyrics (Orig/Rom/Both)   ", Style::default().fg(Color::White)),
-        Span::styled("[P]", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
-        Span::styled(" Provider   ", Style::default().fg(Color::White)),
+        Span::styled(" Mode (Orig/Rom/Both)   ", Style::default().fg(Color::White)),
+        Span::styled("[K]", Style::default().fg(Color::LightCyan).add_modifier(Modifier::BOLD)),
+        Span::styled(" Align (L/C/R)   ", Style::default().fg(Color::White)),
         Span::styled("[R]", Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD)),
         Span::styled(" Refetch   ", Style::default().fg(Color::White)),
         Span::styled("[ [ / ] ]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),

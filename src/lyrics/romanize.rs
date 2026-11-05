@@ -1,7 +1,9 @@
-//! Algorithmic real-time romanization engine for Korean (Hangul), Japanese (Kana),
-//! Cyrillic (Russian/Ukrainian/Slavic), and Greek lyrics.
+//! Algorithmic real-time romanization engine for Korean (Hangul), Japanese (Kanji & Kana),
+//! Chinese (Hanzi / Pinyin), Cyrillic (Russian/Ukrainian/Slavic), and Greek lyrics.
 //!
 //! Provides instant, offline romanization with 0ms runtime rendering latency.
+
+use super::cjk_data;
 
 /// Checks whether the text contains characters that benefit from romanization.
 pub fn needs_romanization(text: &str) -> bool {
@@ -274,15 +276,84 @@ fn romanize_greek(c: char) -> Option<&'static str> {
 // Unified Romanizer
 // ---------------------------------------------------------------------------
 
-/// Romanizes any string containing non-Latin text (Korean, Japanese Kana, Cyrillic, Greek).
+fn convert_kanji_to_hiragana(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() * 3);
+    let mut chars = text.char_indices().peekable();
+
+    while let Some((idx, c)) = chars.next() {
+        // 1. Check multi-kanji compound match
+        let remainder = &text[idx..];
+        if let Some((comp, hira)) = cjk_data::lookup_compound(remainder) {
+            out.push_str(hira);
+            let skip_chars = comp.chars().count().saturating_sub(1);
+            for _ in 0..skip_chars {
+                chars.next();
+            }
+            continue;
+        }
+
+        // 2. Check single Kanji
+        if ('\u{4E00}'..='\u{9FFF}').contains(&c) || ('\u{3400}'..='\u{4DBF}').contains(&c) {
+            if let Some(hira) = cjk_data::lookup_kanji(c) {
+                out.push_str(hira);
+            } else if let Some(pin) = cjk_data::lookup_pinyin(c) {
+                out.push_str(pin);
+            }
+            continue;
+        }
+
+        out.push(c);
+    }
+
+    out
+}
+
+fn convert_pinyin_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() * 3);
+    let mut chars = text.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if ('\u{4E00}'..='\u{9FFF}').contains(&c) || ('\u{3400}'..='\u{4DBF}').contains(&c) {
+            if let Some(pin) = cjk_data::lookup_pinyin(c) {
+                out.push_str(pin);
+                if let Some(&next_c) = chars.peek() {
+                    if ('\u{4E00}'..='\u{9FFF}').contains(&next_c) || ('\u{3400}'..='\u{4DBF}').contains(&next_c) {
+                        out.push(' ');
+                    }
+                }
+            } else if let Some(hira) = cjk_data::lookup_kanji(c) {
+                out.push_str(hira);
+            }
+            continue;
+        }
+        out.push(c);
+    }
+
+    out
+}
+
+/// Romanizes any string containing non-Latin text (Korean, Japanese Kanji/Kana, Chinese, Cyrillic, Greek).
 /// Returns `None` if the text contains no non-Latin characters.
 pub fn romanize_text(text: &str) -> Option<String> {
     if !needs_romanization(text) {
         return None;
     }
 
-    let mut out = String::with_capacity(text.len() * 2);
-    let chars: Vec<char> = text.chars().collect();
+    let has_kana = text.chars().any(|c| ('\u{3040}'..='\u{309F}').contains(&c) || ('\u{30A0}'..='\u{30FF}').contains(&c));
+    let has_cjk = text.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c) || ('\u{3400}'..='\u{4DBF}').contains(&c));
+
+    if has_cjk && !has_kana {
+        return Some(convert_pinyin_text(text));
+    }
+
+    let preprocessed = if has_cjk {
+        convert_kanji_to_hiragana(text)
+    } else {
+        text.to_string()
+    };
+
+    let mut out = String::with_capacity(preprocessed.len() * 2);
+    let chars: Vec<char> = preprocessed.chars().collect();
     let mut i = 0;
 
     while i < chars.len() {
@@ -367,6 +438,39 @@ mod tests {
         assert_eq!(romanize_text("とうきょう"), Some("toukyou".to_string()));
         assert_eq!(romanize_text("きっと"), Some("kitto".to_string()));
         assert_eq!(romanize_text("アニメ"), Some("anime".to_string()));
+    }
+
+    #[test]
+    fn test_japanese_kanji_and_lemon_lyrics() {
+        let l1 = romanize_text("夢ならばどれほどよかったでしょう").unwrap();
+        assert!(!needs_romanization(&l1), "Output must be 100% Latin: {}", l1);
+        assert!(l1.contains("yumenaraba"));
+
+        let l2 = romanize_text("忘れた物を取りに帰るように").unwrap();
+        assert!(!needs_romanization(&l2), "Output must be 100% Latin: {}", l2);
+        assert_eq!(l2, "wasuretamonowotorinikaeruyouni");
+
+        let l3 = romanize_text("古びた思い出の埃を払う").unwrap();
+        assert!(!needs_romanization(&l3), "Output must be 100% Latin: {}", l3);
+        assert_eq!(l3, "furubitaomoidenohokoriwoharau");
+
+        let l4 = romanize_text("最後にあなたが教えてくれた").unwrap();
+        assert!(!needs_romanization(&l4), "Output must be 100% Latin: {}", l4);
+        assert_eq!(l4, "saigonianatagaoshietekureta");
+
+        let l5 = romanize_text("言えずに隠してた昏い過去も").unwrap();
+        assert!(!needs_romanization(&l5), "Output must be 100% Latin: {}", l5);
+        assert_eq!(l5, "iezunikakushitetakuraikakomo");
+
+        let l6 = romanize_text("あなたがいなきゃ永遠に昏いまま").unwrap();
+        assert!(!needs_romanization(&l6), "Output must be 100% Latin: {}", l6);
+        assert_eq!(l6, "anatagainakyaeiennikuraimama");
+    }
+
+    #[test]
+    fn test_chinese_pinyin_romanization() {
+        let p = romanize_text("我爱你").unwrap();
+        assert_eq!(p, "wo ai ni");
     }
 
     #[test]

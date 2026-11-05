@@ -241,16 +241,13 @@ pub fn draw_action_bar(f: &mut Frame<'_>, app: &App, area: Rect) {
   }
 
   let items = [
-    ("Space", "Play/Pause"),
-    ("Enter", "Play"),
     ("/", "Search"),
-    ("z", "Queue Next"),
-    ("Z", "Queue End"),
-    ("Q", "Queue"),
+    ("z", "Queue"),
     ("K", "Karaoke"),
-    ("s", "Download"),
-    ("?", "Help"),
+    ("s", "Save"),
+    ("Esc", "Home"),
     ("q", "Back"),
+    ("Ctrl+q", "Quit"),
   ];
 
   for (i, (key, label)) in items.iter().enumerate() {

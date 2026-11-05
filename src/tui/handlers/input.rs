@@ -142,20 +142,22 @@ pub fn handler(key: Key, app: &mut App) {
         }
       }
     }
+    Key::Ctrl('i') => {
+      app.view.input.clear();
+      app.view.input_idx = 0;
+      app.view.input_cursor_position = 0;
+      if app.view.input_context == InputContext::GlobalSearch {
+        app.clear_live_search();
+      }
+    }
     Key::Esc => match app.view.input_context {
       InputContext::PlaylistTrackSearch | InputContext::SavedTrackSearch => {
         app.view.input_context = InputContext::GlobalSearch;
         app.set_current_route_state(Some(ActiveBlock::TrackTable), Some(ActiveBlock::TrackTable));
       }
       InputContext::GlobalSearch => {
-        if !app.view.input.is_empty() {
-          app.view.input.clear();
-          app.view.input_idx = 0;
-          app.view.input_cursor_position = 0;
-          app.clear_live_search();
-        } else {
-          app.set_current_route_state(Some(ActiveBlock::Empty), Some(ActiveBlock::Library));
-        }
+        // Esc acts as Home: navigate to Home/Library preserving the typed query.
+        app.set_current_route_state(Some(ActiveBlock::Empty), Some(ActiveBlock::Library));
       }
     },
     Key::Enter => {

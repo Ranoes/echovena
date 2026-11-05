@@ -1211,10 +1211,11 @@ fn handle_escape(app: &mut App) {
         }
       } else {
         app.view.search_selected_block = SearchResultBlock::Empty;
+        app.set_current_route_state(Some(ActiveBlock::Empty), Some(ActiveBlock::Library));
       }
     }
     ActiveBlock::Playlists => {
-      app.pop_navigation_stack();
+      app.set_current_route_state(Some(ActiveBlock::Empty), Some(ActiveBlock::Library));
     }
     ActiveBlock::ArtistBlock => {
       if let Some(artist) = &mut app.artist {

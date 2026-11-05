@@ -342,7 +342,11 @@ pub fn draw_live_youtube_search(f: &mut Frame<'_>, app: &App, area: Rect) {
             Style::default().fg(app.user_config.theme.hint.into()),
           )),
           Line::from(Span::styled(
-            "    • [Esc]                 : Clear query or exit search",
+            "    • [Ctrl+i]              : Clear search query",
+            Style::default().fg(app.user_config.theme.hint.into()),
+          )),
+          Line::from(Span::styled(
+            "    • [Esc]                 : Return Home (preserves query)",
             Style::default().fg(app.user_config.theme.hint.into()),
           )),
         ]

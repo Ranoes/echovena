@@ -126,8 +126,8 @@ fn frame_cursor_position(app: &App, active_block: ActiveBlock) -> Option<(u16, u
 fn dispatch_key(key: Key, app: &mut App) -> bool {
   let current_active_block = app.get_current_route().active_block;
 
-  // Immediate unconditional quit shortcut (Ctrl+C, Ctrl+Q) when not typing inside an input field
-  if matches!(key, Key::Ctrl('c') | Key::Ctrl('q')) && current_active_block != ActiveBlock::Input && !app.view.url_import_visible && app.view.sync_auth_modal.is_none() {
+  // Immediate unconditional quit shortcut (Ctrl+C, Ctrl+Q) across all screens and modals
+  if matches!(key, Key::Ctrl('c') | Key::Ctrl('q') | Key::Ctrl('C') | Key::Ctrl('Q')) {
     app.close_io_channel();
     return true;
   }
@@ -163,7 +163,8 @@ fn dispatch_key(key: Key, app: &mut App) -> bool {
           None => None,
         };
         if pop_result.is_none() {
-          app.push_navigation_stack(RouteId::ExitPrompt, ActiveBlock::ExitPrompt);
+          // q is Back: stay at Home safely without nagging with ExitPrompt (Ctrl+q quits)
+          app.set_current_route_state(Some(ActiveBlock::Empty), Some(ActiveBlock::Library));
         }
       }
     }
