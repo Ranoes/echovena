@@ -1472,7 +1472,10 @@ pub(crate) async fn fetch_album_drilldown(app: &Arc<Mutex<App>>, album_id: &str,
   let mut year_opt = None;
   let mut cover_opt = None;
 
-  let clean_bid = album_id.strip_prefix("yt:browse:").unwrap_or(album_id);
+  let clean_bid = album_id
+    .strip_prefix("yt:browse:")
+    .or_else(|| album_id.strip_prefix("yt:playlist:"))
+    .unwrap_or(album_id);
 
   // 1. Try dedicated album browse (handles MPREb_ album containers with twoColumnBrowseResultsRenderer)
   if let Ok((_alb_title, alb_artist, yr, cover, alb_tracks)) = importer.fetch_innertube_album(clean_bid).await {
@@ -1511,31 +1514,48 @@ pub(crate) async fn fetch_album_drilldown(app: &Arc<Mutex<App>>, album_id: &str,
     }
   }
 
-  // 3. Fallback: Search album query on InnerTube
+  // 3. Fallback: Search album container on YouTube Music
   if tracks.is_empty() {
     let client = crate::sources::youtube_search::InnerTubeClient::new();
-    let query = format!("{} album", title);
-    if let Ok(results) = client.search(&query, crate::sources::youtube_search::types::SearchScope::Music).await {
-      for r in results {
-        if let Some(vid) = r.video_id {
-          let uri = format!("yt:video:{}", vid);
-          tracks.push(TrackInfo {
-            uri: Some(uri.clone()),
-            name: r.title,
-            artists: vec![r.artist],
-            album: r.album.unwrap_or_else(|| title.to_string()),
-            duration_ms: r.duration_ms.max(0) as u64,
-            id: Some(uri),
-            album_id: Some(album_id.to_string()),
-            artist_refs: Vec::new(),
-            is_playable: true,
-            is_local: false,
-            track_number: 1,
-            explicit: false,
-            image_url: r.thumbnail_url,
-            release_date: None,
-            generated_name: None,
-          });
+    if let Ok(results) = client.search(title, crate::sources::youtube_search::types::SearchScope::Album).await {
+      let matched = results.into_iter().find(|r| {
+        r.playlist_id.as_ref().is_some_and(|bid| bid.starts_with("MPREb_") || bid.starts_with("VL") || bid.starts_with("OLAK5uy_"))
+          || r.id.starts_with("yt:browse:MPREb_")
+      });
+      if let Some(r) = matched {
+        let real_bid = r.playlist_id.as_deref().unwrap_or(&r.id);
+        let clean = real_bid.strip_prefix("yt:browse:").unwrap_or(real_bid);
+        if clean.starts_with("MPREb_") {
+          if let Ok((_alb_title, alb_artist, yr, cover, alb_tracks)) = importer.fetch_innertube_album(clean).await {
+            if !alb_tracks.is_empty() {
+              tracks = alb_tracks;
+              if !alb_artist.is_empty() { album_artist_opt = Some(alb_artist); }
+              year_opt = yr;
+              cover_opt = cover;
+            }
+          }
+        } else if clean.starts_with("VL") || clean.starts_with("PL") || clean.starts_with("OLAK5uy_") {
+          if let Ok((_pl, pl_tracks)) = importer.fetch_innertube_playlist(clean).await {
+            for t in pl_tracks {
+              tracks.push(TrackInfo {
+                uri: Some(t.source_track_id.clone()),
+                name: t.clean_title,
+                artists: vec![t.artist],
+                album: title.to_string(),
+                duration_ms: t.duration_ms as u64,
+                id: Some(t.source_track_id),
+                album_id: Some(album_id.to_string()),
+                artist_refs: Vec::new(),
+                is_playable: true,
+                is_local: false,
+                track_number: 1,
+                explicit: false,
+                image_url: t.cover_art_url,
+                release_date: None,
+                generated_name: None,
+              });
+            }
+          }
         }
       }
     }

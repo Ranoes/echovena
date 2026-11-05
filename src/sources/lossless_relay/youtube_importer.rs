@@ -250,14 +250,18 @@ impl YouTubeImporter {
         &self,
         playlist_id: &str,
     ) -> Result<(ImportedPlaylist, Vec<PlaylistTrack>)> {
-        let browse_id = if playlist_id.starts_with("VL")
-            || playlist_id.starts_with("MPREb_")
-            || playlist_id.starts_with("UC")
-            || playlist_id.starts_with("FEmusic_")
+        let clean_pid = playlist_id
+            .strip_prefix("yt:playlist:")
+            .or_else(|| playlist_id.strip_prefix("yt:browse:"))
+            .unwrap_or(playlist_id);
+        let browse_id = if clean_pid.starts_with("VL")
+            || clean_pid.starts_with("MPREb_")
+            || clean_pid.starts_with("UC")
+            || clean_pid.starts_with("FEmusic_")
         {
-            playlist_id.to_string()
+            clean_pid.to_string()
         } else {
-            format!("VL{}", playlist_id)
+            format!("VL{}", clean_pid)
         };
 
         let mut headers = HeaderMap::new();
@@ -429,8 +433,15 @@ impl YouTubeImporter {
         &self,
         album_id: &str,
     ) -> Result<(String, String, Option<String>, Option<String>, Vec<TrackInfo>)> {
-        let clean_bid = album_id.strip_prefix("yt:browse:").unwrap_or(album_id);
-        let browse_id = clean_bid.to_string();
+        let clean_bid = album_id
+            .strip_prefix("yt:browse:")
+            .or_else(|| album_id.strip_prefix("yt:playlist:"))
+            .unwrap_or(album_id);
+        let browse_id = if clean_bid.starts_with("OLAK5uy_") || clean_bid.starts_with("PL") {
+            format!("VL{}", clean_bid)
+        } else {
+            clean_bid.to_string()
+        };
 
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static(DEFAULT_USER_AGENT));
@@ -533,20 +544,36 @@ impl YouTubeImporter {
         let mut tracks = Vec::new();
 
         // 1. Check secondaryContents (twoColumnBrowseResultsRenderer)
-        let sec_items = two_col["secondaryContents"]["sectionListRenderer"]["contents"].as_array();
-        let items = sec_items
-            .and_then(|arr| arr.first())
-            .and_then(|sec| {
-                sec["musicShelfRenderer"]["contents"].as_array()
+        let mut items = None;
+        if let Some(sec_contents) = two_col["secondaryContents"]["sectionListRenderer"]["contents"].as_array() {
+            for sec in sec_contents {
+                if let Some(arr) = sec["musicShelfRenderer"]["contents"].as_array()
                     .or_else(|| sec["musicPlaylistShelfRenderer"]["contents"].as_array())
-            })
-            // 2. Check singleColumnBrowseResultsRenderer fallback
-            .or_else(|| {
-                let single_contents = &body["contents"]["singleColumnBrowseResultsRenderer"]["tabs"][0]
-                    ["tabRenderer"]["content"]["sectionListRenderer"]["contents"][0];
-                single_contents["musicPlaylistShelfRenderer"]["contents"].as_array()
-                    .or_else(|| single_contents["musicShelfRenderer"]["contents"].as_array())
-            });
+                {
+                    items = Some(arr);
+                    break;
+                }
+            }
+        }
+        // 2. Check tabs[0].tabRenderer.content (twoColumn or singleColumn tabs)
+        if items.is_none() {
+            let tabs = two_col["tabs"].as_array()
+                .or_else(|| body["contents"]["singleColumnBrowseResultsRenderer"]["tabs"].as_array());
+            if let Some(tabs_list) = tabs {
+                if let Some(tab) = tabs_list.first() {
+                    if let Some(sec_contents) = tab["tabRenderer"]["content"]["sectionListRenderer"]["contents"].as_array() {
+                        for sec in sec_contents {
+                            if let Some(arr) = sec["musicShelfRenderer"]["contents"].as_array()
+                                .or_else(|| sec["musicPlaylistShelfRenderer"]["contents"].as_array())
+                            {
+                                items = Some(arr);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         if let Some(item_list) = items {
             for (idx, item) in item_list.iter().enumerate() {

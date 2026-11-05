@@ -184,6 +184,15 @@ fn handle_content_table_mouse(
     return;
   }
 
+  // 3. Live YouTube search view (Scope bar, suggestions, and results)
+  if active_block == ActiveBlock::SearchResultBlock
+    && app.view.search_drilldown == crate::core::app::SearchDrilldown::None
+    && (!app.live_search_items.is_empty() || app.active_source == crate::core::source::Source::YouTube)
+  {
+    handle_live_youtube_search_mouse(mouse, table_area, app);
+    return;
+  }
+
   let item_count = content_table_item_count(active_block, app);
   if item_count == 0 {
     return;
@@ -381,6 +390,113 @@ fn handle_search_drilldown_mouse(mouse: MouseEvent, table_area: Rect, app: &mut 
         _ => {}
       }
     }
+  }
+}
+
+fn handle_live_youtube_search_mouse(mouse: MouseEvent, table_area: Rect, app: &mut App) {
+  focus_content_table(ActiveBlock::SearchResultBlock, app);
+
+  if table_area.height < 5 {
+    return;
+  }
+
+  let [scope_area, content_area] = table_area.layout(&Layout::vertical([
+    Constraint::Length(3),
+    Constraint::Min(4),
+  ]));
+
+  let (suggestions_area, results_area) = if !app.live_search_suggestions.is_empty() && content_area.width > 70 {
+    let [s_area, r_area] = content_area.layout(&Layout::horizontal([
+      Constraint::Length(26),
+      Constraint::Min(30),
+    ]));
+    (Some(s_area), r_area)
+  } else {
+    (None, content_area)
+  };
+
+  match mouse.kind {
+    MouseEventKind::ScrollDown => {
+      app.move_live_search_down();
+      app.view.search_selected_tracks_index = Some(app.live_search_selected_index);
+    }
+    MouseEventKind::ScrollUp => {
+      app.move_live_search_up();
+      app.view.search_selected_tracks_index = Some(app.live_search_selected_index);
+    }
+    MouseEventKind::Down(MouseButton::Left) => {
+      // 1. Check Scope Bar click (on row scope_area.y + 1)
+      if mouse.row == scope_area.y.saturating_add(1)
+        && mouse.column >= scope_area.x
+        && mouse.column < scope_area.x.saturating_add(scope_area.width)
+      {
+        let inner_x = scope_area.x.saturating_add(1);
+        if mouse.column >= inner_x {
+          let mut cur_x = inner_x + 15; // after " [Tab: Scope]  "
+          for (scope, label) in [
+            (crate::sources::youtube_search::types::SearchScope::Music, "MUSIC"),
+            (crate::sources::youtube_search::types::SearchScope::Album, "ALBUM"),
+            (crate::sources::youtube_search::types::SearchScope::Artist, "ARTIST"),
+            (crate::sources::youtube_search::types::SearchScope::Video, "VIDEO"),
+          ] {
+            let width = if app.search_scope == scope {
+              label.len() as u16 + 8 // " ● [ " + label + " ] "
+            } else {
+              label.len() as u16 + 5 // " ○ " + label + "  "
+            };
+            if mouse.column >= cur_x && mouse.column < cur_x + width {
+              if app.search_scope != scope {
+                app.search_scope = scope;
+                app.live_search_selected_index = 0;
+                app.view.live_search_scroll_offset.set(0);
+                app.trigger_live_search();
+              }
+              return;
+            }
+            cur_x += width;
+          }
+        }
+        return;
+      }
+
+      // 2. Check Suggestions click
+      if let Some(s_area) = suggestions_area {
+        if mouse.column >= s_area.x && mouse.column < s_area.x.saturating_add(s_area.width) {
+          let inner_top = s_area.y.saturating_add(1);
+          let inner_bottom = s_area.y.saturating_add(s_area.height).saturating_sub(1);
+          if mouse.row >= inner_top && mouse.row < inner_bottom {
+            let sugg_idx = (mouse.row - inner_top) as usize;
+            if let Some(sugg) = app.live_search_suggestions.get(sugg_idx).cloned() {
+              app.view.input = sugg.chars().collect();
+              app.view.input_idx = app.view.input.len();
+              app.view.input_cursor_position = app.view.input.len() as u16;
+              app.trigger_live_search();
+            }
+          }
+          return;
+        }
+      }
+
+      // 3. Check Results List click
+      if mouse.column >= results_area.x && mouse.column < results_area.x.saturating_add(results_area.width) {
+        let inner_top = results_area.y.saturating_add(1);
+        let inner_bottom = results_area.y.saturating_add(results_area.height).saturating_sub(1);
+        if mouse.row >= inner_top && mouse.row < inner_bottom {
+          let row_in_view = (mouse.row - inner_top) as usize;
+          let scroll_offset = app.view.live_search_scroll_offset.get();
+          let clicked_index = scroll_offset + row_in_view;
+          if clicked_index < app.live_search_items.len() {
+            let was_selected = app.live_search_selected_index == clicked_index;
+            app.live_search_selected_index = clicked_index;
+            app.view.search_selected_tracks_index = Some(clicked_index);
+            if was_selected {
+              super::handle_block_events(Key::Enter, app);
+            }
+          }
+        }
+      }
+    }
+    _ => {}
   }
 }
 

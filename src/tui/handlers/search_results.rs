@@ -816,7 +816,8 @@ pub fn handler(key: Key, app: &mut App) {
               return;
             }
             SearchScope::Artist => {
-              open_artist_drilldown(app, &item.id, &item.title);
+              let id = item.playlist_id.as_deref().unwrap_or(&item.id);
+              open_artist_drilldown(app, id, &item.title);
               return;
             }
             _ => {

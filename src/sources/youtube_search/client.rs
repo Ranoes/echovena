@@ -291,6 +291,33 @@ pub fn parse_ytm_search_response(json: &Value, scope: SearchScope) -> Vec<Search
                     }
                 }
             }
+
+            // 3. ItemSectionRenderer (Wraps musicShelfRenderer or responsive items)
+            if let Some(item_section) = section.get("itemSectionRenderer") {
+                if let Some(contents) = item_section["contents"].as_array() {
+                    for content in contents {
+                        if let Some(shelf) = content.get("musicShelfRenderer") {
+                            if let Some(items) = shelf["contents"].as_array() {
+                                for item in items {
+                                    if let Some(renderer) = item.get("musicResponsiveListItemRenderer") {
+                                        if let Some(parsed) = parse_ytm_responsive_list_item(renderer, scope) {
+                                            results.push(parsed);
+                                        }
+                                    }
+                                }
+                            }
+                        } else if let Some(renderer) = content.get("musicResponsiveListItemRenderer") {
+                            if let Some(parsed) = parse_ytm_responsive_list_item(renderer, scope) {
+                                results.push(parsed);
+                            }
+                        } else if let Some(card) = content.get("musicCardShelfRenderer") {
+                            if let Some(item) = parse_ytm_card_shelf(card, scope) {
+                                results.push(item);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -304,6 +331,26 @@ fn parse_ytm_card_shelf(card: &Value, default_scope: SearchScope) -> Option<Sear
         .or_else(|| card["onTap"]["watchEndpoint"]["videoId"].as_str())
         .map(|s| s.to_string());
 
+    let browse_id = card["title"]["runs"][0]["navigationEndpoint"]["browseEndpoint"]["browseId"]
+        .as_str()
+        .or_else(|| card["onTap"]["browseEndpoint"]["browseId"].as_str())
+        .or_else(|| card["header"]["musicCardShelfHeaderBasicRenderer"]["title"]["runs"][0]["navigationEndpoint"]["browseEndpoint"]["browseId"].as_str())
+        .or_else(|| {
+            card["buttons"].as_array().and_then(|btns| {
+                btns.iter().find_map(|b| {
+                    b["buttonRenderer"]["navigationEndpoint"]["browseEndpoint"]["browseId"].as_str()
+                })
+            })
+        })
+        .or_else(|| {
+            card["subtitle"]["runs"].as_array().and_then(|runs| {
+                runs.iter().find_map(|r| {
+                    r["navigationEndpoint"]["browseEndpoint"]["browseId"].as_str()
+                })
+            })
+        })
+        .map(|s| s.to_string());
+
     let (artist, album, duration_str) = parse_ytm_subtitle_runs(&card["subtitle"]["runs"]);
     let duration_ms = parse_duration_str(&duration_str);
 
@@ -311,8 +358,33 @@ fn parse_ytm_card_shelf(card: &Value, default_scope: SearchScope) -> Option<Sear
     extract_badges(&title, &mut badges);
     extract_card_badges(card, &mut badges);
 
-    let id = if let Some(ref vid) = video_id {
+    // Determine scope / classification
+    let scope = if browse_id.as_ref().is_some_and(|b| b.starts_with("MPREb_") || b.starts_with("OLAK5uy_") || b.starts_with("VL")) {
+        SearchScope::Album
+    } else if browse_id.as_ref().is_some_and(|b| b.starts_with("UC") || b.starts_with("FEmusic_")) {
+        SearchScope::Artist
+    } else if default_scope == SearchScope::Album {
+        SearchScope::Album
+    } else if default_scope == SearchScope::Artist {
+        SearchScope::Artist
+    } else if video_id.is_some() {
+        SearchScope::Music
+    } else {
+        default_scope
+    };
+
+    let id = if scope == SearchScope::Album || scope == SearchScope::Artist {
+        if let Some(ref bid) = browse_id {
+            format!("yt:browse:{}", bid)
+        } else if let Some(ref vid) = video_id {
+            format!("yt:video:{}", vid)
+        } else {
+            format!("yt:card:{}", title)
+        }
+    } else if let Some(ref vid) = video_id {
         format!("yt:video:{}", vid)
+    } else if let Some(ref bid) = browse_id {
+        format!("yt:browse:{}", bid)
     } else {
         format!("yt:card:{}", title)
     };
@@ -323,19 +395,19 @@ fn parse_ytm_card_shelf(card: &Value, default_scope: SearchScope) -> Option<Sear
         .and_then(|t| t["url"].as_str())
         .map(|s| s.to_string());
 
-    let is_playable = video_id.is_some();
+    let is_playable = video_id.is_some() || scope == SearchScope::Music;
 
     Some(SearchResultItem {
         id,
         video_id,
-        playlist_id: None,
+        playlist_id: browse_id,
         title,
         artist,
         album,
         duration_ms,
         duration_str,
         badges,
-        scope: default_scope,
+        scope,
         thumbnail_url,
         is_playable,
     })
@@ -363,6 +435,24 @@ fn parse_ytm_responsive_list_item(renderer: &Value, default_scope: SearchScope) 
             renderer["flexColumns"][0]["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"]
                 [0]["navigationEndpoint"]["browseEndpoint"]["browseId"]
                 .as_str()
+        })
+        .or_else(|| {
+            renderer["overlay"]["musicItemThumbnailOverlayRenderer"]["content"]
+                ["musicPlayButtonRenderer"]["playNavigationEndpoint"]["browseEndpoint"]["browseId"]
+                .as_str()
+        })
+        .or_else(|| {
+            renderer["flexColumns"].as_array().and_then(|cols| {
+                cols.iter().find_map(|c| {
+                    c["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"]
+                        .as_array()
+                        .and_then(|runs| {
+                            runs.iter().find_map(|r| {
+                                r["navigationEndpoint"]["browseEndpoint"]["browseId"].as_str()
+                            })
+                        })
+                })
+            })
         })
         .map(|s| s.to_string());
 
@@ -393,9 +483,13 @@ fn parse_ytm_responsive_list_item(renderer: &Value, default_scope: SearchScope) 
     extract_list_item_badges(renderer, &mut badges);
 
     // Determine scope / classification
-    let scope = if browse_id.as_ref().is_some_and(|b| b.starts_with("MPREb_")) {
+    let scope = if browse_id.as_ref().is_some_and(|b| b.starts_with("MPREb_") || b.starts_with("OLAK5uy_") || b.starts_with("VL")) {
         SearchScope::Album
-    } else if browse_id.as_ref().is_some_and(|b| b.starts_with("UC")) {
+    } else if browse_id.as_ref().is_some_and(|b| b.starts_with("UC") || b.starts_with("FEmusic_")) {
+        SearchScope::Artist
+    } else if default_scope == SearchScope::Album {
+        SearchScope::Album
+    } else if default_scope == SearchScope::Artist {
         SearchScope::Artist
     } else if video_id.is_some() {
         SearchScope::Music
@@ -403,8 +497,16 @@ fn parse_ytm_responsive_list_item(renderer: &Value, default_scope: SearchScope) 
         default_scope
     };
 
-    let is_playable = video_id.is_some();
-    let id = if let Some(ref vid) = video_id {
+    let is_playable = video_id.is_some() || scope == SearchScope::Music;
+    let id = if scope == SearchScope::Album || scope == SearchScope::Artist {
+        if let Some(ref bid) = browse_id {
+            format!("yt:browse:{}", bid)
+        } else if let Some(ref vid) = video_id {
+            format!("yt:video:{}", vid)
+        } else {
+            format!("yt:item:{}", clean_title)
+        }
+    } else if let Some(ref vid) = video_id {
         format!("yt:video:{}", vid)
     } else if let Some(ref bid) = browse_id {
         format!("yt:browse:{}", bid)
