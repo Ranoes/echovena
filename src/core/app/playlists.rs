@@ -161,46 +161,23 @@ impl App {
   /// editable Spotify playlists plus folder rows scoped to
   /// `playlist_picker_folder_id`, mirroring the sidebar's folder navigation.
   pub fn playlist_picker_items(&self) -> Vec<PlaylistPickerRow<'_>> {
-    if self.active_source == Source::YouTube {
-      return self
-        .youtube_playlists
-        .iter()
-        .map(PlaylistPickerRow::Playlist)
-        .collect();
+    let mut rows: Vec<PlaylistPickerRow> = Vec::new();
+
+    // 1. Local SQLite Playlists
+    for p in &self.local_playlists {
+      rows.push(PlaylistPickerRow::Playlist(p));
     }
 
-    // Fallback: folder items never built (rootlist fetch failed, streaming
-    // disabled, …) — flat editable list, same as the pre-folder behavior.
-    if self.playlist_folder_items.is_empty() {
-      return self
-        .editable_playlists()
-        .into_iter()
-        .map(PlaylistPickerRow::Playlist)
-        .collect();
+    // 2. YouTube Playlists (imported & local YAML)
+    for p in &self.youtube_playlists {
+      rows.push(PlaylistPickerRow::Playlist(p));
     }
 
-    let mut rows: Vec<PlaylistPickerRow> = self
-      .playlist_folder_items
-      .iter()
-      .filter_map(|item| match item {
-        PlaylistFolderItem::Folder(f) if f.current_id == self.view.playlist_picker_folder_id => {
-          Some(PlaylistPickerRow::Folder(f))
-        }
-        PlaylistFolderItem::Playlist { index, current_id }
-          if *current_id == self.view.playlist_picker_folder_id =>
-        {
-          self
-            .all_playlists
-            .get(*index)
-            .filter(|playlist| self.playlist_is_editable(playlist))
-            .map(PlaylistPickerRow::Playlist)
-        }
-        _ => None,
-      })
-      .collect();
-    if self.user_config.behavior.group_folders_first {
-      rows.sort_by_key(|row| !matches!(row, PlaylistPickerRow::Folder(_)));
+    // 3. Spotify editable playlists (if present)
+    for p in self.editable_playlists() {
+      rows.push(PlaylistPickerRow::Playlist(p));
     }
+
     rows
   }
 
@@ -210,88 +187,50 @@ impl App {
       return;
     };
 
-    // Under the YouTube source the destinations are the *local* playlists
-    // (youtube_playlists.yml), not the Spotify ones — no user/playlist
-    // fetches apply. The picker's Enter routes by source too.
-    if self.active_source == Source::YouTube && !self.youtube_playlists.is_empty() {
-      self.clear_dialog_state();
-      self.pending_playlist_track_add = Some(PendingPlaylistTrackAdd {
-        track_id,
-        track_name,
-      });
-      self.push_navigation_stack(
-        RouteId::Dialog,
-        ActiveBlock::Dialog(DialogContext::AddTrackToPlaylistPicker),
-      );
-      return;
-    }
+    // Refresh local SQLite playlists and YouTube playlists for the picker
+    if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+      if let Ok(playlists) = db.list_imported_playlists() {
+        self.local_playlists = playlists
+          .iter()
+          .filter(|p| p.platform == "local" || p.platform == "echovena")
+          .map(|p| crate::core::plugin_api::PlaylistInfo {
+            generated_name: None,
+            uri: p.id.clone(),
+            name: format!("[Local] {}", p.title),
+            owner: "Local".to_string(),
+            track_count: p.track_count as u32,
+            id: Some(p.id.clone()),
+            owner_id: None,
+            collaborative: true,
+            public: Some(false),
+            image_url: p.cover_art_url.clone(),
+          })
+          .collect();
 
-    // Check local SQLite imported playlists when in LosslessRelay or when all_playlists is empty
-    if self.active_source == Source::LosslessRelay || self.all_playlists.is_empty() {
-      if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
-        if let Ok(imported) = db.list_imported_playlists() {
-          if !imported.is_empty() {
-            self.all_playlists = imported
-              .into_iter()
-              .map(|p| crate::core::plugin_api::PlaylistInfo {
-                generated_name: None,
-                uri: p.id.clone(),
-                name: p.title,
-                owner: p.author.unwrap_or_else(|| "Synced".to_string()),
-                track_count: p.track_count as u32,
-                id: Some(p.id),
-                owner_id: None,
-                collaborative: true,
-                public: Some(false),
-                image_url: p.cover_art_url,
-              })
-              .collect();
+        let mut yt_list: Vec<crate::core::plugin_api::PlaylistInfo> = playlists
+          .iter()
+          .filter(|p| p.platform == "youtube" || p.platform == "ytmusic")
+          .map(|p| crate::core::plugin_api::PlaylistInfo {
+            generated_name: None,
+            uri: p.id.clone(),
+            name: format!("[YouTube] {}", p.title),
+            owner: "YouTube".to_string(),
+            track_count: p.track_count as u32,
+            id: Some(p.id.clone()),
+            owner_id: None,
+            collaborative: true,
+            public: Some(false),
+            image_url: p.cover_art_url.clone(),
+          })
+          .collect();
+
+        for p in &self.youtube_playlists {
+          if !yt_list.iter().any(|existing| existing.name.contains(&p.name)) {
+            yt_list.push(p.clone());
           }
         }
+        self.youtube_playlists = yt_list;
       }
-    }
-
-    if !self.all_playlists.is_empty() {
-      self.clear_dialog_state();
-      self.pending_playlist_track_add = Some(PendingPlaylistTrackAdd {
-        track_id,
-        track_name,
-      });
-      self.push_navigation_stack(
-        RouteId::Dialog,
-        ActiveBlock::Dialog(DialogContext::AddTrackToPlaylistPicker),
-      );
-      return;
-    }
-
-    let mut requested_data = false;
-    if self.user.is_none() {
-      self.dispatch(IoEvent::GetUser);
-      requested_data = true;
-    }
-    if self.playlists.is_none() {
-      self.dispatch(IoEvent::GetPlaylists);
-      requested_data = true;
-    }
-    if requested_data {
-      self.set_status_message(
-        self
-          .strings()
-          .status
-          .app
-          .playlist_destinations_loading
-          .to_string(),
-        4,
-      );
-      return;
-    }
-
-    if self.editable_playlists().is_empty() {
-      self.set_status_message(
-        self.strings().status.app.no_editable_playlists.to_string(),
-        4,
-      );
-      return;
     }
 
     self.clear_dialog_state();
@@ -299,6 +238,7 @@ impl App {
       track_id,
       track_name,
     });
+    self.view.playlist_picker_selected_index = 0;
     self.push_navigation_stack(
       RouteId::Dialog,
       ActiveBlock::Dialog(DialogContext::AddTrackToPlaylistPicker),
@@ -310,11 +250,13 @@ impl App {
   /// exactly like the `w` key that has always driven it.
   /// Add a track to a playlist, routed by the playlist URI's scheme.
   pub(crate) fn add_track_to_playlist(&mut self, playlist: String, track: String) {
+    let mut handled_in_sqlite = false;
     if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
       if let Ok(Some(mut pl)) = db.get_imported_playlist(&playlist) {
+        handled_in_sqlite = true;
         let count = pl.track_count;
         let (title, artist) = if let Some(pending) = self.pending_playlist_track_add.as_ref() {
-          (pending.track_name.clone(), "YouTube".to_string())
+          (pending.track_name.clone(), "EchoVena".to_string())
         } else {
           (track.clone(), "Unknown Artist".to_string())
         };
@@ -339,7 +281,7 @@ impl App {
 
     if playlist.starts_with(YOUTUBE_PLAYLIST_PREFIX) {
       self.dispatch(IoEvent::AddTrackToYouTubePlaylist(playlist, track));
-    } else {
+    } else if !handled_in_sqlite && playlist.starts_with("spotify:playlist:") {
       self.dispatch(IoEvent::AddTrackToPlaylist(playlist, track));
     }
   }
@@ -351,8 +293,10 @@ impl App {
     track: String,
     position: usize,
   ) {
+    let mut handled_in_sqlite = false;
     if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
       if let Ok(Some(mut pl)) = db.get_imported_playlist(&playlist) {
+        handled_in_sqlite = true;
         let _ = db.remove_playlist_track(&playlist, &track);
         pl.track_count = (pl.track_count - 1).max(0);
         let _ = db.upsert_imported_playlist(&pl);
@@ -362,7 +306,7 @@ impl App {
 
     if playlist.starts_with(YOUTUBE_PLAYLIST_PREFIX) {
       self.dispatch(IoEvent::RemoveTrackFromYouTubePlaylist(playlist, track));
-    } else {
+    } else if !handled_in_sqlite && playlist.starts_with("spotify:playlist:") {
       self.dispatch(IoEvent::RemoveTrackFromPlaylistAtPosition(
         playlist, track, position,
       ));

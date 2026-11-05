@@ -728,33 +728,72 @@ pub fn handle_app(key: Key, app: &mut App) {
         let active = app.get_current_route().active_block;
 
         // Context-aware target resolution:
-        // 1. If user is browsing a track table, target the highlighted row
-        let track_to_archive = if active == ActiveBlock::TrackTable {
-          app.track_table.tracks.get(app.view.track_table_index).map(|t| {
-            crate::sources::lossless_relay::archiver::track_info_to_playlist_track(t, app.view.track_table_index, "library")
-          })
-        // 2. If user is browsing search results, target the highlighted search track
-        } else if active == ActiveBlock::SearchResultBlock {
-          if let crate::core::app::SearchResultBlock::SongSearch = app.view.search_selected_block {
-            app.view.search_selected_tracks_index.and_then(|idx| {
-              app.search_results().tracks.as_ref().and_then(|p| p.items.get(idx)).map(|t| {
-                crate::sources::lossless_relay::archiver::track_info_to_playlist_track(t, idx, "search")
-              })
+        // 1. Try resolving highlighted track from cursor in active block
+        let target_from_cursor: Option<crate::sources::lossless_relay::db::PlaylistTrack> = match active {
+          ActiveBlock::TrackTable => {
+            app.track_table.tracks.get(app.view.track_table_index).map(|t| {
+              crate::sources::lossless_relay::archiver::track_info_to_playlist_track(t, app.view.track_table_index, "library")
             })
-          } else {
-            None
           }
-        // 3. If live search dropdown has a selected item
-        } else if app.selected_live_search_item().is_some() {
+          ActiveBlock::SearchResultBlock => {
+            // First check YouTube live search items
+            app.selected_live_search_item().map(|item| {
+              let t = item.to_track_info();
+              crate::sources::lossless_relay::archiver::track_info_to_playlist_track(&t, app.live_search_selected_index, "search")
+            }).or_else(|| {
+              // Legacy Spotify search fallback
+              if let crate::core::app::SearchResultBlock::SongSearch = app.view.search_selected_block {
+                app.view.search_selected_tracks_index.and_then(|idx| {
+                  app.search_results().tracks.as_ref().and_then(|p| p.items.get(idx)).map(|t| {
+                    crate::sources::lossless_relay::archiver::track_info_to_playlist_track(t, idx, "search")
+                  })
+                })
+              } else {
+                None
+              }
+            })
+          }
+          ActiveBlock::Playlists | ActiveBlock::MyPlaylists => {
+            let tree = crate::tui::handlers::playlist::get_playlist_tree_items(app);
+            if let Some(idx) = app.view.selected_playlist_index {
+              if let Some(crate::tui::handlers::playlist::PlaylistTreeItem::TrackLeaf { playlist_id, track_id, title, artist, duration_ms, position, .. }) = tree.get(idx) {
+                Some(crate::sources::lossless_relay::db::PlaylistTrack {
+                  playlist_id: playlist_id.clone(),
+                  position: *position as i64,
+                  source_track_id: track_id.clone(),
+                  raw_title: title.clone(),
+                  clean_title: title.clone(),
+                  artist: artist.clone(),
+                  album: None,
+                  duration_ms: *duration_ms as i64,
+                  isrc: None,
+                  cover_art_url: None,
+                })
+              } else {
+                None
+              }
+            } else {
+              None
+            }
+          }
+          _ => None,
+        };
+
+        // 2. Also check if live search dropdown has an active selection
+        let target_from_cursor = target_from_cursor.or_else(|| {
           app.selected_live_search_item().map(|item| {
             let t = item.to_track_info();
             crate::sources::lossless_relay::archiver::track_info_to_playlist_track(&t, 0, "search")
           })
-        // 4. Otherwise (Now Playing, Playbar, Karaoke, etc.), target CURRENTLY PLAYING track
-        } else {
+        });
+
+        // 3. Fall back unconditionally to currently playing track (YouTube, Queue, Lossless, Snapshot)
+        let track_to_archive = target_from_cursor.or_else(|| {
           #[cfg(feature = "audio-decode-queue")]
           let queue_track = if let Some(crate::infra::queue::QueueNowPlaying::Decoded(d)) = app.queue_now.as_ref() {
             Some(crate::sources::lossless_relay::archiver::track_info_to_playlist_track(&d.track, 0, "queue"))
+          } else if let Some(crate::infra::queue::QueueNowPlaying::Spotify { track }) = app.queue_now.as_ref() {
+            Some(crate::sources::lossless_relay::archiver::track_info_to_playlist_track(track, 0, "queue"))
           } else {
             None
           };
@@ -789,7 +828,7 @@ pub fn handle_app(key: Key, app: &mut App) {
                 }
               })
             })
-        };
+        });
 
         if let Some(track) = track_to_archive {
           let title = track.clean_title.clone();

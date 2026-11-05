@@ -49,7 +49,7 @@ pub fn get_playlist_tree_items(app: &App) -> Vec<PlaylistTreeItem> {
 
       if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
         if let Ok(playlists) = db.list_imported_playlists() {
-          for p in playlists.into_iter().filter(|p| p.platform == "local") {
+          for p in playlists.into_iter().filter(|p| p.platform == "local" || p.platform == "echovena") {
             let is_expanded = app.view.expanded_playlists.contains(&p.id);
             items.push(PlaylistTreeItem::PlaylistHeader {
               id: p.id.clone(),
@@ -358,7 +358,7 @@ pub fn get_playlist_tab_items(app: &App) -> Vec<String> {
       let mut found_any = false;
       if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
         if let Ok(playlists) = db.list_imported_playlists() {
-          for p in playlists.into_iter().filter(|p| p.platform == "local") {
+          for p in playlists.into_iter().filter(|p| p.platform == "local" || p.platform == "echovena") {
             found_any = true;
             items.push(format!("\u{25B6} [Local] {} ({} tracks)", p.title, p.track_count));
           }
@@ -1046,7 +1046,7 @@ pub(super) fn activate_selected(app: &mut App) {
             .and_then(|db| db.list_imported_playlists().ok())
             .unwrap_or_default()
             .into_iter()
-            .filter(|p| p.platform == "local")
+            .filter(|p| p.platform == "local" || p.platform == "echovena")
             .collect();
           let db_len = local_db_playlists.len();
           let relative_idx = idx.saturating_sub(2);

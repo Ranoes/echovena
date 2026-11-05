@@ -278,7 +278,7 @@ impl SyncWorker {
                         guard.set_status_message(format!("Fetching YouTube playlist {} via InnerTube/yt-dlp...", id), 15);
                         guard.view.url_import_status = Some("Querying YouTube for tracks...".to_string());
                     }
-                    match importer.fetch_playlist(&id).await {
+                    match importer.fetch_playlist_or_url(trimmed, &id).await {
                         Ok((pl, tracks)) => {
                             let track_count = tracks.len();
                             let title = pl.title.clone();
@@ -307,10 +307,38 @@ impl SyncWorker {
                     }
                 }
                 crate::sources::lossless_relay::youtube_importer::YouTubeResource::Video(vid) => {
-                    let mut guard = app.lock().await;
-                    guard.set_status_message(format!("YouTube single video: https://youtu.be/{}", vid), 5);
-                    guard.view.url_import_status = Some(format!("YouTube video ID: {}", vid));
-                    guard.view.url_import_in_progress = false;
+                    {
+                        let mut guard = app.lock().await;
+                        guard.set_status_message(format!("Fetching YouTube video {} via yt-dlp...", vid), 15);
+                        guard.view.url_import_status = Some("Querying YouTube for video metadata...".to_string());
+                    }
+                    match importer.fetch_video(trimmed).await {
+                        Ok((pl, tracks)) => {
+                            let track_count = tracks.len();
+                            let title = pl.title.clone();
+                            let _ = db.upsert_imported_playlist(&pl);
+                            let _ = db.replace_playlist_tracks(&pl.id, &tracks);
+
+                            let resolver = crate::sources::lossless_relay::resolver::Resolver::new(db.clone());
+                            let (worker, rx) = crate::sources::lossless_relay::resolver::BatchResolutionWorker::new(resolver.clone());
+                            let _ = worker.enqueue_batch(tracks).await;
+                            tokio::spawn(crate::sources::lossless_relay::resolver::BatchResolutionWorker::run_loop(resolver, rx));
+
+                            let mut guard = app.lock().await;
+                            guard.set_status_message(
+                                format!("\u{2713} Imported YouTube track '{}' into library!", title),
+                                6,
+                            );
+                            guard.view.url_import_status = Some(format!("\u{2713} Imported '{}' ({} tracks)", title, track_count));
+                            guard.view.url_import_in_progress = false;
+                        }
+                        Err(e) => {
+                            let mut guard = app.lock().await;
+                            guard.set_status_message(format!("\u{274c} YouTube import failed: {:#}", e), 6);
+                            guard.view.url_import_status = Some(format!("Error: {:#}", e));
+                            guard.view.url_import_in_progress = false;
+                        }
+                    }
                 }
             }
             return;

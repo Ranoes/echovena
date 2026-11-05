@@ -123,14 +123,10 @@ impl App {
           .duration_since(std::time::UNIX_EPOCH)
           .map(|d| d.as_millis() as i64)
           .unwrap_or(0);
-        let pl_id = format!("echovena:playlist:{:x}", now);
+        let pl_id = format!("local:playlist:{:x}", now);
         let imported = crate::sources::lossless_relay::db::ImportedPlaylist {
           id: pl_id.clone(),
-          platform: match self.view.playlist_panel_tab {
-            1 => "spotify".to_string(),
-            2 => "youtube".to_string(),
-            _ => "echovena".to_string(),
-          },
+          platform: "local".to_string(),
           title: name.clone(),
           author: Some("EchoVena User".to_string()),
           source_url: String::new(),
@@ -158,13 +154,7 @@ impl App {
           }
         }
 
-        if self.view.playlist_panel_tab == 2 || self.active_source == crate::core::source::Source::YouTube {
-          self.dispatch(IoEvent::CreateYouTubePlaylist(name.clone()));
-        }
-        if self.active_source == crate::core::source::Source::Spotify {
-          self.dispatch(IoEvent::CreateNewPlaylist(name.clone(), track_uris));
-        }
-        self.set_status_message(format!("Created playlist '{}'", name), 4);
+        self.set_status_message(format!("Created local playlist '{}'", name), 4);
       }
       Action::CreateYouTubePlaylist(name) => {
         self.dispatch(IoEvent::CreateYouTubePlaylist(name));

@@ -957,8 +957,13 @@ pub fn handler(key: Key, app: &mut App) {
         }
       }
       SearchResultBlock::SongSearch => {
-        let track =
-          selected_search_track_row(app).map(|track| (track.id.clone(), track.name.clone()));
+        let live_item = app.selected_live_search_item().map(|item| {
+          let t = item.to_track_info();
+          (t.uri, item.title.clone())
+        });
+        let track = live_item.or_else(|| {
+          selected_search_track_row(app).map(|track| (track.id.clone(), track.name.clone()))
+        });
         if let Some((track_id, track_name)) = track {
           app.apply(Action::OpenAddTrackDialogFor {
             track_id,

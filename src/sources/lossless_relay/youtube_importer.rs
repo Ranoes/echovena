@@ -297,6 +297,37 @@ impl YouTubeImporter {
         self.fetch_ytdlp_playlist(playlist_id).await
     }
 
+    /// Fetches a playlist with fallback to raw URL extraction (for watch mixes or non-standard playlist IDs)
+    pub async fn fetch_playlist_or_url(
+        &self,
+        raw_input: &str,
+        playlist_id: &str,
+    ) -> Result<(ImportedPlaylist, Vec<PlaylistTrack>)> {
+        // 1. Try standard InnerTube playlist fetch
+        if let Ok(result) = self.fetch_innertube_playlist(playlist_id).await {
+            if !result.1.is_empty() {
+                return Ok(result);
+            }
+        }
+
+        // 2. Try yt-dlp on standard playlist URL
+        if let Ok(result) = self.fetch_ytdlp_playlist(playlist_id).await {
+            if !result.1.is_empty() {
+                return Ok(result);
+            }
+        }
+
+        // 3. Fallback: yt-dlp directly on raw input URL (handles mixes, watch URLs, etc.)
+        if raw_input.contains("youtube.com") || raw_input.contains("youtu.be") {
+            return self.fetch_ytdlp_raw_url(raw_input).await;
+        }
+
+        Err(anyhow!(
+            "failed to import playlist from {} (InnerTube & yt-dlp failed)",
+            playlist_id
+        ))
+    }
+
     /// Primary Extraction: YouTube Music InnerTube browse endpoint
     pub async fn fetch_innertube_playlist(
         &self,
@@ -1003,7 +1034,7 @@ impl YouTubeImporter {
             title: playlist_title,
             author: playlist_uploader,
             source_url: url,
-            cover_art_url: None,
+            cover_art_url: tracks.first().and_then(|t| t.cover_art_url.clone()),
             snapshot_id: None,
             track_count: tracks.len() as i64,
             last_synced_at: now,
@@ -1012,7 +1043,138 @@ impl YouTubeImporter {
         Ok((playlist, tracks))
     }
 
-    /// Fetches and saves a YouTube playlist into the local SQLite database
+    /// Direct yt-dlp execution on any YouTube URL (handles videos, mixes, watch links, etc.)
+    pub async fn fetch_ytdlp_raw_url(
+        &self,
+        target_url: &str,
+    ) -> Result<(ImportedPlaylist, Vec<PlaylistTrack>)> {
+        let mut cmd = Command::new("yt-dlp");
+        cmd.arg("--flat-playlist")
+            .arg("--dump-json")
+            .arg("--no-warnings");
+
+        for arg in crate::sources::sync::auth::YouTubeAuthHandler::ytdlp_cookie_args() {
+            cmd.arg(arg);
+        }
+
+        let output = cmd
+            .arg(target_url)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .await
+            .with_context(|| format!("failed to spawn yt-dlp for url {}", target_url))?;
+
+        if !output.status.success() {
+            return Err(anyhow!(
+                "yt-dlp exited with non-zero status for url {}",
+                target_url
+            ));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut tracks = Vec::new();
+        let now = Utc::now().timestamp();
+        let mut playlist_title = "YouTube Playlist".to_string();
+        let mut playlist_uploader = None;
+        let mut first_vid = String::new();
+
+        for (idx, line) in stdout.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            if let Ok(entry) = serde_json::from_str::<Value>(line) {
+                if idx == 0 {
+                    if let Some(pt) = entry["playlist_title"].as_str() {
+                        playlist_title = pt.to_string();
+                    } else if let Some(t) = entry["title"].as_str() {
+                        playlist_title = format!("[YouTube] {}", t);
+                    }
+                    if let Some(pu) = entry["playlist_uploader"].as_str() {
+                        playlist_uploader = Some(pu.to_string());
+                    } else if let Some(u) = entry["uploader"].as_str().or_else(|| entry["channel"].as_str()) {
+                        playlist_uploader = Some(u.to_string());
+                    }
+                }
+
+                let vid = entry["id"].as_str().unwrap_or("").to_string();
+                if vid.is_empty() {
+                    continue;
+                }
+                if first_vid.is_empty() {
+                    first_vid = vid.clone();
+                }
+
+                let raw_title = entry["title"].as_str().unwrap_or("Unknown Title");
+                let uploader = entry["uploader"].as_str().or_else(|| entry["channel"].as_str());
+                let duration_secs = entry["duration"].as_f64().unwrap_or(0.0);
+                let duration_ms = (duration_secs * 1000.0) as i64;
+
+                let (clean_artist, clean_title) = clean_youtube_title(raw_title, uploader);
+
+                let cover_art_url = entry["thumbnails"]
+                    .as_array()
+                    .and_then(|arr| arr.last())
+                    .and_then(|t| t["url"].as_str())
+                    .map(|s| s.to_string());
+
+                tracks.push(PlaylistTrack {
+                    playlist_id: String::new(), // will set below
+                    position: idx as i64,
+                    source_track_id: format!("yt:video:{}", vid),
+                    raw_title: raw_title.to_string(),
+                    clean_title,
+                    artist: clean_artist,
+                    album: None,
+                    duration_ms,
+                    isrc: None,
+                    cover_art_url,
+                });
+            }
+        }
+
+        if tracks.is_empty() {
+            return Err(anyhow!("no tracks extracted by yt-dlp from {}", target_url));
+        }
+
+        let canonical_id = if tracks.len() == 1 {
+            format!("yt:video:{}", first_vid)
+        } else {
+            format!("yt:playlist:{:x}", now)
+        };
+
+        for t in &mut tracks {
+            t.playlist_id = canonical_id.clone();
+        }
+
+        let playlist = ImportedPlaylist {
+            id: canonical_id,
+            platform: "youtube".to_string(),
+            title: playlist_title,
+            author: playlist_uploader,
+            source_url: target_url.to_string(),
+            cover_art_url: tracks.first().and_then(|t| t.cover_art_url.clone()),
+            snapshot_id: None,
+            track_count: tracks.len() as i64,
+            last_synced_at: now,
+        };
+
+        Ok((playlist, tracks))
+    }
+
+    /// Fetches a single video by ID or URL and wraps it in an ImportedPlaylist and track
+    pub async fn fetch_video(&self, video_id_or_url: &str) -> Result<(ImportedPlaylist, Vec<PlaylistTrack>)> {
+        let url = if video_id_or_url.starts_with("http://") || video_id_or_url.starts_with("https://") {
+            video_id_or_url.to_string()
+        } else {
+            format!("https://www.youtube.com/watch?v={}", video_id_or_url)
+        };
+        self.fetch_ytdlp_raw_url(&url).await
+    }
+
+    /// Fetches and saves a YouTube playlist or video into the local SQLite database
     pub async fn import_playlist(
         &self,
         db: &Database,
@@ -1021,14 +1183,10 @@ impl YouTubeImporter {
         let resource = parse_youtube_url(url_or_id)
             .ok_or_else(|| anyhow!("invalid YouTube URL or ID: {}", url_or_id))?;
 
-        let playlist_id = match resource {
-            YouTubeResource::Playlist(id) => id,
-            YouTubeResource::Video(_) => {
-                return Err(anyhow!("expected a YouTube playlist URL, found single video"));
-            }
+        let (playlist, tracks) = match resource {
+            YouTubeResource::Playlist(id) => self.fetch_playlist_or_url(url_or_id, &id).await?,
+            YouTubeResource::Video(vid) => self.fetch_video(&vid).await?,
         };
-
-        let (playlist, tracks) = self.fetch_playlist(&playlist_id).await?;
 
         db.upsert_imported_playlist(&playlist)
             .context("failed to insert imported playlist into database")?;
