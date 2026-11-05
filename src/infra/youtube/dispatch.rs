@@ -1081,6 +1081,7 @@ async fn start_youtube_queue(app: &Arc<Mutex<App>>, uris: &[String], start_idx: 
       guard.set_status_message(format!("\u{266a} {display}"), 4);
       drop(guard);
       spawn_karaoke_lyrics_fetch(Arc::clone(app), display, artists, dur);
+      spawn_eager_queue_prebuffer(Arc::clone(app));
     }
     Ok(Err(e)) => set_error(app, decode_hint(app, e).await).await,
     Err(e) => {
@@ -1345,7 +1346,61 @@ async fn commit_index(
     guard.set_status_message(format!("\u{266a} {display}"), 4);
     drop(guard);
     spawn_karaoke_lyrics_fetch(Arc::clone(app), display, artists, dur);
+    spawn_eager_queue_prebuffer(Arc::clone(app));
   }
+}
+
+/// Eagerly resolve and prefetch upcoming tracks in the active queue/playlist into local cache.
+pub(crate) fn spawn_eager_queue_prebuffer(app: Arc<Mutex<App>>) {
+  tokio::spawn(async move {
+    let upcoming = {
+      let guard = app.lock().await;
+      let mut targets = Vec::new();
+      if let Some(ref s) = guard.youtube_playback {
+        for offset in 1..=2 {
+          let idx = s.index + offset;
+          if let Some(t) = s.tracks.get(idx) {
+            targets.push((Some(idx), t.clone()));
+          }
+        }
+      }
+      if let Some(head) = guard.native_queue.first().cloned() {
+        targets.push((None, head));
+      }
+      targets
+    };
+
+    if upcoming.is_empty() {
+      return;
+    }
+
+    let source = Arc::new(build_source(&app).await);
+
+    for (maybe_idx, track) in upcoming {
+      let vid = match resolve_or_extract_video_id(&app, &track).await {
+        Ok(id) => id,
+        Err(_) => continue,
+      };
+
+      if let Some(idx) = maybe_idx {
+        let mut guard = app.lock().await;
+        if let Some(ref mut s) = guard.youtube_playback {
+          if let Some(t) = s.tracks.get_mut(idx) {
+            t.uri = Some(super::uri_for_video_id(&vid));
+          }
+        }
+      }
+
+      if super::cached_audio_path(&vid).is_none() {
+        if let Ok(_) = source.prefetch_to_cache(&vid).await {
+          let mut guard = app.lock().await;
+          if let Some(ref mut s) = guard.youtube_playback {
+            s.prebuffered_id = Some(vid);
+          }
+        }
+      }
+    }
+  });
 }
 
 pub(crate) fn spawn_karaoke_lyrics_fetch(

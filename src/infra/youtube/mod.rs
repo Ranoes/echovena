@@ -244,48 +244,52 @@ impl YouTubePlaybackState {
     self.tracks.get(self.index)
   }
 
-  /// Trigger 20-second next-track pre-buffering if within the threshold.
+  /// Trigger eager next-track pre-buffering for upcoming queue tracks.
   pub fn maybe_prebuffer_next(&mut self) {
     if self.advancing {
       return;
     }
-    let Some(current_track) = self.tracks.get(self.index) else {
-      return;
-    };
-    let duration_ms = current_track.duration_ms;
-    if duration_ms == 0 {
-      return;
-    }
-    let position_ms = self.player.position().as_millis() as u64;
-    let remaining_ms = duration_ms.saturating_sub(position_ms);
-    if remaining_ms > 20_000 {
-      return;
-    }
-    let next_idx = self.index + 1;
-    let Some(next_track) = self.tracks.get(next_idx) else {
-      return;
-    };
-    let Some(Ok(next_video_id)) = next_track.uri.as_deref().map(video_id_from_uri) else {
+    let Some(_current_track) = self.tracks.get(self.index) else {
       return;
     };
 
-    if self.prebuffering_id.as_deref() == Some(next_video_id)
-      || self.prebuffered_id.as_deref() == Some(next_video_id)
-    {
-      return;
-    }
+    // Inspect upcoming tracks: index + 1, then index + 2
+    for offset in 1..=2 {
+      let candidate_idx = self.index + offset;
+      let Some(next_track) = self.tracks.get(candidate_idx) else {
+        break;
+      };
 
-    if cached_audio_path(next_video_id).is_some() {
-      self.prebuffered_id = Some(next_video_id.to_string());
-      return;
-    }
+      let vid_opt = next_track.uri.as_deref()
+        .and_then(extract_youtube_video_id)
+        .or_else(|| next_track.id.as_deref().and_then(extract_youtube_video_id))
+        .or_else(|| {
+          next_track.uri.as_deref().and_then(|u| video_id_from_uri(u).ok().map(str::to_string))
+        });
 
-    self.prebuffering_id = Some(next_video_id.to_string());
-    let source = Arc::clone(&self.source);
-    let vid = next_video_id.to_string();
-    tokio::spawn(async move {
-      let _ = source.prefetch_to_cache(&vid).await;
-    });
+      let Some(next_video_id) = vid_opt else {
+        continue;
+      };
+
+      if self.prebuffering_id.as_deref() == Some(&next_video_id) {
+        break;
+      }
+
+      if cached_audio_path(&next_video_id).is_some() {
+        if self.prebuffered_id.as_deref() != Some(&next_video_id) {
+          self.prebuffered_id = Some(next_video_id);
+        }
+        continue;
+      }
+
+      self.prebuffering_id = Some(next_video_id.clone());
+      let source = Arc::clone(&self.source);
+      let vid = next_video_id;
+      tokio::spawn(async move {
+        let _ = source.prefetch_to_cache(&vid).await;
+      });
+      break;
+    }
   }
 
   /// Turn in-place shuffle on or off — see
@@ -709,12 +713,12 @@ fn download_args(dest: &str, url: &str, fallback: bool) -> Vec<String> {
 
   if has_ffmpeg() {
     args.push("-x".to_string());
-    args.push("--audio-format".to_string());
-    args.push("m4a".to_string());
   }
 
   args.push("--concurrent-fragments".to_string());
   args.push("4".to_string());
+  args.push("--buffer-size".to_string());
+  args.push("16K".to_string());
   args.push("--no-playlist".to_string());
   args.push("--no-warnings".to_string());
   args.push("-o".to_string());
