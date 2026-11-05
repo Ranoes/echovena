@@ -217,13 +217,21 @@ impl KaraokeTimeline {
     /// Pre-calculates and caches algorithmic romanization for all lines and words
     /// so that live 60 FPS karaoke stage rendering has 0ms latency.
     pub fn ensure_romanization(&mut self) {
+        let has_kana = self.lines.iter().any(|l| {
+            l.text.chars().any(|c| ('\u{3040}'..='\u{309F}').contains(&c) || ('\u{30A0}'..='\u{30FF}').contains(&c))
+        });
+        let has_cjk = self.lines.iter().any(|l| {
+            l.text.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c) || ('\u{3400}'..='\u{4DBF}').contains(&c))
+        });
+        let is_chinese = has_cjk && !has_kana;
+
         for line in &mut self.lines {
             let needs_rom = match &line.romanization {
                 None => true,
                 Some(r) => crate::lyrics::romanize::needs_romanization(r),
             };
             if needs_rom {
-                line.romanization = crate::lyrics::romanize::romanize_text(&line.text);
+                line.romanization = crate::lyrics::romanize::romanize_text_with_mode(&line.text, is_chinese);
             }
             for word in &mut line.words {
                 let word_needs_rom = match &word.romanization {
@@ -231,7 +239,7 @@ impl KaraokeTimeline {
                     Some(r) => crate::lyrics::romanize::needs_romanization(r),
                 };
                 if word_needs_rom {
-                    word.romanization = crate::lyrics::romanize::romanize_text(&word.text);
+                    word.romanization = crate::lyrics::romanize::romanize_text_with_mode(&word.text, is_chinese);
                 }
             }
         }

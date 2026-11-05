@@ -46,6 +46,38 @@ pub fn audio_cache_dir() -> Option<PathBuf> {
   app_cache_dir().map(|p| p.join("audio"))
 }
 
+/// Purges all temporary streaming audio files in ~/.cache/echovena/audio.
+/// Returns (files_deleted, bytes_deleted).
+pub fn clear_audio_cache_files() -> std::io::Result<(usize, u64)> {
+  let mut files_deleted = 0;
+  let mut bytes_deleted = 0;
+  if let Some(dir) = audio_cache_dir() {
+    if dir.exists() {
+      if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+          let path = entry.path();
+          if path.is_file() {
+            if let Ok(meta) = entry.metadata() {
+              bytes_deleted += meta.len();
+            }
+            if std::fs::remove_file(&path).is_ok() {
+              files_deleted += 1;
+            }
+          } else if path.is_dir() {
+            let _ = std::fs::remove_dir_all(&path);
+          }
+        }
+      }
+    }
+  }
+  if let Some(sdir) = streaming_cache_dir() {
+    if sdir.exists() {
+      let _ = std::fs::remove_dir_all(&sdir);
+    }
+  }
+  Ok((files_deleted, bytes_deleted))
+}
+
 /// Archive directory for saved lossless audio (~/Music/EchoVena).
 pub fn music_archive_dir() -> Option<PathBuf> {
   dirs::audio_dir()

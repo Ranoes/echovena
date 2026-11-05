@@ -261,6 +261,7 @@ pub const EN: SettingsStrings = SettingsStrings {
   category_icons: "Icons",
   category_keybindings: "Keybindings",
   category_theme: "Theme",
+  category_storage: "Storage & Cache",
   on: "On",
   off: "Off",
   bool_edit_on: "[●] On  [ ] Off",

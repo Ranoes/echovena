@@ -255,6 +255,7 @@ pub const ZH_HANS: SettingsStrings = SettingsStrings {
   category_icons: "图标",
   category_keybindings: "快捷键",
   category_theme: "主题",
+  category_storage: "存储与缓存",
   on: "开",
   off: "关",
   behavior_player_bar_visualizer_name: "播放栏可视化",

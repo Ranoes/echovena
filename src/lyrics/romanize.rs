@@ -341,14 +341,81 @@ fn convert_kanji_to_hiragana(text: &str) -> String {
     out
 }
 
+fn convert_pinyin_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() * 3);
+    for c in text.chars() {
+        if ('\u{4E00}'..='\u{9FFF}').contains(&c) || ('\u{3400}'..='\u{4DBF}').contains(&c) {
+            if let Some(pin) = cjk_data::lookup_pinyin(c) {
+                if !out.is_empty() && !out.ends_with(' ') {
+                    out.push(' ');
+                }
+                out.push_str(pin);
+                out.push(' ');
+            } else {
+                out.push(c);
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Checks whether a text containing CJK ideographs is Chinese (Mandarin) rather than Japanese.
+pub fn is_chinese_text(text: &str) -> bool {
+    let has_kana = text.chars().any(|c| ('\u{3040}'..='\u{309F}').contains(&c) || ('\u{30A0}'..='\u{30FF}').contains(&c));
+    if has_kana {
+        return false;
+    }
+    let has_hangul = text.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c) || ('\u{3131}'..='\u{318E}').contains(&c));
+    if has_hangul {
+        return false;
+    }
+    let has_cjk = text.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c) || ('\u{3400}'..='\u{4DBF}').contains(&c));
+    if !has_cjk {
+        return false;
+    }
+
+    // High-frequency Chinese functional grammatical markers
+    let chinese_markers = [
+        '的', '了', '是', '我', '你', '他', '她', '它', '们', '在', '不', '有', '这', '那', '没',
+        '很', '也', '就', '都', '把', '让', '么', '吗', '吧', '说', '想', '给', '到', '过', '得',
+        '着', '去', '来', '看', '要', '能', '会', '好', '多', '太', '真', '爱', '对', '做', '呢',
+        '还', '再', '与', '从', '为', '以', '所', '自', '已', '经', '里', '外', '上', '下', '前',
+        '后', '天', '人', '年', '月', '日', '时', '分', '秒', '第', '几', '样', '点', '被', '因',
+        '但', '而', '只', '又', '并', '跟', '向', '比', '将', '谁', '听', '唱', '走', '问',
+    ];
+    if text.chars().any(|c| chinese_markers.contains(&c)) {
+        return true;
+    }
+
+    // If it starts with a recognized Japanese compound, treat as Japanese
+    if cjk_data::lookup_compound(text).is_some() {
+        return false;
+    }
+
+    true
+}
+
 /// Romanizes any string containing non-Latin text (Korean, Japanese Kanji/Kana, Chinese, Cyrillic, Greek).
+/// Automatically detects whether CJK text is Chinese or Japanese.
 /// Returns `None` if the text contains no non-Latin characters.
 pub fn romanize_text(text: &str) -> Option<String> {
+    let is_chinese = is_chinese_text(text);
+    romanize_text_with_mode(text, is_chinese)
+}
+
+/// Romanizes text with an explicit language hint (`is_chinese = true` for Mandarin Pinyin, `false` for Japanese Romaji).
+pub fn romanize_text_with_mode(text: &str, is_chinese: bool) -> Option<String> {
     if !needs_romanization(text) {
         return None;
     }
 
-    let preprocessed = convert_kanji_to_hiragana(text);
+    let preprocessed = if is_chinese {
+        convert_pinyin_text(text)
+    } else {
+        convert_kanji_to_hiragana(text)
+    };
 
     let mut out = String::with_capacity(preprocessed.len() * 2);
     let chars: Vec<char> = preprocessed.chars().collect();
@@ -505,6 +572,15 @@ mod tests {
     fn test_chinese_pinyin_romanization() {
         let p = romanize_text("我爱你").unwrap();
         assert_eq!(p, "wo ai ni");
+
+        let p2 = romanize_text("听妈妈的话").unwrap();
+        assert_eq!(p2, "ting ma ma de hua");
+
+        let p3 = romanize_text("我的心").unwrap();
+        assert_eq!(p3, "wo de xin");
+
+        let p4 = romanize_text("明明就 他比较温柔").unwrap();
+        assert_eq!(p4, "ming ming jiu ta bi jiao wen rou");
     }
 
     #[test]

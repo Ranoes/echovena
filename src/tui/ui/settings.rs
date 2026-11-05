@@ -220,6 +220,7 @@ fn draw_settings_list(f: &mut Frame<'_>, app: &App, area: Rect) {
             app.strings().settings.option_label(&setting.id, v)
           ),
           SettingValue::Secret(_) => setting.value.display(),
+          SettingValue::Action(v) => v.clone(),
         }
       };
 

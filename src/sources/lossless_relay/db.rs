@@ -683,6 +683,36 @@ impl Database {
 
         Ok(None)
     }
+
+    /// Clears all cached lyrics and word-synced .elrc timelines from the database.
+    pub fn clear_lyrics_cache(&self) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let count = conn
+            .execute("DELETE FROM lyrics_cache;", [])
+            .context("failed to clear lyrics_cache table")?;
+        Ok(count)
+    }
+
+    /// Clears all cached track resolutions and search matches.
+    pub fn clear_resolution_cache(&self) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let count = conn
+            .execute("DELETE FROM resolution_cache;", [])
+            .context("failed to clear resolution_cache table")?;
+        Ok(count)
+    }
+
+    /// Performs a complete factory reset on the local database (wiping downloaded tracks, playlists, and caches).
+    pub fn reset_all_data(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute("DELETE FROM downloaded_tracks;", []);
+        let _ = conn.execute("DELETE FROM playlist_tracks;", []);
+        let _ = conn.execute("DELETE FROM playlists;", []);
+        let _ = conn.execute("DELETE FROM lyrics_cache;", []);
+        let _ = conn.execute("DELETE FROM resolution_cache;", []);
+        let _ = conn.execute("VACUUM;", []);
+        Ok(())
+    }
 }
 
 #[cfg(test)]

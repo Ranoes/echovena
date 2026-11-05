@@ -270,6 +270,7 @@ pub struct SettingsStrings {
   pub category_icons: &'static str,
   pub category_keybindings: &'static str,
   pub category_theme: &'static str,
+  pub category_storage: &'static str,
   pub on: &'static str,
   pub off: &'static str,
   pub bool_edit_on: &'static str,

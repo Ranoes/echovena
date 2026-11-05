@@ -8,6 +8,7 @@ pub enum SettingsCategory {
   Icons,
   Keybindings,
   Theme,
+  Storage,
 }
 
 impl SettingsCategory {
@@ -17,6 +18,7 @@ impl SettingsCategory {
       SettingsCategory::Icons,
       SettingsCategory::Keybindings,
       SettingsCategory::Theme,
+      SettingsCategory::Storage,
     ]
   }
 
@@ -27,6 +29,7 @@ impl SettingsCategory {
       SettingsCategory::Icons => strings.settings.category_icons,
       SettingsCategory::Keybindings => strings.settings.category_keybindings,
       SettingsCategory::Theme => strings.settings.category_theme,
+      SettingsCategory::Storage => strings.settings.category_storage,
     }
   }
 
@@ -36,6 +39,7 @@ impl SettingsCategory {
       SettingsCategory::Icons => 1,
       SettingsCategory::Keybindings => 2,
       SettingsCategory::Theme => 3,
+      SettingsCategory::Storage => 4,
     }
   }
 
@@ -45,6 +49,7 @@ impl SettingsCategory {
       1 => SettingsCategory::Icons,
       2 => SettingsCategory::Keybindings,
       3 => SettingsCategory::Theme,
+      4 => SettingsCategory::Storage,
       _ => SettingsCategory::Behavior,
     }
   }
@@ -64,6 +69,7 @@ pub enum SettingValue {
   /// A password: shown masked, edited from empty.
   #[cfg_attr(not(feature = "subsonic"), allow(dead_code))]
   Secret(String),
+  Action(String),
 }
 
 /// Derived except for `Secret`, so a debug print never shows a password.
@@ -78,6 +84,7 @@ impl std::fmt::Debug for SettingValue {
       SettingValue::Preset(v) => f.debug_tuple("Preset").field(v).finish(),
       SettingValue::Cycle(v, options) => f.debug_tuple("Cycle").field(v).field(options).finish(),
       SettingValue::Secret(_) => f.write_str("Secret(<hidden>)"),
+      SettingValue::Action(v) => f.debug_tuple("Action").field(v).finish(),
     }
   }
 }
@@ -183,6 +190,7 @@ impl SettingValue {
       SettingValue::Cycle(v, _) => v.clone(),
       SettingValue::Secret(v) if v.is_empty() => String::new(),
       SettingValue::Secret(_) => "••••••••".to_string(),
+      SettingValue::Action(v) => v.clone(),
     }
   }
 }
@@ -760,6 +768,80 @@ impl App {
   }
 
   /// Load settings for the current category into settings_items
+  /// Storage & cache action items
+  pub(crate) fn storage_setting_items(&self) -> Vec<SettingItem> {
+    let audio_dir = crate::core::paths::audio_cache_dir().unwrap_or_default();
+    let db_path = crate::core::paths::library_db_path().unwrap_or_default();
+
+    let mut audio_size_bytes: u64 = 0;
+    let mut audio_file_count: usize = 0;
+    if audio_dir.exists() {
+      if let Ok(entries) = std::fs::read_dir(&audio_dir) {
+        for entry in entries.flatten() {
+          if let Ok(meta) = entry.metadata() {
+            if meta.is_file() {
+              audio_size_bytes += meta.len();
+              audio_file_count += 1;
+            }
+          }
+        }
+      }
+    }
+    let audio_size_mb = audio_size_bytes as f64 / (1024.0 * 1024.0);
+
+    let db_size_bytes: u64 = if db_path.exists() {
+      std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0)
+    } else {
+      0
+    };
+    let db_size_mb = db_size_bytes as f64 / (1024.0 * 1024.0);
+
+    vec![
+      SettingItem {
+        id: "storage.clear_audio_cache".to_string(),
+        name: "Clear Audio Streaming Cache".to_string(),
+        description: format!("Purge temporary stream files ({:.1} MB across {} files)", audio_size_mb, audio_file_count),
+        value: SettingValue::Action("[Press Enter to Clear Audio Cache]".to_string()),
+      },
+      SettingItem {
+        id: "storage.clear_lyrics_cache".to_string(),
+        name: "Clear Lyrics Database Cache".to_string(),
+        description: "Purge locally cached lyrics and word-synced .elrc timelines".to_string(),
+        value: SettingValue::Action("[Press Enter to Clear Lyrics Cache]".to_string()),
+      },
+      SettingItem {
+        id: "storage.clear_resolution_cache".to_string(),
+        name: "Clear Search & Resolution Cache".to_string(),
+        description: "Purge cached YouTube/Lossless ID matches and search results".to_string(),
+        value: SettingValue::Action("[Press Enter to Clear Search Cache]".to_string()),
+      },
+      SettingItem {
+        id: "storage.purge_missing_files".to_string(),
+        name: "Purge Dead / Missing File Records".to_string(),
+        description: "Remove library database entries for downloaded tracks that no longer exist on disk".to_string(),
+        value: SettingValue::Action("[Press Enter to Purge Missing Files]".to_string()),
+      },
+      SettingItem {
+        id: "storage.reset_database".to_string(),
+        name: "Reset All Library Data & History".to_string(),
+        description: "Completely wipes downloaded track records, imported playlists, and caches".to_string(),
+        value: SettingValue::Action("[Press Enter to Factory Reset Database]".to_string()),
+      },
+      SettingItem {
+        id: "storage.audio_cache_path".to_string(),
+        name: "Audio Cache Directory".to_string(),
+        description: audio_dir.to_string_lossy().to_string(),
+        value: SettingValue::String(format!("{:.1} MB in use", audio_size_mb)),
+      },
+      SettingItem {
+        id: "storage.database_path".to_string(),
+        name: "Library SQLite Database".to_string(),
+        description: db_path.to_string_lossy().to_string(),
+        value: SettingValue::String(format!("{:.2} MB in use", db_size_mb)),
+      },
+    ]
+  }
+
   pub fn load_settings_for_category(&mut self) {
     let strings = &self.strings().settings;
     self.settings_items = match self.view.settings_category {
@@ -1227,6 +1309,7 @@ impl App {
           },
         ]
       }
+      SettingsCategory::Storage => self.storage_setting_items(),
     };
     self.view.settings_selected_index = self
       .settings_items

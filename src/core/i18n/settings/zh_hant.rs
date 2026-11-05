@@ -255,6 +255,7 @@ pub const ZH_HANT: SettingsStrings = SettingsStrings {
   category_icons: "圖示",
   category_keybindings: "快速鍵",
   category_theme: "佈景主題",
+  category_storage: "儲存與快取",
   on: "開",
   off: "關",
   behavior_player_bar_visualizer_name: "播放控制列視覺化",
