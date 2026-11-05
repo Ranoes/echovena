@@ -41,10 +41,13 @@ const PLAYBAR_CONTROLS: [PlaybarControl; 8] = [
   PlaybarControl::VolumeUp,
 ];
 #[cfg(feature = "cover-art")]
+#[allow(dead_code)]
 const COVER_ART_CELL_RATIO: f32 = 1.9;
 #[cfg(feature = "cover-art")]
+#[allow(dead_code)]
 const PLAYBAR_TRACK_INFO_ROWS: u16 = 2;
 #[cfg(feature = "cover-art")]
+#[allow(dead_code)]
 const PLAYBAR_PROGRESS_ROWS: u16 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -120,6 +123,7 @@ struct PlaybarLayoutAreas {
 
 #[cfg(feature = "cover-art")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
 struct PlaybarCoverLayout {
   text_area: Rect,
   slot: Rect,
@@ -156,69 +160,21 @@ fn split_playbar_rows(area: Rect) -> (Rect, Rect, Rect) {
 }
 
 fn playbar_layout_areas(app: &App, layout_chunk: Rect) -> PlaybarLayoutAreas {
-  #[cfg(feature = "cover-art")]
-  {
-    // first create margins
-    let [other] = layout_chunk.layout(&Layout::horizontal([Constraint::Fill(1)]).margin(1));
+  let _ = app;
+  let [other] = layout_chunk.layout(&Layout::horizontal([Constraint::Fill(1)]).margin(1));
+  let (artist_area, controls_area, progress_area) = split_playbar_rows(other);
 
-    let (other, cover_art) = if app
-      .user_config
-      .do_draw_cover_art(crate::tui::cover_art::full_image_support())
-    {
-      let cover_layout = playbar_cover_layout(
-        other,
-        app.user_config.behavior.playbar_cover_art_size_percent,
-      );
-      if let Some(rendered_size) =
-        crate::tui::cover_art::size_for(cover_layout.image_area, &app.cover_art)
-      {
-        let cover_layout = cover_layout.with_rendered_size(rendered_size);
-        let (artist_area, controls_area, progress_area) = split_cover_playbar_rows_localized(
-          other,
-          cover_layout.text_area,
-          cover_layout.image_area,
-          &app.user_config.behavior,
-          &app.strings().screens,
-        );
-
-        return PlaybarLayoutAreas {
-          artist_area,
-          controls_area,
-          progress_area,
-          cover_art: Some(cover_layout.image_area),
-        };
-      } else {
-        (other, None)
-      }
-    } else {
-      (other, None)
-    };
-
-    let (artist_area, controls_area, progress_area) = split_playbar_rows(other);
-
-    PlaybarLayoutAreas {
-      artist_area,
-      controls_area,
-      progress_area,
-      cover_art,
-    }
-  }
-
-  #[cfg(not(feature = "cover-art"))]
-  {
-    let _ = app;
-    let [inner] = layout_chunk.layout(&Layout::horizontal([Constraint::Fill(1)]).margin(1));
-    let (artist_area, controls_area, progress_area) = split_playbar_rows(inner);
-
-    PlaybarLayoutAreas {
-      artist_area,
-      controls_area,
-      progress_area,
-    }
+  PlaybarLayoutAreas {
+    artist_area,
+    controls_area,
+    progress_area,
+    #[cfg(feature = "cover-art")]
+    cover_art: None,
   }
 }
 
 #[cfg(feature = "cover-art")]
+#[allow(dead_code)]
 fn playbar_cover_layout(inner: Rect, size_percent: u16) -> PlaybarCoverLayout {
   let size_percent = crate::core::user_config::clamp_playbar_cover_art_size_percent(size_percent);
   let image_height = scaled_cover_art_height(inner.height, size_percent);
@@ -252,6 +208,7 @@ fn playbar_cover_layout(inner: Rect, size_percent: u16) -> PlaybarCoverLayout {
 }
 
 #[cfg(feature = "cover-art")]
+#[allow(dead_code)]
 fn scaled_cover_art_height(available_height: u16, size_percent: u16) -> u16 {
   if available_height == 0 {
     return 0;
@@ -269,6 +226,7 @@ fn scaled_cover_art_height(available_height: u16, size_percent: u16) -> u16 {
 }
 
 #[cfg(feature = "cover-art")]
+#[allow(dead_code)]
 impl PlaybarCoverLayout {
   fn with_rendered_size(self, rendered_size: Rect) -> Self {
     Self {
@@ -279,6 +237,7 @@ impl PlaybarCoverLayout {
 }
 
 #[cfg(feature = "cover-art")]
+#[allow(dead_code)]
 fn bottom_aligned_rect_within(bounds: Rect, size: Rect) -> Rect {
   let width = size.width.min(bounds.width);
   let height = size.height.min(bounds.height);
@@ -292,6 +251,7 @@ fn bottom_aligned_rect_within(bounds: Rect, size: Rect) -> Rect {
 }
 
 #[cfg(feature = "cover-art")]
+#[allow(dead_code)]
 fn split_cover_playbar_rows_localized(
   inner: Rect,
   text_area: Rect,
@@ -333,6 +293,7 @@ fn split_cover_playbar_rows_localized(
 }
 
 #[cfg(feature = "cover-art")]
+#[allow(dead_code)]
 fn cover_playbar_controls_area_localized(
   inner: Rect,
   text_area: Rect,
@@ -365,6 +326,7 @@ fn cover_playbar_controls_area_localized(
 }
 
 #[cfg(feature = "cover-art")]
+#[allow(dead_code)]
 fn cover_playbar_artist_area(
   text_area: Rect,
   image_area: Rect,

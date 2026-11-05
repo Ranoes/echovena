@@ -105,6 +105,7 @@ pub fn render(f: &mut Frame, area: Rect, store: &CoverArtStore, config: &UserCon
 }
 
 /// Measure the playbar image's fitted size, so the layout can size its slot.
+#[allow(dead_code)]
 pub fn size_for(area: Rect, store: &CoverArtStore) -> Option<Rect> {
   let renderer = RENDERER.get()?;
   renderer.surface_size_for(&renderer.playbar, area, Resize::Fit(None), store)

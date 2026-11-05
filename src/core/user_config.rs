@@ -1318,7 +1318,7 @@ impl UserConfig {
         #[cfg(feature = "art-decode")]
         draw_cover_art: true,
         #[cfg(feature = "art-decode")]
-        draw_cover_art_forced: false,
+        draw_cover_art_forced: true,
         #[cfg(feature = "art-decode")]
         playbar_cover_art_size_percent: 100,
         #[cfg(feature = "art-decode")]
