@@ -585,8 +585,6 @@ pub fn open_album_drilldown(app: &mut App, album_id: &str, title: &str, year: &O
     }
   }
 
-  let need_fetch = tracks.is_empty();
-
   app.view.search_drilldown = SearchDrilldown::AlbumDetail {
     album_id: album_id.to_string(),
     title: title.to_string(),
@@ -598,12 +596,10 @@ pub fn open_album_drilldown(app: &mut App, album_id: &str, title: &str, year: &O
     from_artist: prev_drilldown,
   };
 
-  if need_fetch {
-    app.dispatch(crate::infra::network::IoEvent::FetchAlbumDetail(
-      album_id.to_string(),
-      title.to_string(),
-    ));
-  }
+  app.dispatch(crate::infra::network::IoEvent::FetchAlbumDetail(
+    album_id.to_string(),
+    title.to_string(),
+  ));
 }
 
 pub fn open_artist_drilldown(app: &mut App, artist_id: &str, name: &str) {
@@ -630,8 +626,6 @@ pub fn open_artist_drilldown(app: &mut App, artist_id: &str, name: &str) {
     }
   }
 
-  let need_fetch = top_songs.is_empty() || albums.is_empty();
-
   app.view.search_drilldown = SearchDrilldown::ArtistDetail {
     artist_id: artist_id.to_string(),
     name: name.to_string(),
@@ -641,12 +635,10 @@ pub fn open_artist_drilldown(app: &mut App, artist_id: &str, name: &str) {
     selected_index: 0,
   };
 
-  if need_fetch {
-    app.dispatch(crate::infra::network::IoEvent::FetchArtistDetail(
-      artist_id.to_string(),
-      name.to_string(),
-    ));
-  }
+  app.dispatch(crate::infra::network::IoEvent::FetchArtistDetail(
+    artist_id.to_string(),
+    name.to_string(),
+  ));
 }
 
 fn handle_drilldown_events(key: Key, app: &mut App) {
@@ -726,17 +718,25 @@ fn handle_drilldown_events(key: Key, app: &mut App) {
                 uris,
                 offset: Some(selected_index),
               });
-              app.set_status_message(format!("Playing '{}' from album '{}'", track.name, title), 4);
+              app.track_table.tracks = tracks.clone();
+              app.track_table.context = Some(crate::core::app::TrackTableContext::AlbumSearch);
+              app.set_status_message(format!("Playing '{}' from album '{}' ({}/{})", track.name, title, selected_index + 1, tracks.len()), 4);
             }
           }
         }
-        SearchDrilldown::ArtistDetail { top_songs, albums, focus_section, selected_index, .. } => {
+        SearchDrilldown::ArtistDetail { top_songs, albums, focus_section, selected_index, name, .. } => {
           match focus_section {
             ArtistDetailSection::TopSongs => {
               if let Some(track) = top_songs.get(selected_index) {
-                if let Some(ref uri) = track.uri {
-                  app.apply(Action::PlayUris { uris: vec![uri.clone()], offset: Some(0) });
-                  app.set_status_message(format!("Playing '{}'", track.name), 4);
+                let uris: Vec<String> = top_songs.iter().filter_map(|t| t.uri.clone().or_else(|| t.id.clone())).collect();
+                if !uris.is_empty() {
+                  app.apply(Action::PlayUris {
+                    uris,
+                    offset: Some(selected_index),
+                  });
+                  app.track_table.tracks = top_songs.clone();
+                  app.track_table.context = Some(crate::core::app::TrackTableContext::YouTubePlaylist);
+                  app.set_status_message(format!("Playing '{}' by {} ({}/{})", track.name, name, selected_index + 1, top_songs.len()), 4);
                 }
               }
             }

@@ -951,6 +951,12 @@ async fn start_youtube_queue(app: &Arc<Mutex<App>>, uris: &[String], start_idx: 
       .map(|p| p.items.as_slice());
     let mut all_pool = guard.track_table.tracks.clone();
     all_pool.extend(live_tracks);
+    if let crate::core::app::SearchDrilldown::AlbumDetail { ref tracks, .. } = guard.view.search_drilldown {
+      all_pool.extend(tracks.clone());
+    }
+    if let crate::core::app::SearchDrilldown::ArtistDetail { ref top_songs, .. } = guard.view.search_drilldown {
+      all_pool.extend(top_songs.clone());
+    }
     snapshot_tracks(&all_pool, search, uris)
   };
   if tracks.is_empty() {
@@ -1460,12 +1466,28 @@ pub(crate) async fn refetch_active_karaoke_lyrics(
 }
 
 pub(crate) async fn fetch_album_drilldown(app: &Arc<Mutex<App>>, album_id: &str, title: &str) {
-  let client = crate::sources::youtube_search::InnerTubeClient::new();
+  let importer = crate::sources::lossless_relay::youtube_importer::YouTubeImporter::new();
   let mut tracks = Vec::new();
+  let mut album_artist_opt = None;
+  let mut year_opt = None;
+  let mut cover_opt = None;
 
   let clean_bid = album_id.strip_prefix("yt:browse:").unwrap_or(album_id);
-  if clean_bid.starts_with("MPREb_") || clean_bid.starts_with("VL") {
-    let importer = crate::sources::lossless_relay::youtube_importer::YouTubeImporter::new();
+
+  // 1. Try dedicated album browse (handles MPREb_ album containers with twoColumnBrowseResultsRenderer)
+  if let Ok((_alb_title, alb_artist, yr, cover, alb_tracks)) = importer.fetch_innertube_album(clean_bid).await {
+    if !alb_tracks.is_empty() {
+      tracks = alb_tracks;
+      if !alb_artist.is_empty() {
+        album_artist_opt = Some(alb_artist);
+      }
+      year_opt = yr;
+      cover_opt = cover;
+    }
+  }
+
+  // 2. Fallback to playlist browse (VL / PL / OLAK5uy_) if empty
+  if tracks.is_empty() && (clean_bid.starts_with("VL") || clean_bid.starts_with("PL") || clean_bid.starts_with("OLAK5uy_")) {
     if let Ok((_pl, pl_tracks)) = importer.fetch_innertube_playlist(clean_bid).await {
       for t in pl_tracks {
         tracks.push(TrackInfo {
@@ -1489,7 +1511,9 @@ pub(crate) async fn fetch_album_drilldown(app: &Arc<Mutex<App>>, album_id: &str,
     }
   }
 
+  // 3. Fallback: Search album query on InnerTube
   if tracks.is_empty() {
+    let client = crate::sources::youtube_search::InnerTubeClient::new();
     let query = format!("{} album", title);
     if let Ok(results) = client.search(&query, crate::sources::youtube_search::types::SearchScope::Music).await {
       for r in results {
@@ -1521,52 +1545,124 @@ pub(crate) async fn fetch_album_drilldown(app: &Arc<Mutex<App>>, album_id: &str,
   if let crate::core::app::SearchDrilldown::AlbumDetail {
     tracks: ref mut cur_tracks,
     album_id: ref cur_id,
+    artist: ref mut cur_artist,
+    year: ref mut cur_year,
+    cover_art_url: ref mut cur_cover,
     ..
   } = guard.view.search_drilldown {
     if cur_id == album_id || cur_tracks.is_empty() {
       *cur_tracks = tracks;
+      if let Some(a) = album_artist_opt {
+        if cur_artist.is_empty() {
+          *cur_artist = a;
+        }
+      }
+      if cur_year.is_none() && year_opt.is_some() {
+        *cur_year = year_opt;
+      }
+      if cur_cover.is_none() && cover_opt.is_some() {
+        *cur_cover = cover_opt;
+      }
     }
   }
 }
 
 pub(crate) async fn fetch_artist_drilldown(app: &Arc<Mutex<App>>, artist_id: &str, name: &str) {
+  let importer = crate::sources::lossless_relay::youtube_importer::YouTubeImporter::new();
   let client = crate::sources::youtube_search::InnerTubeClient::new();
   let mut top_songs = Vec::new();
-  if let Ok(results) = client.search(name, crate::sources::youtube_search::types::SearchScope::Music).await {
-    for r in results.into_iter().take(20) {
-      if let Some(vid) = r.video_id {
-        let uri = format!("yt:video:{}", vid);
-        top_songs.push(TrackInfo {
-          uri: Some(uri.clone()),
-          name: r.title,
-          artists: vec![r.artist],
-          album: r.album.unwrap_or_default(),
-          duration_ms: r.duration_ms.max(0) as u64,
-          id: Some(uri),
-          album_id: None,
-          artist_refs: Vec::new(),
-          is_playable: true,
-          is_local: false,
-          track_number: 1,
-          explicit: false,
-          image_url: r.thumbnail_url,
-          release_date: None,
-          generated_name: None,
-        });
+  let mut albums = Vec::new();
+
+  let clean_bid = artist_id.strip_prefix("yt:browse:").unwrap_or(artist_id);
+
+  // 1. If artist_id has a UC channel browse ID, fetch directly from InnerTube
+  if clean_bid.starts_with("UC") || clean_bid.starts_with("FEmusic_") {
+    if let Ok((_name, songs, albs)) = importer.fetch_innertube_artist(clean_bid).await {
+      if !songs.is_empty() || !albs.is_empty() {
+        top_songs = songs;
+        albums = albs;
       }
     }
   }
 
-  let mut albums = Vec::new();
-  if let Ok(results) = client.search(name, crate::sources::youtube_search::types::SearchScope::Album).await {
-    for r in results.into_iter().take(15) {
-      let id = r.playlist_id.unwrap_or_else(|| r.id.clone());
-      albums.push(crate::core::app::AlbumDetailHeader {
-        id,
-        title: r.title,
-        year: None,
-        track_count: 0,
+  // 2. If browseId was not directly available, search for the artist's official channel ID
+  if top_songs.is_empty() && albums.is_empty() {
+    if let Ok(artist_results) = client.search(name, crate::sources::youtube_search::types::SearchScope::Artist).await {
+      let matched = artist_results.into_iter().find(|r| {
+        let title_lower = r.title.to_lowercase();
+        let name_lower = name.to_lowercase();
+        title_lower == name_lower || title_lower.contains(&name_lower) || name_lower.contains(&title_lower)
       });
+      if let Some(art) = matched {
+        let channel_id = art.playlist_id.as_deref().unwrap_or(&art.id);
+        let clean_cid = channel_id.strip_prefix("yt:browse:").unwrap_or(channel_id);
+        if clean_cid.starts_with("UC") {
+          if let Ok((_name, songs, albs)) = importer.fetch_innertube_artist(clean_cid).await {
+            top_songs = songs;
+            albums = albs;
+          }
+        }
+      }
+    }
+  }
+
+  // 3. Fallback: Search Scope::Music and Scope::Album with STRICT ARTIST MATCHING
+  if top_songs.is_empty() {
+    if let Ok(results) = client.search(name, crate::sources::youtube_search::types::SearchScope::Music).await {
+      for r in results.into_iter() {
+        let artist_match = r.artist.to_lowercase().contains(&name.to_lowercase())
+          || name.to_lowercase().contains(&r.artist.to_lowercase());
+        if !artist_match {
+          continue;
+        }
+        if let Some(vid) = r.video_id {
+          let uri = format!("yt:video:{}", vid);
+          top_songs.push(TrackInfo {
+            uri: Some(uri.clone()),
+            name: r.title,
+            artists: vec![r.artist],
+            album: r.album.unwrap_or_default(),
+            duration_ms: r.duration_ms.max(0) as u64,
+            id: Some(uri),
+            album_id: None,
+            artist_refs: Vec::new(),
+            is_playable: true,
+            is_local: false,
+            track_number: 1,
+            explicit: false,
+            image_url: r.thumbnail_url,
+            release_date: None,
+            generated_name: None,
+          });
+          if top_songs.len() >= 25 {
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  if albums.is_empty() {
+    if let Ok(results) = client.search(name, crate::sources::youtube_search::types::SearchScope::Album).await {
+      for r in results.into_iter() {
+        let artist_match = r.artist.to_lowercase().contains(&name.to_lowercase())
+          || name.to_lowercase().contains(&r.artist.to_lowercase());
+        if !artist_match {
+          continue;
+        }
+        let id = r.playlist_id.unwrap_or_else(|| r.id.clone());
+        if !albums.iter().any(|a| a.title.eq_ignore_ascii_case(&r.title)) {
+          albums.push(crate::core::app::AlbumDetailHeader {
+            id,
+            title: r.title,
+            year: None,
+            track_count: 0,
+          });
+        }
+        if albums.len() >= 20 {
+          break;
+        }
+      }
     }
   }
 

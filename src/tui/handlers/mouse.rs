@@ -170,6 +170,20 @@ fn handle_content_table_mouse(
     return;
   }
 
+  // 1. Dedicated tree playlists panel
+  if active_block == ActiveBlock::Playlists {
+    handle_playlists_panel_mouse(mouse, table_area, app);
+    return;
+  }
+
+  // 2. Search drilldown (AlbumDetail & ArtistDetail)
+  if active_block == ActiveBlock::SearchResultBlock
+    && app.view.search_drilldown != crate::core::app::SearchDrilldown::None
+  {
+    handle_search_drilldown_mouse(mouse, table_area, app);
+    return;
+  }
+
   let item_count = content_table_item_count(active_block, app);
   if item_count == 0 {
     return;
@@ -189,6 +203,184 @@ fn handle_content_table_mouse(
       select_clicked_content_table_item(active_block, mouse.row, table_area, item_count, app);
     }
     _ => {}
+  }
+}
+
+fn handle_playlists_panel_mouse(mouse: MouseEvent, table_area: Rect, app: &mut App) {
+  if table_area.height < 5 {
+    return;
+  }
+  let [header_area, list_area, _footer_area] = table_area.layout(&Layout::vertical([
+    Constraint::Length(3),
+    Constraint::Min(5),
+    Constraint::Length(2),
+  ]));
+
+  focus_content_table(ActiveBlock::Playlists, app);
+
+  match mouse.kind {
+    MouseEventKind::ScrollDown => {
+      super::handle_block_events(Key::Down, app);
+    }
+    MouseEventKind::ScrollUp => {
+      super::handle_block_events(Key::Up, app);
+    }
+    MouseEventKind::Down(MouseButton::Left) => {
+      // 1. Check if click landed on header tabs (row header_area.y + 1)
+      if mouse.row == header_area.y.saturating_add(1) && mouse.column >= header_area.x {
+        let tabs_start = header_area.x.saturating_add(25);
+        if mouse.column >= tabs_start {
+          let col = mouse.column - tabs_start;
+          let clicked_tab = if col < 24 {
+            0 // EchoVena / Local
+          } else if col < 48 {
+            1 // Spotify (Imported)
+          } else {
+            2 // YouTube & YTMusic
+          };
+          if app.view.playlist_panel_tab != clicked_tab {
+            app.view.playlist_panel_tab = clicked_tab;
+            app.view.selected_playlist_index = Some(0);
+            app.view.playlist_scroll_offset.set(0);
+          }
+          return;
+        }
+      }
+
+      // 2. Check if click landed inside list_area
+      let inner_top = list_area.y.saturating_add(1);
+      let inner_bottom = list_area.y.saturating_add(list_area.height).saturating_sub(1);
+      if mouse.row >= inner_top && mouse.row < inner_bottom {
+        let row_in_view = (mouse.row - inner_top) as usize;
+        let scroll_offset = app.view.playlist_scroll_offset.get();
+        let clicked_index = scroll_offset + row_in_view;
+        let items_len = crate::tui::handlers::playlist::get_playlist_tree_items(app).len();
+        if clicked_index < items_len {
+          let was_selected = app.view.selected_playlist_index == Some(clicked_index);
+          app.view.selected_playlist_index = Some(clicked_index);
+          if was_selected {
+            super::handle_block_events(Key::Enter, app);
+          }
+        }
+      }
+    }
+    _ => {}
+  }
+}
+
+fn handle_search_drilldown_mouse(mouse: MouseEvent, table_area: Rect, app: &mut App) {
+  focus_content_table(ActiveBlock::SearchResultBlock, app);
+
+  match &mut app.view.search_drilldown {
+    crate::core::app::SearchDrilldown::None => {}
+    crate::core::app::SearchDrilldown::AlbumDetail { tracks, selected_index, .. } => {
+      if table_area.height < 6 {
+        return;
+      }
+      let [_header_area, list_area, _footer_area] = table_area.layout(&Layout::vertical([
+        Constraint::Length(4),
+        Constraint::Min(5),
+        Constraint::Length(2),
+      ]));
+
+      match mouse.kind {
+        MouseEventKind::ScrollDown => {
+          super::handle_block_events(Key::Down, app);
+        }
+        MouseEventKind::ScrollUp => {
+          super::handle_block_events(Key::Up, app);
+        }
+        MouseEventKind::Down(MouseButton::Left) => {
+          let inner_top = list_area.y.saturating_add(1);
+          let inner_bottom = list_area.y.saturating_add(list_area.height).saturating_sub(1);
+          if mouse.row >= inner_top && mouse.row < inner_bottom {
+            let visible_height = list_area.height.saturating_sub(2) as usize;
+            let scroll_y = if *selected_index >= visible_height && visible_height > 0 {
+              *selected_index - visible_height + 1
+            } else {
+              0
+            };
+            let row_in_view = (mouse.row - inner_top) as usize;
+            let clicked_index = scroll_y + row_in_view;
+            if clicked_index < tracks.len() {
+              let was_selected = *selected_index == clicked_index;
+              *selected_index = clicked_index;
+              if was_selected {
+                super::handle_block_events(Key::Enter, app);
+              }
+            }
+          }
+        }
+        _ => {}
+      }
+    }
+    crate::core::app::SearchDrilldown::ArtistDetail {
+      top_songs,
+      albums,
+      focus_section,
+      selected_index,
+      ..
+    } => {
+      if table_area.height < 5 {
+        return;
+      }
+      let [_header_area, content_area, _footer_area] = table_area.layout(&Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(5),
+        Constraint::Length(2),
+      ]));
+
+      let half_width = content_area.width / 2;
+      let is_left_column = mouse.column < content_area.x + half_width;
+
+      match mouse.kind {
+        MouseEventKind::ScrollDown => {
+          if is_left_column {
+            *focus_section = crate::core::app::ArtistDetailSection::TopSongs;
+          } else {
+            *focus_section = crate::core::app::ArtistDetailSection::Albums;
+          }
+          super::handle_block_events(Key::Down, app);
+        }
+        MouseEventKind::ScrollUp => {
+          if is_left_column {
+            *focus_section = crate::core::app::ArtistDetailSection::TopSongs;
+          } else {
+            *focus_section = crate::core::app::ArtistDetailSection::Albums;
+          }
+          super::handle_block_events(Key::Up, app);
+        }
+        MouseEventKind::Down(MouseButton::Left) => {
+          let inner_top = content_area.y.saturating_add(1);
+          let inner_bottom = content_area.y.saturating_add(content_area.height).saturating_sub(1);
+          if mouse.row >= inner_top && mouse.row < inner_bottom {
+            let row_in_view = (mouse.row - inner_top) as usize;
+            if is_left_column {
+              let was_section = *focus_section == crate::core::app::ArtistDetailSection::TopSongs;
+              *focus_section = crate::core::app::ArtistDetailSection::TopSongs;
+              if row_in_view < top_songs.len() {
+                let was_selected = was_section && *selected_index == row_in_view;
+                *selected_index = row_in_view;
+                if was_selected {
+                  super::handle_block_events(Key::Enter, app);
+                }
+              }
+            } else {
+              let was_section = *focus_section == crate::core::app::ArtistDetailSection::Albums;
+              *focus_section = crate::core::app::ArtistDetailSection::Albums;
+              if row_in_view < albums.len() {
+                let was_selected = was_section && *selected_index == row_in_view;
+                *selected_index = row_in_view;
+                if was_selected {
+                  super::handle_block_events(Key::Enter, app);
+                }
+              }
+            }
+          }
+        }
+        _ => {}
+      }
+    }
   }
 }
 
@@ -567,7 +759,7 @@ fn select_clicked_content_table_item(
 
   let was_selected = content_table_selected_index(active_block, app) == clicked_index;
   set_content_table_selected_index(active_block, clicked_index, app);
-  if was_selected || matches!(active_block, ActiveBlock::Playlists | ActiveBlock::SearchResultBlock) {
+  if was_selected {
     super::handle_block_events(Key::Enter, app);
   }
 }

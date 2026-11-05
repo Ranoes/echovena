@@ -1,3 +1,5 @@
+use crate::core::app::AlbumDetailHeader;
+use crate::core::plugin_api::TrackInfo;
 use crate::sources::lossless_relay::db::{Database, ImportedPlaylist, PlaylistTrack};
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
@@ -248,7 +250,11 @@ impl YouTubeImporter {
         &self,
         playlist_id: &str,
     ) -> Result<(ImportedPlaylist, Vec<PlaylistTrack>)> {
-        let browse_id = if playlist_id.starts_with("VL") {
+        let browse_id = if playlist_id.starts_with("VL")
+            || playlist_id.starts_with("MPREb_")
+            || playlist_id.starts_with("UC")
+            || playlist_id.starts_with("FEmusic_")
+        {
             playlist_id.to_string()
         } else {
             format!("VL{}", playlist_id)
@@ -416,6 +422,413 @@ impl YouTubeImporter {
         };
 
         Ok((playlist, tracks))
+    }
+
+    /// Extract album information and full tracklist from YouTube Music InnerTube browse endpoint
+    pub async fn fetch_innertube_album(
+        &self,
+        album_id: &str,
+    ) -> Result<(String, String, Option<String>, Option<String>, Vec<TrackInfo>)> {
+        let clean_bid = album_id.strip_prefix("yt:browse:").unwrap_or(album_id);
+        let browse_id = clean_bid.to_string();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(USER_AGENT, HeaderValue::from_static(DEFAULT_USER_AGENT));
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        if let Some(cookie_str) = crate::sources::sync::auth::YouTubeAuthHandler::resolve_cookie_header() {
+            if let Ok(val) = HeaderValue::from_str(&cookie_str) {
+                headers.insert(reqwest::header::COOKIE, val);
+            }
+        }
+
+        let payload = serde_json::json!({
+            "context": {
+                "client": {
+                    "clientName": "WEB_REMIX",
+                    "clientVersion": "1.20240401.01.00",
+                    "hl": "en",
+                    "gl": "US"
+                }
+            },
+            "browseId": browse_id
+        });
+
+        let resp = self
+            .client
+            .post(YTM_BROWSE_URL)
+            .headers(headers)
+            .json(&payload)
+            .send()
+            .await
+            .context("failed to execute InnerTube album browse request")?;
+
+        if !resp.status().is_success() {
+            return Err(anyhow!("InnerTube album browse returned status {}", resp.status()));
+        }
+
+        let body: Value = resp.json().await.context("failed to parse InnerTube JSON response")?;
+
+        let mut album_title = String::new();
+        let mut album_artist = String::new();
+        let mut release_year = None;
+        let mut cover_art_url = None;
+
+        // Try twoColumnBrowseResultsRenderer (standard for MPREb_ albums)
+        let two_col = &body["contents"]["twoColumnBrowseResultsRenderer"];
+        if let Some(tabs) = two_col["tabs"].as_array() {
+            if let Some(tab) = tabs.first() {
+                let sec_contents = &tab["tabRenderer"]["content"]["sectionListRenderer"]["contents"];
+                if let Some(first_sec) = sec_contents.as_array().and_then(|a| a.first()) {
+                    let header = &first_sec["musicResponsiveHeaderRenderer"];
+                    if !header.is_null() {
+                        if let Some(t) = header["title"]["runs"][0]["text"].as_str() {
+                            album_title = t.to_string();
+                        }
+                        if let Some(a) = header["straplineTextOne"]["runs"][0]["text"].as_str() {
+                            album_artist = a.to_string();
+                        } else if let Some(runs) = header["subtitle"]["runs"].as_array() {
+                            if let Some(first) = runs.first().and_then(|r| r["text"].as_str()) {
+                                if first != "Album" && first != "Single" && first != "EP" {
+                                    album_artist = first.to_string();
+                                }
+                            }
+                        }
+                        if let Some(runs) = header["subtitle"]["runs"].as_array() {
+                            for r in runs {
+                                if let Some(txt) = r["text"].as_str() {
+                                    let trimmed = txt.trim();
+                                    if trimmed.len() == 4 && trimmed.chars().all(|c| c.is_ascii_digit()) {
+                                        release_year = Some(trimmed.to_string());
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        cover_art_url = header["thumbnail"]["musicThumbnailRenderer"]["thumbnail"]["thumbnails"]
+                            .as_array()
+                            .and_then(|arr| arr.last())
+                            .and_then(|t| t["url"].as_str())
+                            .map(|s| s.to_string());
+                    }
+                }
+            }
+        }
+
+        // Fallback header from top-level header object
+        if album_title.is_empty() {
+            let header = &body["header"]["musicDetailHeaderRenderer"];
+            if let Some(t) = header["title"]["runs"][0]["text"].as_str() {
+                album_title = t.to_string();
+            }
+            if let Some(a) = header["subtitle"]["runs"][0]["text"].as_str() {
+                album_artist = a.to_string();
+            }
+            cover_art_url = header["thumbnail"]["croppedSquareThumbnailRenderer"]["thumbnail"]["thumbnails"]
+                .as_array()
+                .and_then(|arr| arr.last())
+                .and_then(|t| t["url"].as_str())
+                .map(|s| s.to_string());
+        }
+
+        let mut tracks = Vec::new();
+
+        // 1. Check secondaryContents (twoColumnBrowseResultsRenderer)
+        let sec_items = two_col["secondaryContents"]["sectionListRenderer"]["contents"].as_array();
+        let items = sec_items
+            .and_then(|arr| arr.first())
+            .and_then(|sec| {
+                sec["musicShelfRenderer"]["contents"].as_array()
+                    .or_else(|| sec["musicPlaylistShelfRenderer"]["contents"].as_array())
+            })
+            // 2. Check singleColumnBrowseResultsRenderer fallback
+            .or_else(|| {
+                let single_contents = &body["contents"]["singleColumnBrowseResultsRenderer"]["tabs"][0]
+                    ["tabRenderer"]["content"]["sectionListRenderer"]["contents"][0];
+                single_contents["musicPlaylistShelfRenderer"]["contents"].as_array()
+                    .or_else(|| single_contents["musicShelfRenderer"]["contents"].as_array())
+            });
+
+        if let Some(item_list) = items {
+            for (idx, item) in item_list.iter().enumerate() {
+                let renderer = &item["musicResponsiveListItemRenderer"];
+                if renderer.is_null() {
+                    continue;
+                }
+
+                let video_id = renderer["playlistItemData"]["videoId"]
+                    .as_str()
+                    .or_else(|| {
+                        renderer["overlay"]["musicItemThumbnailOverlayRenderer"]["content"]
+                            ["musicPlayButtonRenderer"]["playNavigationEndpoint"]["watchEndpoint"]
+                            ["videoId"]
+                            .as_str()
+                    });
+
+                let flex_cols = renderer["flexColumns"].as_array();
+                let raw_title = flex_cols
+                    .and_then(|cols| cols.first())
+                    .and_then(|col| {
+                        col["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"][0]["text"]
+                            .as_str()
+                    })
+                    .unwrap_or("Unknown Title");
+
+                let raw_duration = renderer["fixedColumns"]
+                    .as_array()
+                    .and_then(|cols| cols.first())
+                    .and_then(|col| {
+                        col["musicResponsiveListItemFixedColumnRenderer"]["text"]["runs"][0]["text"]
+                            .as_str()
+                    })
+                    .or_else(|| {
+                        flex_cols
+                            .and_then(|cols| cols.get(1))
+                            .and_then(|col| {
+                                col["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"]
+                                    .as_array()
+                            })
+                            .and_then(|runs| runs.last())
+                            .and_then(|r| r["text"].as_str())
+                    })
+                    .unwrap_or("0:00");
+
+                let duration_ms = parse_duration_str(raw_duration);
+                let (clean_artist, clean_title) = clean_youtube_title(raw_title, Some(&album_artist));
+                let artist_to_use = if clean_artist.is_empty() {
+                    if album_artist.is_empty() { "Unknown Artist".to_string() } else { album_artist.clone() }
+                } else {
+                    clean_artist
+                };
+
+                let uri = video_id
+                    .map(|vid| format!("yt:video:{}", vid))
+                    .unwrap_or_else(|| format!("yt:track:{}", clean_title));
+
+                tracks.push(TrackInfo {
+                    uri: Some(uri.clone()),
+                    name: clean_title,
+                    artists: vec![artist_to_use],
+                    album: album_title.clone(),
+                    duration_ms: duration_ms.max(0) as u64,
+                    id: Some(uri),
+                    album_id: Some(clean_bid.to_string()),
+                    artist_refs: Vec::new(),
+                    is_playable: video_id.is_some(),
+                    is_local: false,
+                    track_number: (idx + 1) as u32,
+                    explicit: false,
+                    image_url: cover_art_url.clone(),
+                    release_date: release_year.clone(),
+                    generated_name: None,
+                });
+            }
+        }
+
+        Ok((album_title, album_artist, release_year, cover_art_url, tracks))
+    }
+
+    /// Extract artist profile, official top songs, and albums from YouTube Music InnerTube browse endpoint
+    pub async fn fetch_innertube_artist(
+        &self,
+        artist_id: &str,
+    ) -> Result<(String, Vec<TrackInfo>, Vec<AlbumDetailHeader>)> {
+        let clean_bid = artist_id.strip_prefix("yt:browse:").unwrap_or(artist_id);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(USER_AGENT, HeaderValue::from_static(DEFAULT_USER_AGENT));
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        if let Some(cookie_str) = crate::sources::sync::auth::YouTubeAuthHandler::resolve_cookie_header() {
+            if let Ok(val) = HeaderValue::from_str(&cookie_str) {
+                headers.insert(reqwest::header::COOKIE, val);
+            }
+        }
+
+        let payload = serde_json::json!({
+            "context": {
+                "client": {
+                    "clientName": "WEB_REMIX",
+                    "clientVersion": "1.20240401.01.00",
+                    "hl": "en",
+                    "gl": "US"
+                }
+            },
+            "browseId": clean_bid
+        });
+
+        let resp = self
+            .client
+            .post(YTM_BROWSE_URL)
+            .headers(headers)
+            .json(&payload)
+            .send()
+            .await
+            .context("failed to execute InnerTube artist browse request")?;
+
+        if !resp.status().is_success() {
+            return Err(anyhow!("InnerTube artist browse returned status {}", resp.status()));
+        }
+
+        let body: Value = resp.json().await.context("failed to parse InnerTube JSON response")?;
+
+        // Extract artist name
+        let header = &body["header"]["musicImmersiveHeaderRenderer"];
+        let visual_header = &body["header"]["musicVisualHeaderRenderer"];
+        let artist_name = header["title"]["runs"][0]["text"]
+            .as_str()
+            .or_else(|| visual_header["title"]["runs"][0]["text"].as_str())
+            .unwrap_or("Artist")
+            .to_string();
+
+        let mut top_songs = Vec::new();
+        let mut albums = Vec::new();
+
+        let contents = body["contents"]["singleColumnBrowseResultsRenderer"]["tabs"][0]
+            ["tabRenderer"]["content"]["sectionListRenderer"]["contents"]
+            .as_array();
+
+        if let Some(sections) = contents {
+            for sec in sections {
+                // 1. MusicShelfRenderer (Top Songs)
+                if let Some(shelf) = sec.get("musicShelfRenderer") {
+                    let title = shelf["title"]["runs"][0]["text"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_lowercase();
+                    if title.contains("song") || top_songs.is_empty() {
+                        if let Some(items) = shelf["contents"].as_array() {
+                            for (idx, item) in items.iter().enumerate() {
+                                let renderer = &item["musicResponsiveListItemRenderer"];
+                                if renderer.is_null() {
+                                    continue;
+                                }
+
+                                let video_id = renderer["playlistItemData"]["videoId"]
+                                    .as_str()
+                                    .or_else(|| {
+                                        renderer["overlay"]["musicItemThumbnailOverlayRenderer"]["content"]
+                                            ["musicPlayButtonRenderer"]["playNavigationEndpoint"]
+                                            ["watchEndpoint"]["videoId"]
+                                            .as_str()
+                                    });
+
+                                let flex_cols = renderer["flexColumns"].as_array();
+                                let raw_title = flex_cols
+                                    .and_then(|cols| cols.first())
+                                    .and_then(|col| {
+                                        col["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"][0]["text"]
+                                            .as_str()
+                                    })
+                                    .unwrap_or("Unknown Title");
+
+                                let raw_duration = renderer["fixedColumns"]
+                                    .as_array()
+                                    .and_then(|cols| cols.first())
+                                    .and_then(|col| {
+                                        col["musicResponsiveListItemFixedColumnRenderer"]["text"]["runs"][0]["text"]
+                                            .as_str()
+                                    })
+                                    .or_else(|| {
+                                        flex_cols
+                                            .and_then(|cols| cols.get(1))
+                                            .and_then(|col| {
+                                                col["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"]
+                                                    .as_array()
+                                            })
+                                            .and_then(|runs| runs.last())
+                                            .and_then(|r| r["text"].as_str())
+                                    })
+                                    .unwrap_or("0:00");
+
+                                let (clean_art, clean_title) = clean_youtube_title(raw_title, Some(&artist_name));
+                                let duration_ms = parse_duration_str(raw_duration);
+                                let uri = video_id
+                                    .map(|vid| format!("yt:video:{}", vid))
+                                    .unwrap_or_else(|| format!("yt:track:{}", clean_title));
+
+                                let thumbnail_url = renderer["thumbnail"]["musicThumbnailRenderer"]["thumbnail"]["thumbnails"]
+                                    .as_array()
+                                    .and_then(|arr| arr.last())
+                                    .and_then(|t| t["url"].as_str())
+                                    .map(|s| s.to_string());
+
+                                top_songs.push(TrackInfo {
+                                    uri: Some(uri.clone()),
+                                    name: clean_title,
+                                    artists: vec![if clean_art.is_empty() { artist_name.clone() } else { clean_art }],
+                                    album: String::new(),
+                                    duration_ms: duration_ms.max(0) as u64,
+                                    id: Some(uri),
+                                    album_id: None,
+                                    artist_refs: Vec::new(),
+                                    is_playable: video_id.is_some(),
+                                    is_local: false,
+                                    track_number: (idx + 1) as u32,
+                                    explicit: false,
+                                    image_url: thumbnail_url,
+                                    release_date: None,
+                                    generated_name: None,
+                                });
+                            }
+                        }
+                    }
+                }
+
+                // 2. MusicCarouselShelfRenderer (Albums, Singles & EPs)
+                if let Some(carousel) = sec.get("musicCarouselShelfRenderer") {
+                    let header_title = carousel["header"]["musicCarouselShelfBasicHeaderRenderer"]["title"]["runs"][0]["text"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_lowercase();
+
+                    if header_title.contains("album") || header_title.contains("single") || header_title.contains("ep") {
+                        if let Some(items) = carousel["contents"].as_array() {
+                            for item in items {
+                                let renderer = &item["musicTwoRowItemRenderer"];
+                                if renderer.is_null() {
+                                    continue;
+                                }
+
+                                let album_title = renderer["title"]["runs"][0]["text"]
+                                    .as_str()
+                                    .unwrap_or("Untitled Album")
+                                    .to_string();
+
+                                let browse_id = renderer["navigationEndpoint"]["browseEndpoint"]["browseId"]
+                                    .as_str()
+                                    .unwrap_or("");
+
+                                if browse_id.is_empty() {
+                                    continue;
+                                }
+
+                                let year = renderer["subtitle"]["runs"].as_array().and_then(|runs| {
+                                    runs.iter().find_map(|r| {
+                                        let txt = r["text"].as_str().unwrap_or("").trim();
+                                        if txt.len() == 4 && txt.chars().all(|c| c.is_ascii_digit()) {
+                                            Some(txt.to_string())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                });
+
+                                // Deduplicate by title
+                                if !albums.iter().any(|a: &AlbumDetailHeader| a.title.eq_ignore_ascii_case(&album_title)) {
+                                    albums.push(AlbumDetailHeader {
+                                        id: format!("yt:browse:{}", browse_id),
+                                        title: album_title,
+                                        year,
+                                        track_count: 0,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok((artist_name, top_songs, albums))
     }
 
     /// Fallback Extraction: yt-dlp --flat-playlist --dump-json
