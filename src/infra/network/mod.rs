@@ -77,6 +77,7 @@ pub enum IoEvent {
   NextTrack,
   PreviousTrack,
   ForcePreviousTrack,
+  JumpToQueueIndex(usize),
   Shuffle(bool), // desired shuffle state
   Repeat(RepeatState),
   PausePlayback,
@@ -583,6 +584,8 @@ impl Network {
         | IoEvent::LinkPlaylist(..)
         | IoEvent::RemovePlaylistSyncLink(_)
         | IoEvent::ImportPlaylistUrl(_)
+        | IoEvent::GetMadeForYou
+        | IoEvent::JumpToQueueIndex(_)
     )
   }
 
@@ -650,6 +653,7 @@ impl Network {
         | IoEvent::NextTrack
         | IoEvent::PreviousTrack
         | IoEvent::ForcePreviousTrack
+        | IoEvent::JumpToQueueIndex(_)
         | IoEvent::Seek(_)
         | IoEvent::Shuffle(_)
         | IoEvent::Repeat(_)
@@ -1184,6 +1188,7 @@ impl Network {
           crate::infra::youtube::dispatch::refetch_active_karaoke_lyrics(app, force).await;
         });
       }
+      IoEvent::JumpToQueueIndex(_) => {}
     };
 
     {

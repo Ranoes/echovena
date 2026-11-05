@@ -3,26 +3,27 @@ use crate::core::action::Action;
 use crate::core::app::App;
 use crate::tui::event::Key;
 
-/// The Queue screen is a header row ("Now playing", index 0, non-actionable)
-/// followed by one selectable row per native-queue item. Selection index `k`
-/// (k >= 1) maps to `native_queue[k - 1]`.
+/// The Queue screen is split into:
+/// - Section 1: Row 0 (Now playing) followed by user-queued native items (rows 1 ..= native_queue.len()).
+/// - Section 2: Upcoming album/playlist/auto-play radio tracks.
 pub fn handler(key: Key, app: &mut App) {
   match key {
     k if common_key_events::down_event(k, &app.user_config.keys) => move_selection(1, app),
     k if common_key_events::up_event(k, &app.user_config.keys) => move_selection(-1, app),
-    // Shift+J / Shift+K reorder the selected item (hardcoded per design, not
-    // rebindable). J moves it down, K moves it up.
+    // Shift+J / Shift+K reorder the selected item in native queue
     Key::Char('J') => reorder(1, app),
     Key::Char('K') => reorder(-1, app),
-    // Row 0 is the now-playing header, so the rows run 0..row_count.
+    // Navigation jumps
     k if common_key_events::high_event(k) => app.view.queue_selected_index = 0,
     k if common_key_events::middle_event(k) => {
-      app.view.queue_selected_index = (row_count(app) - 1) / 2;
+      app.view.queue_selected_index = (row_count(app).saturating_sub(1)) / 2;
     }
     k if common_key_events::low_event(k) => {
-      app.view.queue_selected_index = row_count(app) - 1;
+      app.view.queue_selected_index = row_count(app).saturating_sub(1);
     }
-    k if k == app.user_config.keys.remove_from_queue => remove_selected(app),
+    k if k == app.user_config.keys.remove_from_queue || matches!(k, Key::Delete | Key::Char('d')) => {
+      remove_selected(app);
+    }
     Key::Enter => play_selected(app),
     _ => {}
   }
@@ -32,24 +33,44 @@ fn queue_item_uri(app: &App, position: usize) -> Option<String> {
   app.native_queue.get(position).and_then(|t| t.uri.clone())
 }
 
-/// Jump to the selected queue row and move the selection to the new head.
-/// Row 0 (now playing) is non-actionable.
+/// Jump to the selected queue row.
+/// - Row 0: resumes or restarts currently playing track
+/// - Row 1 ..= user_queue.len(): pops user queue item to head
+/// - Rows past user_queue: jumps to upcoming context track (album, playlist, or auto-play radio)
 fn play_selected(app: &mut App) {
   let selected = app.view.queue_selected_index;
+  let data = crate::tui::ui::popups::get_queue_data(app);
+  let user_q_len = data.user_queue.len();
+
   if selected == 0 {
+    // Restart or resume current track
+    app.dispatch(crate::infra::network::IoEvent::StartPlayback(None, None, None));
     return;
   }
-  let position = selected - 1;
-  let Some(uri) = queue_item_uri(app, position) else {
+
+  if selected <= user_q_len {
+    let position = selected - 1;
+    let Some(uri) = queue_item_uri(app, position) else {
+      return;
+    };
+    app.apply(Action::PlayQueueItem { uri, position });
+    app.view.queue_selected_index = 1;
     return;
-  };
-  app.apply(Action::PlayQueueItem { uri, position });
-  app.view.queue_selected_index = 1;
+  }
+
+  // Section 2: Jump directly into upcoming context track
+  let context_offset = selected - user_q_len - 1;
+  if let Some(item) = data.context_tracks.get(context_offset) {
+    let target = item.target_index;
+    app.jump_to_queue_index(target);
+    app.view.queue_selected_index = 0;
+  }
 }
 
-/// Total selectable rows: the now-playing header plus every queue item.
+/// Total selectable rows: Section 1 (now playing + user queue) + Section 2 (upcoming context tracks).
 fn row_count(app: &App) -> usize {
-  1 + app.native_queue.len()
+  let data = crate::tui::ui::popups::get_queue_data(app);
+  1 + data.user_queue.len() + data.context_tracks.len()
 }
 
 fn move_selection(delta: i32, app: &mut App) {
@@ -61,32 +82,58 @@ fn move_selection(delta: i32, app: &mut App) {
   };
 }
 
-/// Remove the selected queue item and clamp the selection to the shortened list.
-/// Row 0 (now playing) is non-actionable.
+/// Remove the selected queue item.
+/// - If in Section 1 (user queue): removes from native_queue.
+/// - If in Section 2 (upcoming context): removes from upcoming tracks.
 fn remove_selected(app: &mut App) {
   let selected = app.view.queue_selected_index;
+  let data = crate::tui::ui::popups::get_queue_data(app);
+  let user_q_len = data.user_queue.len();
+
   if selected == 0 {
     return;
   }
-  let position = selected - 1;
-  if let Some(uri) = queue_item_uri(app, position) {
-    app.apply(Action::RemoveFromQueue { uri, position });
-    let max_index = row_count(app).saturating_sub(1);
-    if app.view.queue_selected_index > max_index {
-      app.view.queue_selected_index = max_index;
+
+  if selected <= user_q_len {
+    let position = selected - 1;
+    if let Some(uri) = queue_item_uri(app, position) {
+      app.apply(Action::RemoveFromQueue { uri, position });
+      let max_index = row_count(app).saturating_sub(1);
+      if app.view.queue_selected_index > max_index {
+        app.view.queue_selected_index = max_index;
+      }
+    }
+    return;
+  }
+
+  // Section 2: Remove upcoming track from YouTube playback
+  #[cfg(feature = "youtube")]
+  {
+    let context_offset = selected - user_q_len - 1;
+    if let Some(item) = data.context_tracks.get(context_offset) {
+      let target = item.target_index;
+      if let Some(yt) = app.youtube_playback.as_mut() {
+        if target < yt.tracks.len() {
+          let removed = yt.tracks.remove(target);
+          app.set_status_message(format!("Removed '{}' from upcoming queue", removed.name), 3);
+          let max_index = row_count(app).saturating_sub(1);
+          if app.view.queue_selected_index > max_index {
+            app.view.queue_selected_index = max_index;
+          }
+        }
+      }
     }
   }
 }
 
-/// Swap the selected item with its neighbor and move the selection with it, so
-/// the highlighted row keeps following the same item. No wrap at the ends.
+/// Swap the selected item with its neighbor in user queue.
 fn reorder(delta: i32, app: &mut App) {
   let selected = app.view.queue_selected_index;
-  if selected == 0 {
+  let len = app.native_queue.len();
+  if selected == 0 || selected > len {
     return;
   }
   let idx = selected - 1;
-  let len = app.native_queue.len();
   let Some(uri) = queue_item_uri(app, idx) else {
     return;
   };
@@ -110,7 +157,6 @@ fn reorder(delta: i32, app: &mut App) {
     _ => {}
   }
 }
-
 #[cfg(test)]
 mod tests {
   use super::*;

@@ -133,6 +133,19 @@ pub async fn route_qobuz_event(app: &Arc<Mutex<App>>, event: &IoEvent) -> bool {
       None => false,
     },
     IoEvent::NextTrack => skip(app, Direction::Next).await,
+    IoEvent::JumpToQueueIndex(target) => {
+      let target = *target;
+      let valid = {
+        let guard = app.lock().await;
+        guard.qobuz_playback.as_ref().is_some_and(|s| target < s.tracks.len())
+      };
+      if valid {
+        play_index(app, target, None).await;
+        true
+      } else {
+        false
+      }
+    },
     IoEvent::PreviousTrack | IoEvent::ForcePreviousTrack => skip(app, Direction::Prev).await,
     IoEvent::ReplayCurrentTrack => replay_current(app).await,
     IoEvent::Repeat(state) => app.lock().await.set_decoded_repeat_from_state(*state),

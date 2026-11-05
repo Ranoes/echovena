@@ -122,6 +122,19 @@ pub async fn route_local_event(app: &Arc<Mutex<App>>, event: &IoEvent) -> bool {
     // auto-advance dispatch and (via U3) OS media-key Next. Consumed whenever a
     // local file owns the session so it never reaches Spotify.
     IoEvent::NextTrack => skip(app, Direction::Next).await,
+    IoEvent::JumpToQueueIndex(target) => {
+      let target = *target;
+      let valid = {
+        let guard = app.lock().await;
+        guard.local_playback.as_ref().is_some_and(|s| target < s.queue.len())
+      };
+      if valid {
+        play_index(app, target).await;
+        true
+      } else {
+        false
+      }
+    },
     // Skip backward. `ForcePreviousTrack` (restart-or-previous) behaves the same
     // here: there is no "restart current vs go back" distinction for local files.
     IoEvent::PreviousTrack | IoEvent::ForcePreviousTrack => skip(app, Direction::Prev).await,

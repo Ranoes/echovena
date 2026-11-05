@@ -130,6 +130,19 @@ pub async fn route_subsonic_event(app: &Arc<Mutex<App>>, event: &IoEvent) -> boo
       None => false,
     },
     IoEvent::NextTrack => skip(app, Direction::Next).await,
+    IoEvent::JumpToQueueIndex(target) => {
+      let target = *target;
+      let valid = {
+        let guard = app.lock().await;
+        guard.subsonic_playback.as_ref().is_some_and(|s| target < s.tracks.len())
+      };
+      if valid {
+        play_index(app, target).await;
+        true
+      } else {
+        false
+      }
+    },
     IoEvent::PreviousTrack | IoEvent::ForcePreviousTrack => skip(app, Direction::Prev).await,
     // Repeat-one auto-advance: replay the current track (dispatched by the runner
     // tick only while Subsonic owns the session).

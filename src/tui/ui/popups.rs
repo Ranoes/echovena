@@ -343,6 +343,7 @@ mod help_menu_tests {
   }
 }
 
+#[allow(dead_code)]
 fn queue_item_line(item: &PlayableInfo, strings: &crate::core::i18n::Strings) -> String {
   match item {
     PlayableInfo::Track(t) => format!("{} - {}", t.display_name(strings), t.artists.join(", ")),
@@ -359,6 +360,7 @@ fn queue_item_line(item: &PlayableInfo, strings: &crate::core::i18n::Strings) ->
 /// the queue is draining over a suspended context; otherwise (queued items
 /// pending over a still-playing context) it is that context's own upcoming
 /// tracks. Rows read from the still-alive per-source `*_playback` state.
+#[allow(dead_code)]
 fn context_preview_lines(app: &App, max: usize) -> Vec<String> {
   // Format the upcoming rows of a Subsonic/YouTube `TrackInfo` context list.
   #[cfg(feature = "queue-download")]
@@ -492,145 +494,306 @@ fn context_preview_lines(app: &App, max: usize) -> Vec<String> {
   Vec::new()
 }
 
+#[derive(Clone, Debug)]
+pub struct QueueTrackItem {
+  pub display_index: usize,
+  pub target_index: usize,
+  pub title: String,
+  pub artist: String,
+  pub duration_ms: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct QueueSectionData {
+  pub now_playing: Option<(usize, String, String, u64)>,
+  pub user_queue: Vec<crate::core::plugin_api::TrackInfo>,
+  pub context_name: String,
+  pub context_tracks: Vec<QueueTrackItem>,
+}
+
+pub fn get_queue_data(app: &App) -> QueueSectionData {
+  let mut now_playing = None;
+  let user_queue = app.native_queue.clone();
+  let mut context_name = String::new();
+  let mut context_tracks = Vec::new();
+
+  #[cfg(feature = "youtube")]
+  if let Some(yt) = app.youtube_playback.as_ref() {
+    if let Some(curr) = yt.current() {
+      now_playing = Some((
+        yt.index + 1,
+        curr.name.clone(),
+        curr.artists.join(", "),
+        curr.duration_ms,
+      ));
+    }
+
+    let total = yt.tracks.len();
+    if yt.radio_fetched_for.is_some() {
+      context_name = format!("YouTube Auto-Play Radio ({} upcoming)", total.saturating_sub(yt.index + 1));
+    } else if let Some(first) = yt.tracks.first() {
+      if !first.album.is_empty() && yt.tracks.iter().filter(|t| t.album == first.album).count() > total / 2 {
+        context_name = format!("Album: {} ({} upcoming)", first.album, total.saturating_sub(yt.index + 1));
+      } else {
+        context_name = format!("Playlist & Queue ({} upcoming)", total.saturating_sub(yt.index + 1));
+      }
+    } else {
+      context_name = format!("Queue ({} upcoming)", total.saturating_sub(yt.index + 1));
+    }
+
+    for (idx, t) in yt.tracks.iter().enumerate().skip(yt.index + 1) {
+      context_tracks.push(QueueTrackItem {
+        display_index: idx + 1,
+        target_index: idx,
+        title: t.name.clone(),
+        artist: t.artists.join(", "),
+        duration_ms: t.duration_ms,
+      });
+    }
+  }
+
+  #[cfg(feature = "local-files")]
+  if now_playing.is_none() {
+    if let Some(local) = app.local_playback.as_ref() {
+      let total = local.queue.len();
+      context_name = format!("Local Files ({} upcoming)", total.saturating_sub(local.index + 1));
+      if let Some(u) = local.queue.get(local.index) {
+        let stem = std::path::Path::new(u.trim_start_matches("file://"))
+          .file_stem()
+          .and_then(|s| s.to_str())
+          .unwrap_or(u)
+          .to_string();
+        now_playing = Some((local.index + 1, stem, "Local".to_string(), 0));
+      }
+      for (idx, u) in local.queue.iter().enumerate().skip(local.index + 1) {
+        let stem = std::path::Path::new(u.trim_start_matches("file://"))
+          .file_stem()
+          .and_then(|s| s.to_str())
+          .unwrap_or(u)
+          .to_string();
+        context_tracks.push(QueueTrackItem {
+          display_index: idx + 1,
+          target_index: idx,
+          title: stem,
+          artist: "Local".to_string(),
+          duration_ms: 0,
+        });
+      }
+    }
+  }
+
+  #[cfg(feature = "subsonic")]
+  if now_playing.is_none() {
+    if let Some(sub) = app.subsonic_playback.as_ref() {
+      let total = sub.tracks.len();
+      context_name = format!("Subsonic ({} upcoming)", total.saturating_sub(sub.index + 1));
+      if let Some(curr) = sub.tracks.get(sub.index) {
+        now_playing = Some((sub.index + 1, curr.name.clone(), curr.artists.join(", "), curr.duration_ms));
+      }
+      for (idx, t) in sub.tracks.iter().enumerate().skip(sub.index + 1) {
+        context_tracks.push(QueueTrackItem {
+          display_index: idx + 1,
+          target_index: idx,
+          title: t.name.clone(),
+          artist: t.artists.join(", "),
+          duration_ms: t.duration_ms,
+        });
+      }
+    }
+  }
+
+  #[cfg(feature = "qobuz")]
+  if now_playing.is_none() {
+    if let Some(qob) = app.qobuz_playback.as_ref() {
+      let total = qob.tracks.len();
+      context_name = format!("Qobuz ({} upcoming)", total.saturating_sub(qob.index + 1));
+      if let Some(curr) = qob.tracks.get(qob.index) {
+        now_playing = Some((qob.index + 1, curr.name.clone(), curr.artists.join(", "), curr.duration_ms));
+      }
+      for (idx, t) in qob.tracks.iter().enumerate().skip(qob.index + 1) {
+        context_tracks.push(QueueTrackItem {
+          display_index: idx + 1,
+          target_index: idx,
+          title: t.name.clone(),
+          artist: t.artists.join(", "),
+          duration_ms: t.duration_ms,
+        });
+      }
+    }
+  }
+
+  if now_playing.is_none() {
+    if let Some(txt) = app.queue_now_display() {
+      now_playing = Some((1, txt, String::new(), 0));
+    }
+  }
+
+  if context_name.is_empty() {
+    context_name = "Upcoming Context".to_string();
+  }
+
+  QueueSectionData {
+    now_playing,
+    user_queue,
+    context_name,
+    context_tracks,
+  }
+}
+
 pub fn draw_queue(f: &mut Frame<'_>, app: &App) {
+  use ratatui::style::Color;
+
   let [area] = f
     .area()
-    .layout(&Layout::vertical([Constraint::Percentage(100)]).margin(2));
+    .layout(&Layout::vertical([Constraint::Percentage(100)]).margin(1));
 
-  let style = app.user_config.theme.base_style();
-  let mut items: Vec<ListItem> = Vec::new();
+  let data = get_queue_data(app);
+  let user_q_len = data.user_queue.len();
+  let sec1_count = 1 + user_q_len;
+  let sec2_count = data.context_tracks.len();
+  let total_count = sec1_count + sec2_count;
 
-  let preview = context_preview_lines(app, 15);
+  let current_sel = app.view.queue_selected_index.min(total_count.saturating_sub(1));
+  let in_section_1 = current_sel < sec1_count;
 
-  // Row 0: "Now playing" header. Prefer the native queue slot's current track;
-  // fall back to YouTube playback or Spotify Web-API mirror otherwise.
-  let now_text = app
-    .queue_now_display()
-    .or_else(|| {
-      #[cfg(feature = "youtube")]
-      if let Some(yt) = app.youtube_playback.as_ref() {
-        if let Some(track) = yt.current() {
-          return Some(format!(
-            "{} - {}",
-            track.display_name(app.strings()),
-            track.artists.join(", ")
-          ));
-        }
-      }
-      app
-        .queue
-        .as_ref()
-        .and_then(|q| q.currently_playing.as_ref())
-        .map(|item| queue_item_line(item, app.strings()))
-    })
-    .unwrap_or_else(|| "—".to_string());
-  items.push(
-    ListItem::new(Line::from(vec![
-      Span::styled(
-        app.strings().popups.now_playing,
-        style.add_modifier(app.user_config.behavior.emphasis(Modifier::BOLD)),
-      ),
-      Span::raw(now_text),
-    ]))
-    .style(style),
-  );
-
-  // The native queue is the selectable list.
-  if app.native_queue.is_empty() {
-    // With an empty native queue, fall back to displaying the legacy Spotify
-    // mirror only when controlling an external Connect device (the queue there
-    // lives Spotify-side). Otherwise show a hint.
-    if app.spotify_external_device_active() {
-      if let Some(q) = app.queue.as_ref() {
-        for item in &q.queue {
-          items.push(ListItem::new(queue_item_line(item, app.strings())).style(style));
-        }
-      }
-    } else if !app.queue_owns_playback() && preview.is_empty() {
-      // While the queue owns playback the last queued track is the "Now playing"
-      // row above, so an "empty" hint would contradict it — omit it there.
-      items.push(
-        ListItem::new(Span::raw(
-          app
-            .strings()
-            .popups
-            .queue_empty(&app.user_config.keys.add_item_to_queue.to_string()),
-        ))
-        .style(style),
-      );
-    }
+  // Split area into Section 1 (top) and Section 2 (bottom)
+  let sec1_height = if user_q_len == 0 {
+    5
   } else {
-    for track in &app.native_queue {
-      let source = crate::core::queue::queue_item_source(track.uri.as_deref().unwrap_or(""));
-      let label = if source == crate::core::queue::QueueItemSource::LocalFile {
-        app.strings().popups.source_local
-      } else {
-        crate::core::queue::source_label(source)
-      };
-      let line = format!(
-        "{} - {}  [{}]",
-        track.display_name(app.strings()),
-        track.artists.join(", "),
-        label
-      );
-      items.push(ListItem::new(line).style(style));
-    }
-  }
-
-  // Dimmed, non-selectable preview of what resumes once the queue drains. It is
-  // appended after the selectable native-queue rows; selection stays confined to
-  // those rows (queue_menu.rs counts only `1 + native_queue.len()` rows), so
-  // these extra rows never receive the highlight.
-  if !preview.is_empty() {
-    let header_style = Style::default().fg(app.user_config.theme.hint.into());
-    let row_style = Style::default()
-      .fg(app.user_config.theme.inactive.into())
-      .add_modifier(Modifier::DIM);
-    items.push(
-      ListItem::new(Span::styled(
-        app.strings().popups.queue_up_next,
-        header_style,
-      ))
-      .style(style),
-    );
-    for line in preview {
-      items.push(ListItem::new(Span::styled(line, row_style)).style(style));
-    }
-  }
-
-  let mut state = ListState::default();
-  let len = items.len();
-  let selected = if len == 0 {
-    None
-  } else {
-    Some(app.view.queue_selected_index.min(len.saturating_sub(1)))
+    (4 + user_q_len as u16).min((area.height / 2).max(5))
   };
-  state.select(selected);
-  let list = List::new(items)
+
+  let chunks = Layout::vertical([
+    Constraint::Length(sec1_height),
+    Constraint::Min(6),
+  ])
+  .split(area);
+
+  let sec1_area = chunks[0];
+  let sec2_area = chunks[1];
+
+  // -------------------------------------------------------------------------
+  // SECTION 1: Now Playing & User Queue
+  // -------------------------------------------------------------------------
+  let sec1_border = if in_section_1 {
+    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+  } else {
+    Style::default().fg(Color::DarkGray)
+  };
+
+  let mut sec1_items: Vec<ListItem> = Vec::new();
+
+  // Row 0: Now Playing
+  if let Some((num, title, artist, dur_ms)) = &data.now_playing {
+    let mins = (dur_ms / 1000) / 60;
+    let secs = (dur_ms / 1000) % 60;
+    let dur_str = if *dur_ms > 0 { format!(" [{:02}:{:02}]", mins, secs) } else { String::new() };
+    sec1_items.push(ListItem::new(Line::from(vec![
+      Span::styled(" ▶  ", Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD)),
+      Span::styled(format!("{}. {} ", num, title), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+      Span::styled(format!("— {} ", artist), Style::default().fg(Color::Gray)),
+      Span::styled(dur_str, Style::default().fg(Color::LightYellow)),
+    ])));
+  } else {
+    sec1_items.push(ListItem::new(Line::from(Span::styled(
+      " ▶  (Nothing currently playing)",
+      Style::default().fg(Color::DarkGray),
+    ))));
+  }
+
+  // User Queue rows
+  if user_q_len == 0 {
+    sec1_items.push(ListItem::new(Line::from(Span::styled(
+      "    (No user-queued tracks — press 'z' on any song to add next)",
+      Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+    ))));
+  } else {
+    for (idx, track) in data.user_queue.iter().enumerate() {
+      let dur_ms = track.duration_ms;
+      let mins = (dur_ms / 1000) / 60;
+      let secs = (dur_ms / 1000) % 60;
+      let dur_str = if dur_ms > 0 { format!(" [{:02}:{:02}]", mins, secs) } else { String::new() };
+      sec1_items.push(ListItem::new(Line::from(vec![
+        Span::styled(format!("    {}. ", idx + 1), Style::default().fg(Color::LightYellow)),
+        Span::styled(format!("{} — {} ", track.name, track.artists.join(", ")), Style::default().fg(Color::White)),
+        Span::styled(dur_str, Style::default().fg(Color::DarkGray)),
+      ])));
+    }
+  }
+
+  let mut sec1_state = ListState::default();
+  if in_section_1 {
+    sec1_state.select(Some(current_sel));
+  }
+  let sec1_list = List::new(sec1_items)
     .block(
       Block::default()
         .borders(Borders::ALL)
-        .style(style)
         .title(Span::styled(
-          app
-            .strings()
-            .popups
-            .queue_title(&app.user_config.keys.remove_from_queue.to_string()),
-          style,
+          format!(" 1. Now Playing & User-Queued ({}) ", user_q_len),
+          sec1_border,
         ))
-        .border_style(style),
+        .border_style(sec1_border),
     )
-    .style(style)
     .highlight_style(
       Style::default()
-        .fg(app.user_config.theme.active.into())
-        .bg(app.user_config.theme.inactive.into())
-        .add_modifier(app.user_config.behavior.emphasis(Modifier::BOLD)),
+        .fg(Color::Cyan)
+        .bg(Color::Rgb(30, 45, 60))
+        .add_modifier(Modifier::BOLD),
     )
-    .highlight_symbol(
-      Line::from("▶ ").style(Style::default().fg(app.user_config.theme.active.into())),
-    );
-  f.render_stateful_widget(list, area, &mut state);
+    .highlight_symbol("▶ ");
+  f.render_stateful_widget(sec1_list, sec1_area, &mut sec1_state);
+
+  // -------------------------------------------------------------------------
+  // SECTION 2: Next from Album / Playlist / YouTube Auto-Play Radio
+  // -------------------------------------------------------------------------
+  let sec2_border = if !in_section_1 {
+    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+  } else {
+    Style::default().fg(Color::DarkGray)
+  };
+
+  let mut sec2_items: Vec<ListItem> = Vec::new();
+  if sec2_count == 0 {
+    sec2_items.push(ListItem::new(Line::from(Span::styled(
+      "    (End of context — auto-play radio will discover more songs when needed)",
+      Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+    ))));
+  } else {
+    for item in &data.context_tracks {
+      let mins = (item.duration_ms / 1000) / 60;
+      let secs = (item.duration_ms / 1000) % 60;
+      let dur_str = if item.duration_ms > 0 { format!(" [{:02}:{:02}]", mins, secs) } else { String::new() };
+      sec2_items.push(ListItem::new(Line::from(vec![
+        Span::styled(format!("   {:2}. ", item.display_index), Style::default().fg(Color::LightCyan)),
+        Span::styled(format!("{} — {} ", item.title, item.artist), Style::default().fg(Color::White)),
+        Span::styled(dur_str, Style::default().fg(Color::DarkGray)),
+      ])));
+    }
+  }
+
+  let mut sec2_state = ListState::default();
+  if !in_section_1 {
+    sec2_state.select(Some(current_sel.saturating_sub(sec1_count)));
+  }
+  let sec2_list = List::new(sec2_items)
+    .block(
+      Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(
+          format!(" 2. Next from: {} ", data.context_name),
+          sec2_border,
+        ))
+        .border_style(sec2_border),
+    )
+    .highlight_style(
+      Style::default()
+        .fg(Color::Cyan)
+        .bg(Color::Rgb(30, 45, 60))
+        .add_modifier(Modifier::BOLD),
+    )
+    .highlight_symbol("▶ ");
+  f.render_stateful_widget(sec2_list, sec2_area, &mut sec2_state);
 }
 
 pub fn draw_error_screen(f: &mut Frame<'_>, app: &App) {

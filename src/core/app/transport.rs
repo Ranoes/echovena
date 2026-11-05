@@ -371,6 +371,12 @@ impl App {
     self.dispatch_spotify_fallback(IoEvent::ForcePreviousTrack);
   }
 
+  /// Jump to a specific track index in the active decoded queue/session (e.g. YouTube, Local, Subsonic, Qobuz).
+  pub fn jump_to_queue_index(&mut self, target: usize) {
+    self.song_progress_ms = 0;
+    self.dispatch(IoEvent::JumpToQueueIndex(target));
+  }
+
   pub fn next_track(&mut self) {
     if self.apple_music_owns_playback() {
       if self.apple_music_refuses_while_switching() {
