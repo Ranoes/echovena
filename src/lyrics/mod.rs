@@ -26,8 +26,8 @@ impl KaraokeDisplayMode {
 
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Original => "Original",
-            Self::Romanized => "Romanized",
+            Self::Original => "Orig",
+            Self::Romanized => "Rom",
             Self::Both => "Both",
         }
     }
@@ -218,11 +218,19 @@ impl KaraokeTimeline {
     /// so that live 60 FPS karaoke stage rendering has 0ms latency.
     pub fn ensure_romanization(&mut self) {
         for line in &mut self.lines {
-            if line.romanization.is_none() {
+            let needs_rom = match &line.romanization {
+                None => true,
+                Some(r) => crate::lyrics::romanize::needs_romanization(r),
+            };
+            if needs_rom {
                 line.romanization = crate::lyrics::romanize::romanize_text(&line.text);
             }
             for word in &mut line.words {
-                if word.romanization.is_none() {
+                let word_needs_rom = match &word.romanization {
+                    None => true,
+                    Some(r) => crate::lyrics::romanize::needs_romanization(r),
+                };
+                if word_needs_rom {
                     word.romanization = crate::lyrics::romanize::romanize_text(&word.text);
                 }
             }

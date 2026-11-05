@@ -82,17 +82,25 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
     let offset_ms = app.view.lyrics_view.timing_offset_ms;
     let offset_str = format!("{:+.1}s ({:+}ms)", offset_ms as f64 / 1000.0, offset_ms);
 
-    let mode_str = app.view.karaoke_display_mode.label();
-    let align_str = app.view.karaoke_alignment.label();
+    let mode_str = match app.view.karaoke_display_mode {
+        crate::core::app::LyricsDisplayMode::Original => "Orig",
+        crate::core::app::LyricsDisplayMode::Romanized => "Rom",
+        crate::core::app::LyricsDisplayMode::Both => "Both",
+    };
+    let align_str = match app.view.karaoke_alignment {
+        crate::core::app::KaraokeAlignment::Left => "L",
+        crate::core::app::KaraokeAlignment::Center => "C",
+        crate::core::app::KaraokeAlignment::Right => "R",
+    };
     let provider_str = app
         .view
         .active_karaoke_timeline
         .as_ref()
         .map(|tl| tl.provider.as_str())
-        .unwrap_or("Auto Waterfall");
+        .unwrap_or("Auto");
 
     let title_line = format!(
-        " EchoVena — KARAOKE (60 FPS) │ Mode: {} [T] │ Align: {} [K] │ Source: {} │ Offset: {} │ [Esc/q] Back ",
+        " EchoVena │ Mode: {} │ Align: {} │ Source: {} │ Offset: {} ",
         mode_str, align_str, provider_str, offset_str
     );
 
@@ -421,9 +429,7 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
             }
         }
 
-        if display_mode != crate::core::app::LyricsDisplayMode::Both {
-            rendered_lines.push(Line::from(""));
-        }
+        rendered_lines.push(Line::from(""));
     }
 
     // Scroll so that `active_row` is always placed at the vertical midpoint (`mid_offset`)

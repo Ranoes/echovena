@@ -289,9 +289,9 @@ impl LyricsDisplayMode {
 
   pub fn label(&self) -> &'static str {
     match self {
-      Self::Original => "Original Only",
-      Self::Romanized => "Romanized Only",
-      Self::Both => "Both (Stacked Original & Romanized)",
+      Self::Original => "Orig",
+      Self::Romanized => "Rom",
+      Self::Both => "Both",
     }
   }
 }
@@ -313,19 +313,19 @@ impl KaraokeAlignment {
     }
   }
 
+  pub fn label(&self) -> &'static str {
+    match self {
+      Self::Left => "L",
+      Self::Center => "C",
+      Self::Right => "R",
+    }
+  }
+
   pub fn to_ratatui(self) -> ratatui::layout::Alignment {
     match self {
       Self::Left => ratatui::layout::Alignment::Left,
       Self::Center => ratatui::layout::Alignment::Center,
       Self::Right => ratatui::layout::Alignment::Right,
-    }
-  }
-
-  pub fn label(&self) -> &'static str {
-    match self {
-      Self::Left => "Left",
-      Self::Center => "Middle / Center",
-      Self::Right => "Right",
     }
   }
 }
