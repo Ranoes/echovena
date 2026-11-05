@@ -343,6 +343,12 @@ async fn load_playlist_tracks(app: &Arc<Mutex<App>>, uri: &str) {
     crate::core::app::TrackTableContext::YouTubePlaylist,
   );
   guard.youtube_open_playlist = Some(uri.to_string());
+  if guard.get_current_route().id != crate::core::app::RouteId::TrackTable {
+    guard.push_navigation_stack(
+      crate::core::app::RouteId::TrackTable,
+      crate::core::app::ActiveBlock::TrackTable,
+    );
+  }
 }
 
 /// Create a playlist and refresh the sidebar.

@@ -179,6 +179,42 @@ pub fn get_playlist_tree_items(app: &App) -> Vec<PlaylistTreeItem> {
           platform: "spotify".to_string(),
           is_expanded,
         });
+
+        if is_expanded {
+          let mut found = false;
+          if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+            if let Ok(tracks) = db.get_playlist_tracks(&id_str) {
+              if !tracks.is_empty() {
+                found = true;
+                let count = tracks.len();
+                for (idx, t) in tracks.into_iter().enumerate() {
+                  items.push(PlaylistTreeItem::TrackLeaf {
+                    playlist_id: id_str.clone(),
+                    track_id: t.source_track_id.clone(),
+                    title: t.clean_title,
+                    artist: t.artist,
+                    duration_ms: t.duration_ms as u64,
+                    position: idx,
+                    uri: Some(t.source_track_id),
+                    is_last: idx == count.saturating_sub(1),
+                  });
+                }
+              }
+            }
+          }
+          if !found {
+            items.push(PlaylistTreeItem::TrackLeaf {
+              playlist_id: id_str.clone(),
+              track_id: String::new(),
+              title: "(Empty playlist — press 'w' on any track to add)".to_string(),
+              artist: String::new(),
+              duration_ms: 0,
+              position: 0,
+              uri: None,
+              is_last: true,
+            });
+          }
+        }
       }
     }
     // Tab 2: YouTube Playlists
@@ -243,6 +279,66 @@ pub fn get_playlist_tree_items(app: &App) -> Vec<PlaylistTreeItem> {
           platform: "youtube".to_string(),
           is_expanded,
         });
+
+        if is_expanded {
+          let mut found = false;
+          if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+            if let Ok(tracks) = db.get_playlist_tracks(&p.uri) {
+              if !tracks.is_empty() {
+                found = true;
+                let count = tracks.len();
+                for (idx, t) in tracks.into_iter().enumerate() {
+                  items.push(PlaylistTreeItem::TrackLeaf {
+                    playlist_id: p.uri.clone(),
+                    track_id: t.source_track_id.clone(),
+                    title: t.clean_title,
+                    artist: t.artist,
+                    duration_ms: t.duration_ms as u64,
+                    position: idx,
+                    uri: Some(t.source_track_id),
+                    is_last: idx == count.saturating_sub(1),
+                  });
+                }
+              }
+            }
+          }
+          if !found {
+            if let Ok(path) = crate::infra::youtube::playlists::default_playlists_path() {
+              if let Ok(file) = crate::infra::youtube::playlists::load(&path) {
+                if let Some(playlist) = crate::infra::youtube::playlists::find_playlist(&file, &p.uri) {
+                  let count = playlist.tracks.len();
+                  if count > 0 {
+                    found = true;
+                    for (idx, t) in playlist.tracks.iter().enumerate() {
+                      items.push(PlaylistTreeItem::TrackLeaf {
+                        playlist_id: p.uri.clone(),
+                        track_id: t.video_id.clone(),
+                        title: t.title.clone(),
+                        artist: t.channel.clone(),
+                        duration_ms: t.duration_ms as u64,
+                        position: idx,
+                        uri: Some(format!("youtube:video:{}", t.video_id)),
+                        is_last: idx == count.saturating_sub(1),
+                      });
+                    }
+                  }
+                }
+              }
+            }
+          }
+          if !found {
+            items.push(PlaylistTreeItem::TrackLeaf {
+              playlist_id: p.uri.clone(),
+              track_id: String::new(),
+              title: "(Empty playlist — press 'w' on any track to add)".to_string(),
+              artist: String::new(),
+              duration_ms: 0,
+              position: 0,
+              uri: None,
+              is_last: true,
+            });
+          }
+        }
       }
     }
   }
@@ -669,12 +765,41 @@ pub fn handler(key: Key, app: &mut App) {
         }
       }
     }
+    Key::Char('o') | Key::Char('O') => {
+      let tree = get_playlist_tree_items(app);
+      if let Some(idx) = app.view.selected_playlist_index {
+        if let Some(item) = tree.get(idx) {
+          match item {
+            PlaylistTreeItem::PlaylistHeader { id, .. } => {
+              open_source_playlist(app, Some(id.clone()));
+            }
+            PlaylistTreeItem::TrackLeaf { playlist_id, .. } => {
+              open_source_playlist(app, Some(playlist_id.clone()));
+            }
+            _ => {}
+          }
+        }
+      }
+    }
+    Key::Char(' ') => {
+      let tree = get_playlist_tree_items(app);
+      if let Some(idx) = app.view.selected_playlist_index {
+        if let Some(PlaylistTreeItem::PlaylistHeader { id, is_expanded, .. }) = tree.get(idx) {
+          if *is_expanded {
+            app.view.expanded_playlists.remove(id);
+          } else {
+            app.view.expanded_playlists.insert(id.clone());
+          }
+        }
+      }
+    }
     Key::Char('z') => {
       let tree = get_playlist_tree_items(app);
       if let Some(idx) = app.view.selected_playlist_index {
         if let Some(PlaylistTreeItem::TrackLeaf { title, artist, uri, track_id, duration_ms, .. }) = tree.get(idx) {
+          let u = uri.clone().or_else(|| if !track_id.is_empty() { Some(format!("youtube:video:{}", track_id)) } else { None });
           let track_info = TrackInfo {
-            uri: uri.clone(),
+            uri: u,
             name: title.clone(),
             artists: vec![artist.clone()],
             album: String::new(),
@@ -832,26 +957,40 @@ pub(super) fn activate_selected(app: &mut App) {
         }
       }
       PlaylistTreeItem::PlaylistHeader { id, is_expanded, .. } => {
-        // Toggle expansion inline in tree!
         if is_expanded {
-          app.view.expanded_playlists.remove(&id);
+          // If already expanded, Enter opens it into the full Track Table (Song List)!
+          open_source_playlist(app, Some(id.clone()));
         } else {
-          app.view.expanded_playlists.insert(id);
+          // If collapsed, Enter expands it inline to reveal tracks!
+          app.view.expanded_playlists.insert(id.clone());
         }
       }
-      PlaylistTreeItem::TrackLeaf { playlist_id, position, title, .. } => {
+      PlaylistTreeItem::TrackLeaf { playlist_id, position, title, uri, track_id: _, .. } => {
         // Play selected track from playlist and queue all upcoming tracks
+        let mut uris = Vec::new();
         if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
           if let Ok(tracks) = db.get_playlist_tracks(&playlist_id) {
-            let uris: Vec<String> = tracks.iter().map(|t| t.source_track_id.clone()).collect();
-            if !uris.is_empty() {
-              app.apply(Action::PlayUris {
-                uris,
-                offset: Some(position),
-              });
-              app.set_status_message(format!("Playing '{}' from playlist", title), 4);
+            uris = tracks.iter().map(|t| t.source_track_id.clone()).collect();
+          }
+        }
+        if uris.is_empty() {
+          if let Ok(path) = crate::infra::youtube::playlists::default_playlists_path() {
+            if let Ok(file) = crate::infra::youtube::playlists::load(&path) {
+              if let Some(playlist) = crate::infra::youtube::playlists::find_playlist(&file, &playlist_id) {
+                uris = playlist.tracks.iter().map(|t| format!("youtube:video:{}", t.video_id)).collect();
+              }
             }
           }
+        }
+        if !uris.is_empty() {
+          app.apply(Action::PlayUris {
+            uris,
+            offset: Some(position),
+          });
+          app.set_status_message(format!("Playing '{}' from playlist", title), 4);
+        } else if let Some(u) = uri {
+          app.apply(Action::PlayUris { uris: vec![u], offset: None });
+          app.set_status_message(format!("Playing '{}'", title), 4);
         }
       }
     }

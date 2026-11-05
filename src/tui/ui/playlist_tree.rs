@@ -214,8 +214,8 @@ pub fn draw_playlist_tree_view(f: &mut Frame<'_>, app: &App, area: Rect) {
 
   // 3. Footer Action Hints
   let footer_spans = vec![
-    Span::styled(" [Enter] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-    Span::raw("Toggle Folder / Play Track  |"),
+    Span::styled(" [Enter/o] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+    Span::raw("Open Song List / Play Track  |"),
     Span::styled(" [z] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
     Span::raw("Queue Track  |"),
     Span::styled(" [s] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),

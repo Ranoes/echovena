@@ -258,6 +258,9 @@ impl App {
     self.dispatch(event);
     self.source_table_uri = None;
     self.show_tracks_in_table(Vec::new(), context);
+    if self.get_current_route().id != RouteId::TrackTable {
+      self.push_navigation_stack(RouteId::TrackTable, ActiveBlock::TrackTable);
+    }
   }
 
   /// Show the rows of the decoded-source list `uri` in the shared track table.
