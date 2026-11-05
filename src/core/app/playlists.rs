@@ -349,7 +349,8 @@ impl App {
       if let Ok(Some(mut pl)) = db.get_imported_playlist(&playlist) {
         handled_in_sqlite = true;
         let _ = db.remove_playlist_track(&playlist, &track);
-        pl.track_count = (pl.track_count - 1).max(0);
+        let actual_count = db.get_playlist_tracks(&playlist).map(|t| t.len() as i64).unwrap_or(0);
+        pl.track_count = actual_count;
         let _ = db.upsert_imported_playlist(&pl);
         self.set_status_message(format!("Removed track from '{}'", pl.title), 4);
       }

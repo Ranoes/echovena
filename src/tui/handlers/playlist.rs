@@ -51,41 +51,40 @@ pub fn get_playlist_tree_items(app: &App) -> Vec<PlaylistTreeItem> {
         if let Ok(playlists) = db.list_imported_playlists() {
           for p in playlists.into_iter().filter(|p| p.platform == "local" || p.platform == "echovena") {
             let is_expanded = app.view.expanded_playlists.contains(&p.id);
+            let tracks = db.get_playlist_tracks(&p.id).unwrap_or_default();
+            let track_count = tracks.len();
             items.push(PlaylistTreeItem::PlaylistHeader {
               id: p.id.clone(),
               title: p.title.clone(),
-              track_count: p.track_count as usize,
+              track_count,
               platform: "local".to_string(),
               is_expanded,
             });
 
             if is_expanded {
-              if let Ok(tracks) = db.get_playlist_tracks(&p.id) {
-                if tracks.is_empty() {
+              if tracks.is_empty() {
+                items.push(PlaylistTreeItem::TrackLeaf {
+                  playlist_id: p.id.clone(),
+                  track_id: String::new(),
+                  title: "(Empty playlist — press 'w' on any track to add)".to_string(),
+                  artist: String::new(),
+                  duration_ms: 0,
+                  position: 0,
+                  uri: None,
+                  is_last: true,
+                });
+              } else {
+                for (idx, t) in tracks.into_iter().enumerate() {
                   items.push(PlaylistTreeItem::TrackLeaf {
                     playlist_id: p.id.clone(),
-                    track_id: String::new(),
-                    title: "(Empty playlist — press 'w' on any track to add)".to_string(),
-                    artist: String::new(),
-                    duration_ms: 0,
-                    position: 0,
-                    uri: None,
-                    is_last: true,
+                    track_id: t.source_track_id.clone(),
+                    title: t.clean_title,
+                    artist: t.artist,
+                    duration_ms: t.duration_ms as u64,
+                    position: idx,
+                    uri: Some(t.source_track_id),
+                    is_last: idx == track_count.saturating_sub(1),
                   });
-                } else {
-                  let track_count = tracks.len();
-                  for (idx, t) in tracks.into_iter().enumerate() {
-                    items.push(PlaylistTreeItem::TrackLeaf {
-                      playlist_id: p.id.clone(),
-                      track_id: t.source_track_id.clone(),
-                      title: t.clean_title,
-                      artist: t.artist,
-                      duration_ms: t.duration_ms as u64,
-                      position: idx,
-                      uri: Some(t.source_track_id),
-                      is_last: idx == track_count.saturating_sub(1),
-                    });
-                  }
                 }
               }
             }
@@ -104,41 +103,40 @@ pub fn get_playlist_tree_items(app: &App) -> Vec<PlaylistTreeItem> {
         if let Ok(playlists) = db.list_imported_playlists() {
           for p in playlists.into_iter().filter(|p| p.platform.starts_with("spotify")) {
             let is_expanded = app.view.expanded_playlists.contains(&p.id);
+            let tracks = db.get_playlist_tracks(&p.id).unwrap_or_default();
+            let track_count = if tracks.is_empty() && p.track_count > 0 { p.track_count as usize } else { tracks.len() };
             items.push(PlaylistTreeItem::PlaylistHeader {
               id: p.id.clone(),
               title: p.title.clone(),
-              track_count: p.track_count as usize,
+              track_count,
               platform: "spotify".to_string(),
               is_expanded,
             });
 
             if is_expanded {
-              if let Ok(tracks) = db.get_playlist_tracks(&p.id) {
-                if tracks.is_empty() {
+              if tracks.is_empty() {
+                items.push(PlaylistTreeItem::TrackLeaf {
+                  playlist_id: p.id.clone(),
+                  track_id: String::new(),
+                  title: "(Empty playlist — press 'w' on any track to add)".to_string(),
+                  artist: String::new(),
+                  duration_ms: 0,
+                  position: 0,
+                  uri: None,
+                  is_last: true,
+                });
+              } else {
+                for (idx, t) in tracks.into_iter().enumerate() {
                   items.push(PlaylistTreeItem::TrackLeaf {
                     playlist_id: p.id.clone(),
-                    track_id: String::new(),
-                    title: "(Empty playlist — press 'w' on any track to add)".to_string(),
-                    artist: String::new(),
-                    duration_ms: 0,
-                    position: 0,
-                    uri: None,
-                    is_last: true,
+                    track_id: t.source_track_id.clone(),
+                    title: t.clean_title,
+                    artist: t.artist,
+                    duration_ms: t.duration_ms as u64,
+                    position: idx,
+                    uri: Some(t.source_track_id),
+                    is_last: idx == track_count.saturating_sub(1),
                   });
-                } else {
-                  let count = tracks.len();
-                  for (idx, t) in tracks.into_iter().enumerate() {
-                    items.push(PlaylistTreeItem::TrackLeaf {
-                      playlist_id: p.id.clone(),
-                      track_id: t.source_track_id.clone(),
-                      title: t.clean_title,
-                      artist: t.artist,
-                      duration_ms: t.duration_ms as u64,
-                      position: idx,
-                      uri: Some(t.source_track_id),
-                      is_last: idx == count.saturating_sub(1),
-                    });
-                  }
                 }
               }
             }
@@ -205,41 +203,40 @@ pub fn get_playlist_tree_items(app: &App) -> Vec<PlaylistTreeItem> {
         if let Ok(playlists) = db.list_imported_playlists() {
           for p in playlists.into_iter().filter(|p| p.platform == "youtube" || p.platform == "ytmusic") {
             let is_expanded = app.view.expanded_playlists.contains(&p.id);
+            let tracks = db.get_playlist_tracks(&p.id).unwrap_or_default();
+            let track_count = if tracks.is_empty() && p.track_count > 0 { p.track_count as usize } else { tracks.len() };
             items.push(PlaylistTreeItem::PlaylistHeader {
               id: p.id.clone(),
               title: p.title.clone(),
-              track_count: p.track_count as usize,
+              track_count,
               platform: "youtube".to_string(),
               is_expanded,
             });
 
             if is_expanded {
-              if let Ok(tracks) = db.get_playlist_tracks(&p.id) {
-                if tracks.is_empty() {
+              if tracks.is_empty() {
+                items.push(PlaylistTreeItem::TrackLeaf {
+                  playlist_id: p.id.clone(),
+                  track_id: String::new(),
+                  title: "(Empty playlist — press 'w' on any track to add)".to_string(),
+                  artist: String::new(),
+                  duration_ms: 0,
+                  position: 0,
+                  uri: None,
+                  is_last: true,
+                });
+              } else {
+                for (idx, t) in tracks.into_iter().enumerate() {
                   items.push(PlaylistTreeItem::TrackLeaf {
                     playlist_id: p.id.clone(),
-                    track_id: String::new(),
-                    title: "(Empty playlist — press 'w' on any track to add)".to_string(),
-                    artist: String::new(),
-                    duration_ms: 0,
-                    position: 0,
-                    uri: None,
-                    is_last: true,
+                    track_id: t.source_track_id.clone(),
+                    title: t.clean_title,
+                    artist: t.artist,
+                    duration_ms: t.duration_ms as u64,
+                    position: idx,
+                    uri: Some(t.source_track_id),
+                    is_last: idx == track_count.saturating_sub(1),
                   });
-                } else {
-                  let count = tracks.len();
-                  for (idx, t) in tracks.into_iter().enumerate() {
-                    items.push(PlaylistTreeItem::TrackLeaf {
-                      playlist_id: p.id.clone(),
-                      track_id: t.source_track_id.clone(),
-                      title: t.clean_title,
-                      artist: t.artist,
-                      duration_ms: t.duration_ms as u64,
-                      position: idx,
-                      uri: Some(t.source_track_id),
-                      is_last: idx == count.saturating_sub(1),
-                    });
-                  }
                 }
               }
             }
@@ -871,6 +868,10 @@ pub fn handler(key: Key, app: &mut App) {
                   t.position = new_pos as i64;
                 }
                 let _ = db.replace_playlist_tracks(playlist_id, &tracks);
+                if let Ok(Some(mut pl)) = db.get_imported_playlist(playlist_id) {
+                  pl.track_count = tracks.len() as i64;
+                  let _ = db.upsert_imported_playlist(&pl);
+                }
                 app.set_status_message(format!("Removed '{}' from playlist", title), 4);
               }
             }
