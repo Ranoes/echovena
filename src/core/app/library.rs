@@ -491,15 +491,24 @@ impl App {
       }
 
       if !local_tracks.is_empty() {
-        if self.track_table.tracks.is_empty() {
-          self.track_table.tracks = local_tracks;
-        } else {
-          for lt in local_tracks {
-            if !self.track_table.tracks.iter().any(|t| t.uri == lt.uri || t.id == lt.id) {
-              self.track_table.tracks.push(lt);
-            }
+        // Deduplicate local_tracks by (title, artist), preferring records with duration_ms > 0
+        local_tracks.sort_by(|a, b| b.duration_ms.cmp(&a.duration_ms));
+        let mut unique_tracks: Vec<crate::core::plugin_api::TrackInfo> = Vec::new();
+        let mut seen_keys = std::collections::HashSet::new();
+        for t in local_tracks {
+          let key = (
+            t.name.trim().to_lowercase(),
+            t.artists.join(" ").trim().to_lowercase(),
+          );
+          if !key.0.is_empty() && !seen_keys.insert(key) {
+            continue;
           }
+          unique_tracks.push(t);
         }
+        for (i, t) in unique_tracks.iter_mut().enumerate() {
+          t.track_number = (i + 1) as u32;
+        }
+        self.track_table.tracks = unique_tracks;
         self.track_table.context = Some(TrackTableContext::SavedTracks);
       }
     }

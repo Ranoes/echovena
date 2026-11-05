@@ -1,6 +1,6 @@
 use super::common_key_events;
 use crate::core::action::{Action, OpenTarget};
-use crate::core::app::{ActiveBlock, RouteId, SidebarBlock};
+use crate::core::app::{ActiveBlock, RouteId, SidebarBlock, TrackTableContext};
 use crate::core::app::{App, DialogContext, PlaylistFolderItem};
 use crate::core::plugin_api::TrackInfo;
 use crate::core::source::Source;
@@ -90,29 +90,6 @@ pub fn get_playlist_tree_items(app: &App) -> Vec<PlaylistTreeItem> {
               }
             }
           }
-        }
-      }
-
-      for p in app.local_playlists() {
-        let is_expanded = app.view.expanded_playlists.contains(&p.uri);
-        items.push(PlaylistTreeItem::PlaylistHeader {
-          id: p.uri.clone(),
-          title: p.name.clone(),
-          track_count: p.track_count as usize,
-          platform: "local".to_string(),
-          is_expanded,
-        });
-        if is_expanded {
-          items.push(PlaylistTreeItem::TrackLeaf {
-            playlist_id: p.uri.clone(),
-            track_id: String::new(),
-            title: "(Empty playlist — press 'w' on any track to add)".to_string(),
-            artist: String::new(),
-            duration_ms: 0,
-            position: 0,
-            uri: None,
-            is_last: true,
-          });
         }
       }
     }
@@ -363,10 +340,6 @@ pub fn get_playlist_tab_items(app: &App) -> Vec<String> {
             items.push(format!("\u{25B6} [Local] {} ({} tracks)", p.title, p.track_count));
           }
         }
-      }
-      for p in app.local_playlists() {
-        found_any = true;
-        items.push(format!("\u{25B6} [Local] {}", p.name));
       }
       if !found_any {
         items.push("  (No local playlists yet \u{2014} press 'A' to create)".to_string());
@@ -907,6 +880,29 @@ pub fn handler(key: Key, app: &mut App) {
       }
       handle_delete_playlist(app);
     }
+    Key::PageDown => {
+      let count = total_display_count(app);
+      if count > 0 {
+        let current = app.view.selected_playlist_index.unwrap_or(0);
+        app.view.selected_playlist_index = Some((current + 10).min(count - 1));
+      }
+    }
+    Key::PageUp => {
+      let count = total_display_count(app);
+      if count > 0 {
+        let current = app.view.selected_playlist_index.unwrap_or(0);
+        app.view.selected_playlist_index = Some(current.saturating_sub(10));
+      }
+    }
+    Key::Home => {
+      app.view.selected_playlist_index = Some(0);
+    }
+    Key::End | Key::Char('G') => {
+      let count = total_display_count(app);
+      if count > 0 {
+        app.view.selected_playlist_index = Some(count - 1);
+      }
+    }
     _ => {}
   }
 }
@@ -999,6 +995,13 @@ pub(super) fn activate_selected(app: &mut App) {
         let mut uris = Vec::new();
         if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
           if let Ok(tracks) = db.get_playlist_tracks(&playlist_id) {
+            app.track_table.tracks = tracks.iter().map(|t| {
+              let mut info = crate::sources::lossless_relay::archiver::playlist_track_to_track_info(t);
+              info.uri = Some(t.source_track_id.clone());
+              info.id = Some(t.source_track_id.clone());
+              info
+            }).collect();
+            app.track_table.context = Some(TrackTableContext::YouTubePlaylist);
             uris = tracks.iter().map(|t| t.source_track_id.clone()).collect();
           }
         }
@@ -1006,6 +1009,10 @@ pub(super) fn activate_selected(app: &mut App) {
           if let Ok(path) = crate::infra::youtube::playlists::default_playlists_path() {
             if let Ok(file) = crate::infra::youtube::playlists::load(&path) {
               if let Some(playlist) = crate::infra::youtube::playlists::find_playlist(&file, &playlist_id) {
+                app.track_table.tracks = playlist.tracks.iter().map(|t| {
+                  crate::infra::youtube::playlists::stored_to_track_info(t)
+                }).collect();
+                app.track_table.context = Some(TrackTableContext::YouTubePlaylist);
                 uris = playlist.tracks.iter().map(|t| format!("youtube:video:{}", t.video_id)).collect();
               }
             }

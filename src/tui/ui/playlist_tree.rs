@@ -188,28 +188,21 @@ pub fn draw_playlist_tree_view(f: &mut Frame<'_>, app: &App, area: Rect) {
       Style::default().fg(Color::White),
     ));
 
-  let list_widget = List::new(items)
-    .block(list_block)
-    .style(app.user_config.theme.base_style())
-    .highlight_style(
-      Style::default()
-        .bg(app.user_config.theme.selected.into())
-        .fg(Color::Black)
-        .add_modifier(Modifier::BOLD),
-    );
-
   // Compute scroll offset so the selection stays in view
   let max_visible = list_area.height.saturating_sub(2) as usize;
   let mut scroll_offset = app.view.playlist_scroll_offset.get();
   if selected_index < scroll_offset {
     scroll_offset = selected_index;
   } else if max_visible > 0 && selected_index >= scroll_offset + max_visible {
-    scroll_offset = selected_index - max_visible + 1;
+    scroll_offset = selected_index.saturating_sub(max_visible.saturating_sub(1));
   }
   app.view.playlist_scroll_offset.set(scroll_offset);
 
-  let mut state = ratatui::widgets::ListState::default();
-  state.select(Some(selected_index.saturating_sub(scroll_offset)));
+  let visible_items: Vec<ListItem> = items.into_iter().skip(scroll_offset).take(max_visible).collect();
+  let list_widget = List::new(visible_items)
+    .block(list_block)
+    .style(app.user_config.theme.base_style());
+
   f.render_widget(list_widget, list_area);
 
   // 3. Footer Action Hints

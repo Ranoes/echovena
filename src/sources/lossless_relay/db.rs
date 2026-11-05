@@ -171,6 +171,29 @@ impl Database {
             "#,
         )
         .context("failed executing database schema migration")?;
+
+        // Cleanup any duplicate rows in downloaded_tracks where one has duration 0 and another has duration > 0
+        let _ = conn.execute(
+            r#"
+            DELETE FROM downloaded_tracks 
+            WHERE duration_ms = 0 
+              AND file_path IN (
+                SELECT file_path FROM downloaded_tracks GROUP BY file_path HAVING COUNT(*) > 1
+              );
+            "#,
+            [],
+        );
+        let _ = conn.execute(
+            r#"
+            DELETE FROM downloaded_tracks
+            WHERE duration_ms = 0
+              AND (title, artist) IN (
+                SELECT title, artist FROM downloaded_tracks GROUP BY title, artist HAVING COUNT(*) > 1
+              );
+            "#,
+            [],
+        );
+
         Ok(())
     }
 
@@ -337,6 +360,39 @@ impl Database {
             tracks.push(r?);
         }
         Ok(tracks)
+    }
+
+    pub fn find_playlist_track_by_source_id(&self, source_id: &str) -> Result<Option<PlaylistTrack>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT playlist_id, position, source_track_id, raw_title, clean_title, artist, album, duration_ms, isrc, cover_art_url
+            FROM playlist_tracks
+            WHERE source_track_id = ?1 
+               OR source_track_id = ?2 
+               OR source_track_id LIKE ?3
+            LIMIT 1;
+            "#,
+        )?;
+        let id_with_prefix = format!("yt:video:{}", source_id);
+        let id_like = format!("%{}%", source_id);
+        let mut rows = stmt.query(params![source_id, id_with_prefix, id_like])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(PlaylistTrack {
+                playlist_id: row.get(0)?,
+                position: row.get(1)?,
+                source_track_id: row.get(2)?,
+                raw_title: row.get(3)?,
+                clean_title: row.get(4)?,
+                artist: row.get(5)?,
+                album: row.get(6)?,
+                duration_ms: row.get(7)?,
+                isrc: row.get(8)?,
+                cover_art_url: row.get(9)?,
+            }))
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn add_playlist_track(&self, track: &PlaylistTrack) -> Result<()> {

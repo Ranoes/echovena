@@ -957,18 +957,12 @@ pub fn handler(key: Key, app: &mut App) {
         }
       }
       SearchResultBlock::SongSearch => {
-        let live_item = app.selected_live_search_item().map(|item| {
-          let t = item.to_track_info();
-          (t.uri, item.title.clone())
-        });
+        let live_item = app.selected_live_search_item().map(|item| item.to_track_info());
         let track = live_item.or_else(|| {
-          selected_search_track_row(app).map(|track| (track.id.clone(), track.name.clone()))
+          selected_search_track_row(app).cloned()
         });
-        if let Some((track_id, track_name)) = track {
-          app.apply(Action::OpenAddTrackDialogFor {
-            track_id,
-            track_name,
-          });
+        if let Some(t) = track {
+          app.begin_add_track_info_to_playlist_flow(&t);
         }
       }
       SearchResultBlock::ArtistSearch => {

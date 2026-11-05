@@ -99,6 +99,27 @@ pub fn track_info_to_playlist_track(t: &TrackInfo, position: usize, playlist_id:
     }
 }
 
+/// Convert a [`PlaylistTrack`] into a [`TrackInfo`] for player and queue consumption
+pub fn playlist_track_to_track_info(p: &PlaylistTrack) -> TrackInfo {
+    TrackInfo {
+        uri: Some(p.source_track_id.clone()),
+        name: p.clean_title.clone(),
+        artists: vec![p.artist.clone()],
+        album: p.album.clone().unwrap_or_default(),
+        duration_ms: p.duration_ms.max(0) as u64,
+        id: Some(p.source_track_id.clone()),
+        album_id: None,
+        artist_refs: Vec::new(),
+        is_playable: true,
+        is_local: false,
+        track_number: (p.position + 1) as u32,
+        explicit: false,
+        image_url: p.cover_art_url.clone(),
+        release_date: None,
+        generated_name: None,
+    }
+}
+
 /// Archives a single audio track with a custom extension ("flac" or "opus")
 pub async fn archive_single_track_with_ext_to(
     db: &Database,
@@ -187,6 +208,19 @@ pub fn scan_and_sync_local_downloads(db: &Database, root: &Path) {
     if !root.exists() {
         return;
     }
+    let existing_downloads = db.list_downloaded_tracks().unwrap_or_default();
+    let mut existing_paths = std::collections::HashSet::new();
+    let mut existing_keys = std::collections::HashSet::new();
+    for d in &existing_downloads {
+        existing_paths.insert(d.file_path.clone());
+        if let Ok(canon) = std::path::Path::new(&d.file_path).canonicalize() {
+            existing_paths.insert(canon.to_string_lossy().to_string());
+        }
+        if d.duration_ms > 0 {
+            existing_keys.insert((d.artist.to_lowercase(), d.title.to_lowercase()));
+        }
+    }
+
     let mut dirs_to_visit = vec![root.to_path_buf()];
     while let Some(current_dir) = dirs_to_visit.pop() {
         if let Ok(entries) = fs::read_dir(&current_dir) {
@@ -197,6 +231,12 @@ pub fn scan_and_sync_local_downloads(db: &Database, root: &Path) {
                 } else if path.is_file() {
                     if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
                         if matches!(ext.to_lowercase().as_str(), "flac" | "opus" | "m4a" | "mp3" | "webm") {
+                            let path_str = path.to_string_lossy().to_string();
+                            let canon_path = path.canonicalize().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| path_str.clone());
+                            if existing_paths.contains(&path_str) || existing_paths.contains(&canon_path) {
+                                continue;
+                            }
+
                             let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
                             let clean_title = if let Some((_, rest)) = file_stem.split_once(" - ") {
                                 rest.to_string()
@@ -212,6 +252,10 @@ pub fn scan_and_sync_local_downloads(db: &Database, root: &Path) {
                                 .unwrap_or("Unknown Artist")
                                 .to_string();
 
+                            if existing_keys.contains(&(artist.to_lowercase(), clean_title.to_lowercase())) {
+                                continue;
+                            }
+
                             let track_id = format!("local:track:{}", sanitize_filename(&format!("{}-{}", artist, clean_title)));
                             let dl_track = crate::sources::lossless_relay::db::DownloadedTrack {
                                 source_track_id: track_id.clone(),
@@ -219,7 +263,7 @@ pub fn scan_and_sync_local_downloads(db: &Database, root: &Path) {
                                 artist,
                                 album,
                                 duration_ms: 0,
-                                file_path: path.to_string_lossy().to_string(),
+                                file_path: path_str,
                                 cover_art_url: None,
                                 downloaded_at: entry.metadata().ok().and_then(|m| m.modified().ok())
                                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())

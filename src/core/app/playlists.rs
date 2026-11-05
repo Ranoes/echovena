@@ -9,6 +9,10 @@ pub struct PendingPlaylistTrackAdd {
   /// Track id/URI passed through to `AddTrackToPlaylist`.
   pub track_id: String,
   pub track_name: String,
+  pub artist: String,
+  pub album: Option<String>,
+  pub duration_ms: u64,
+  pub cover_art_url: Option<String>,
 }
 
 #[derive(Clone)]
@@ -181,13 +185,7 @@ impl App {
     rows
   }
 
-  pub fn begin_add_track_to_playlist_flow(&mut self, track_id: Option<String>, track_name: String) {
-    let Some(track_id) = track_id else {
-      self.set_status_message(self.strings().status.app.track_cannot_add.to_string(), 4);
-      return;
-    };
-
-    // Refresh local SQLite playlists and YouTube playlists for the picker
+  pub fn refresh_picker_playlists(&mut self) {
     if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
       if let Ok(playlists) = db.list_imported_playlists() {
         self.local_playlists = playlists
@@ -196,7 +194,7 @@ impl App {
           .map(|p| crate::core::plugin_api::PlaylistInfo {
             generated_name: None,
             uri: p.id.clone(),
-            name: format!("[Local] {}", p.title),
+            name: p.title.clone(),
             owner: "Local".to_string(),
             track_count: p.track_count as u32,
             id: Some(p.id.clone()),
@@ -213,7 +211,7 @@ impl App {
           .map(|p| crate::core::plugin_api::PlaylistInfo {
             generated_name: None,
             uri: p.id.clone(),
-            name: format!("[YouTube] {}", p.title),
+            name: p.title.clone(),
             owner: "YouTube".to_string(),
             track_count: p.track_count as u32,
             id: Some(p.id.clone()),
@@ -232,11 +230,58 @@ impl App {
         self.youtube_playlists = yt_list;
       }
     }
+  }
 
+  pub fn begin_add_track_info_to_playlist_flow(&mut self, track: &TrackInfo) {
+    let track_id = track.uri.clone().or_else(|| track.id.clone()).unwrap_or_else(|| track.name.clone());
+    let artist = if track.artists.is_empty() {
+      "Unknown Artist".to_string()
+    } else {
+      track.artists.join(", ")
+    };
+    self.refresh_picker_playlists();
+    self.clear_dialog_state();
+    self.pending_playlist_track_add = Some(PendingPlaylistTrackAdd {
+      track_id,
+      track_name: track.name.clone(),
+      artist,
+      album: if track.album.is_empty() { None } else { Some(track.album.clone()) },
+      duration_ms: track.duration_ms,
+      cover_art_url: track.image_url.clone(),
+    });
+    self.view.playlist_picker_selected_index = 0;
+    self.push_navigation_stack(
+      RouteId::Dialog,
+      ActiveBlock::Dialog(DialogContext::AddTrackToPlaylistPicker),
+    );
+  }
+
+  pub fn begin_add_track_to_playlist_flow(&mut self, track_id: Option<String>, track_name: String) {
+    let Some(track_id) = track_id else {
+      self.set_status_message(self.strings().status.app.track_cannot_add.to_string(), 4);
+      return;
+    };
+
+    let found = self.track_table.tracks.iter().find(|t| t.uri.as_deref() == Some(&track_id) || t.id.as_deref() == Some(&track_id))
+      .cloned()
+      .or_else(|| {
+        self.live_search_items.iter().find(|it| it.id == track_id || it.video_id.as_deref() == Some(&track_id))
+          .map(|it| it.to_track_info())
+      });
+    if let Some(t) = found {
+      self.begin_add_track_info_to_playlist_flow(&t);
+      return;
+    }
+
+    self.refresh_picker_playlists();
     self.clear_dialog_state();
     self.pending_playlist_track_add = Some(PendingPlaylistTrackAdd {
       track_id,
       track_name,
+      artist: "Unknown Artist".to_string(),
+      album: None,
+      duration_ms: 0,
+      cover_art_url: None,
     });
     self.view.playlist_picker_selected_index = 0;
     self.push_navigation_stack(
@@ -255,10 +300,16 @@ impl App {
       if let Ok(Some(mut pl)) = db.get_imported_playlist(&playlist) {
         handled_in_sqlite = true;
         let count = pl.track_count;
-        let (title, artist) = if let Some(pending) = self.pending_playlist_track_add.as_ref() {
-          (pending.track_name.clone(), "EchoVena".to_string())
+        let (title, artist, album, duration_ms, cover_art_url) = if let Some(pending) = self.pending_playlist_track_add.as_ref() {
+          (
+            pending.track_name.clone(),
+            pending.artist.clone(),
+            pending.album.clone(),
+            pending.duration_ms,
+            pending.cover_art_url.clone(),
+          )
         } else {
-          (track.clone(), "Unknown Artist".to_string())
+          (track.clone(), "Unknown Artist".to_string(), None, 0, None)
         };
         let track_entry = crate::sources::lossless_relay::db::PlaylistTrack {
           playlist_id: playlist.clone(),
@@ -267,10 +318,10 @@ impl App {
           raw_title: title.clone(),
           clean_title: title,
           artist,
-          album: None,
-          duration_ms: 0,
+          album,
+          duration_ms: duration_ms as i64,
           isrc: None,
-          cover_art_url: None,
+          cover_art_url,
         };
         let _ = db.add_playlist_track(&track_entry);
         pl.track_count += 1;
@@ -314,12 +365,10 @@ impl App {
   }
 
   pub fn begin_add_track_to_playlist_flow_from_selection(&mut self) {
-    let Some(track) = self.track_table.tracks.get(self.view.track_table_index) else {
+    let Some(track) = self.track_table.tracks.get(self.view.track_table_index).cloned() else {
       return;
     };
-    let track_id = track.uri.clone().or_else(|| track.id.clone());
-    let track_name = track.name.clone();
-    self.begin_add_track_to_playlist_flow(track_id, track_name);
+    self.begin_add_track_info_to_playlist_flow(&track);
   }
 
   /// Open the add-to-playlist picker for the item playing now, through the
@@ -327,34 +376,62 @@ impl App {
   pub fn begin_add_playing_track_to_playlist_flow(&mut self) {
     #[cfg(feature = "audio-decode-queue")]
     if let Some(crate::infra::queue::QueueNowPlaying::Decoded(d)) = self.queue_now.as_ref() {
-      let track_id = d.track.uri.clone().or_else(|| d.track.id.as_ref().map(|id| format!("youtube:video:{}", id)));
-      let track_name = d.track.name.clone();
-      self.begin_add_track_to_playlist_flow(track_id, track_name);
+      let t = d.track.clone();
+      self.begin_add_track_info_to_playlist_flow(&t);
       return;
     }
 
     #[cfg(feature = "youtube")]
     if let Some(yt_track) = self.youtube_playback.as_ref().and_then(|yt| yt.current()) {
-      let track_id = yt_track.uri.clone().or_else(|| yt_track.id.as_ref().map(|id| format!("youtube:video:{}", id)));
-      let track_name = yt_track.name.clone();
-      self.begin_add_track_to_playlist_flow(track_id, track_name);
+      let t = yt_track.clone();
+      self.begin_add_track_info_to_playlist_flow(&t);
       return;
     }
 
     if let Some(lossless) = self.lossless_playback.as_ref() {
       if let Some(ref t) = lossless.current_track {
-        let track_id = Some(t.source_track_id.clone());
-        let track_name = t.clean_title.clone();
-        self.begin_add_track_to_playlist_flow(track_id, track_name);
+        let track_info = crate::core::plugin_api::TrackInfo {
+          uri: Some(t.source_track_id.clone()),
+          name: t.clean_title.clone(),
+          artists: vec![t.artist.clone()],
+          album: t.album.clone().unwrap_or_default(),
+          duration_ms: t.duration_ms as u64,
+          id: Some(t.source_track_id.clone()),
+          album_id: None,
+          artist_refs: Vec::new(),
+          is_playable: true,
+          is_local: false,
+          track_number: 1,
+          explicit: false,
+          image_url: t.cover_art_url.clone(),
+          release_date: None,
+          generated_name: None,
+        };
+        self.begin_add_track_info_to_playlist_flow(&track_info);
         return;
       }
     }
 
     match self.playing_item() {
       PlayingItem::Spotify(PlayableItem::Track(track)) => {
-        let track_id = track.id.as_ref().map(|id| id.uri());
-        let name = track.name.clone();
-        self.begin_add_track_to_playlist_flow(track_id, name);
+        let track_info = crate::core::plugin_api::TrackInfo {
+          uri: track.id.as_ref().map(|id| id.uri()),
+          name: track.name.clone(),
+          artists: track.artists.iter().map(|a| a.name.clone()).collect(),
+          album: track.album.name.clone(),
+          duration_ms: track.duration.num_milliseconds().max(0) as u64,
+          id: track.id.as_ref().map(|id| id.id().to_string()),
+          album_id: track.album.id.as_ref().map(|id| id.id().to_string()),
+          artist_refs: Vec::new(),
+          is_playable: true,
+          is_local: false,
+          track_number: track.track_number as u32,
+          explicit: track.explicit,
+          image_url: track.album.images.first().map(|img| img.url.clone()),
+          release_date: None,
+          generated_name: None,
+        };
+        self.begin_add_track_info_to_playlist_flow(&track_info);
       }
       PlayingItem::Spotify(PlayableItem::Episode(_)) => {
         self.set_status_message(
@@ -371,13 +448,25 @@ impl App {
       PlayingItem::NotSpotify => {
         if let Some(snapshot) = crate::infra::media_metadata::current_playback_snapshot(self) {
           let title = snapshot.metadata.title;
-          let artists = snapshot.metadata.artists.join(", ");
-          let name = if artists.is_empty() {
-            title.clone()
-          } else {
-            format!("{} - {}", artists, title)
+          let artists = snapshot.metadata.artists;
+          let track_info = crate::core::plugin_api::TrackInfo {
+            uri: None,
+            name: title,
+            artists,
+            album: snapshot.metadata.album.clone(),
+            duration_ms: snapshot.metadata.duration_ms as u64,
+            id: None,
+            album_id: None,
+            artist_refs: Vec::new(),
+            is_playable: true,
+            is_local: false,
+            track_number: 1,
+            explicit: false,
+            image_url: snapshot.metadata.image_url.clone(),
+            release_date: None,
+            generated_name: None,
           };
-          self.begin_add_track_to_playlist_flow(Some(name.clone()), name);
+          self.begin_add_track_info_to_playlist_flow(&track_info);
         } else {
           self.set_status_message(self.strings().status.app.no_current_track.to_string(), 4);
         }

@@ -57,7 +57,10 @@ pub fn snapshot_tracks(
 /// track is a livestream.
 #[cfg(feature = "queue-download")]
 pub fn is_placeholder(track: &TrackInfo) -> bool {
-  track.artists.is_empty() && track.uri.as_deref() == Some(track.name.as_str())
+  (track.artists.is_empty() && track.uri.as_deref() == Some(track.name.as_str()))
+    || track.name.starts_with("yt:video:")
+    || track.name.starts_with("youtube:")
+    || (track.artists.is_empty() && track.duration_ms == 0)
 }
 
 /// The URI of `tracks[index]` when that row is a placeholder, so the source
@@ -87,7 +90,11 @@ pub fn apply_resolved(
   let Some(row) = tracks.get_mut(index) else {
     return false;
   };
-  if !is_placeholder(row) || row.uri.as_deref() != Some(uri) {
+  let vid_match = row.uri.as_deref() == Some(uri)
+    || row.id.as_deref() == Some(uri)
+    || row.name == uri
+    || (row.uri.as_deref().and_then(crate::infra::youtube::extract_youtube_video_id) == crate::infra::youtube::extract_youtube_video_id(uri));
+  if !is_placeholder(row) || !vid_match {
     return false;
   }
   resolved.uri = Some(uri.to_string());

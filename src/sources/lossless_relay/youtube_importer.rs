@@ -219,8 +219,8 @@ pub fn clean_youtube_title(raw_title: &str, uploader: Option<&str>) -> (String, 
     let separators = [" - ", " – ", " — ", " : ", "／", " / "];
     for sep in &separators {
         if let Some((left, right)) = title.split_once(sep) {
-            let left_trimmed = left.trim().trim_matches(|c: char| c == '"' || c == '\'' || c == '【' || c == '】' || c == '「' || c == '」' || c == '『' || c == '』').trim().to_string();
-            let mut right_trimmed = right.trim().trim_matches(|c: char| c == '"' || c == '\'' || c == '【' || c == '】' || c == '「' || c == '」' || c == '『' || c == '』').trim().to_string();
+            let left_trimmed = left.trim().trim_matches(|c: char| c == '"' || c == '\'' || c == '(' || c == ')' || c == '[' || c == ']' || c == '【' || c == '】' || c == '「' || c == '」' || c == '『' || c == '』').trim().to_string();
+            let mut right_trimmed = right.trim().trim_matches(|c: char| c == '"' || c == '\'' || c == '(' || c == ')' || c == '[' || c == ']' || c == '【' || c == '】' || c == '「' || c == '」' || c == '『' || c == '』').trim().to_string();
 
             if let Ok(re) = Regex::new(r#"(?i)\s*["']?\s*(official\s*video|mv|hd|audio)\s*["']?$"#) {
                 let cleaned = re.replace(&right_trimmed, "").trim().to_string();
@@ -461,18 +461,43 @@ impl YouTubeImporter {
                             .as_str()
                     });
 
-                let duration_text = flex_cols
-                    .and_then(|cols| cols.get(1))
+                let raw_duration = renderer["fixedColumns"]
+                    .as_array()
+                    .and_then(|cols| cols.first())
                     .and_then(|col| {
-                        col["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"]
-                            .as_array()
+                        col["musicResponsiveListItemFixedColumnRenderer"]["text"]["runs"][0]["text"]
+                            .as_str()
                     })
-                    .and_then(|runs| runs.last())
-                    .and_then(|r| r["text"].as_str())
+                    .or_else(|| {
+                        flex_cols
+                            .and_then(|cols| cols.get(1))
+                            .and_then(|col| {
+                                col["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"]
+                                    .as_array()
+                            })
+                            .and_then(|runs| runs.last())
+                            .and_then(|r| r["text"].as_str())
+                    })
+                    .or_else(|| {
+                        flex_cols.and_then(|cols| {
+                            for col in cols {
+                                if let Some(runs) = col["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"].as_array() {
+                                    for r in runs.iter().rev() {
+                                        if let Some(txt) = r["text"].as_str() {
+                                            if txt.contains(':') && txt.chars().all(|c| c.is_ascii_digit() || c == ':') {
+                                                return Some(txt);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            None
+                        })
+                    })
                     .unwrap_or("0:00");
 
                 let (clean_artist, clean_title) = clean_youtube_title(raw_title, artist_name);
-                let duration_ms = parse_duration_str(duration_text);
+                let duration_ms = parse_duration_str(raw_duration);
 
                 let track_cover = renderer["thumbnail"]["musicThumbnailRenderer"]["thumbnail"]
                     ["thumbnails"]
@@ -1002,7 +1027,13 @@ impl YouTubeImporter {
 
                 let raw_title = entry["title"].as_str().unwrap_or("Unknown Title");
                 let uploader = entry["uploader"].as_str().or_else(|| entry["channel"].as_str());
-                let duration_secs = entry["duration"].as_f64().unwrap_or(0.0);
+                let duration_secs = entry["duration"]
+                    .as_f64()
+                    .or_else(|| entry["duration"].as_i64().map(|i| i as f64))
+                    .or_else(|| {
+                        entry["duration_string"].as_str().map(|s| (parse_duration_str(s) / 1000) as f64)
+                    })
+                    .unwrap_or(0.0);
                 let duration_ms = (duration_secs * 1000.0) as i64;
 
                 let (clean_artist, clean_title) = clean_youtube_title(raw_title, uploader);
@@ -1109,7 +1140,13 @@ impl YouTubeImporter {
 
                 let raw_title = entry["title"].as_str().unwrap_or("Unknown Title");
                 let uploader = entry["uploader"].as_str().or_else(|| entry["channel"].as_str());
-                let duration_secs = entry["duration"].as_f64().unwrap_or(0.0);
+                let duration_secs = entry["duration"]
+                    .as_f64()
+                    .or_else(|| entry["duration"].as_i64().map(|i| i as f64))
+                    .or_else(|| {
+                        entry["duration_string"].as_str().map(|s| (parse_duration_str(s) / 1000) as f64)
+                    })
+                    .unwrap_or(0.0);
                 let duration_ms = (duration_secs * 1000.0) as i64;
 
                 let (clean_artist, clean_title) = clean_youtube_title(raw_title, uploader);

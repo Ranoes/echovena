@@ -723,7 +723,13 @@ async fn download_audio(
     let ext = cached.extension().and_then(|e| e.to_str()).unwrap_or("m4a");
     let tmp = create_audio_tempfile(&format!(".{ext}"))?;
     let _ = std::fs::copy(&cached, tmp.path());
-    return Ok((tmp, cached, None));
+    let meta = if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+      db.find_playlist_track_by_source_id(video_id).ok().flatten()
+        .map(|pt| crate::sources::lossless_relay::archiver::playlist_track_to_track_info(&pt))
+    } else {
+      None
+    };
+    return Ok((tmp, cached, meta));
   }
   // Check local offline archive in SQLite
   if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
@@ -739,7 +745,9 @@ async fn download_audio(
           let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("flac");
           let tmp = create_audio_tempfile(&format!(".{ext}"))?;
           let _ = std::fs::copy(&p, tmp.path());
-          return Ok((tmp, p, None));
+          let meta = db.find_playlist_track_by_source_id(video_id).ok().flatten()
+            .map(|pt| crate::sources::lossless_relay::archiver::playlist_track_to_track_info(&pt));
+          return Ok((tmp, p, meta));
         }
       }
     }
@@ -755,7 +763,24 @@ async fn download_audio(
           let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("flac");
           let tmp = create_audio_tempfile(&format!(".{ext}"))?;
           let _ = std::fs::copy(&p, tmp.path());
-          return Ok((tmp, p, None));
+          let info = TrackInfo {
+            uri: Some(format!("youtube:video:{}", video_id)),
+            name: dt.title,
+            artists: vec![dt.artist],
+            album: dt.album.unwrap_or_default(),
+            duration_ms: dt.duration_ms,
+            id: Some(dt.source_track_id),
+            album_id: None,
+            artist_refs: Vec::new(),
+            is_playable: true,
+            is_local: true,
+            track_number: 1,
+            explicit: false,
+            image_url: dt.cover_art_url,
+            release_date: None,
+            generated_name: None,
+          };
+          return Ok((tmp, p, Some(info)));
         }
       }
     }
@@ -965,6 +990,36 @@ async fn start_youtube_queue(app: &Arc<Mutex<App>>, uris: &[String], start_idx: 
     }
     snapshot_tracks(&all_pool, search, uris)
   };
+
+  if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+    let all_downloaded = db.list_downloaded_tracks().unwrap_or_default();
+    for track in tracks.iter_mut() {
+      if track.artists.is_empty() || track.name.starts_with("yt:video:") || track.name.starts_with("youtube:") {
+        if let Some(u) = track.uri.as_deref().or_else(|| track.id.as_deref()) {
+          let vid = super::extract_youtube_video_id(u).unwrap_or_else(|| u.to_string());
+          if let Ok(Some(pt)) = db.find_playlist_track_by_source_id(u)
+            .or_else(|_| db.find_playlist_track_by_source_id(&vid))
+            .or_else(|_| db.find_playlist_track_by_source_id(&format!("yt:video:{}", vid)))
+          {
+            track.name = pt.clean_title;
+            track.artists = vec![pt.artist];
+            track.album = pt.album.unwrap_or_default();
+            track.duration_ms = pt.duration_ms as u64;
+            track.image_url = pt.cover_art_url;
+          } else if let Some(dt) = all_downloaded.iter().find(|d| {
+            d.source_track_id == u || d.source_track_id == vid || d.file_path.contains(&vid)
+          }) {
+            track.name = dt.title.clone();
+            track.artists = vec![dt.artist.clone()];
+            track.album = dt.album.clone().unwrap_or_default();
+            track.duration_ms = dt.duration_ms;
+            track.image_url = dt.cover_art_url.clone();
+          }
+        }
+      }
+    }
+  }
+
   if tracks.is_empty() {
     set_error(
       app,

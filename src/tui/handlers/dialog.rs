@@ -264,6 +264,10 @@ mod tests {
     app.pending_playlist_track_add = Some(PendingPlaylistTrackAdd {
       track_id: "0000000000000000000001".to_string(),
       track_name: "Track".to_string(),
+      artist: "Artist".to_string(),
+      album: None,
+      duration_ms: 180000,
+      cover_art_url: None,
     });
     app.push_navigation_stack(
       RouteId::Dialog,
@@ -316,6 +320,10 @@ mod tests {
     app.pending_playlist_track_add = Some(PendingPlaylistTrackAdd {
       track_id: "0000000000000000000001".to_string(),
       track_name: "Track".to_string(),
+      artist: "Artist".to_string(),
+      album: None,
+      duration_ms: 180000,
+      cover_art_url: None,
     });
     app.push_navigation_stack(
       RouteId::Dialog,
