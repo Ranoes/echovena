@@ -573,20 +573,86 @@ impl Database {
     }
 
     pub fn delete_downloaded_track(&self, source_track_id: &str) -> Result<()> {
+        self.delete_track_permanently("", "", &[source_track_id])
+    }
+
+    /// Completely purges a track and its cached resolution, lyrics, and downloaded file references.
+    pub fn delete_track_permanently(
+        &self,
+        title: &str,
+        artist: &str,
+        identifiers: &[&str],
+    ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        let clean_id = source_track_id
-            .strip_prefix("spotify:track:")
-            .unwrap_or(source_track_id);
-        let spotify_id = format!("spotify:track:{}", clean_id);
-        conn.execute(
-            "DELETE FROM downloaded_tracks WHERE source_track_id = ?1 OR source_track_id = ?2;",
-            params![source_track_id, spotify_id],
-        )?;
-        conn.execute(
-            "DELETE FROM playlist_tracks WHERE playlist_id = 'spotify:personal:liked_songs' AND (source_track_id = ?1 OR source_track_id = ?2);",
-            params![source_track_id, spotify_id],
-        )?;
+
+        for id in identifiers {
+            let clean = id
+                .strip_prefix("spotify:track:")
+                .or_else(|| id.strip_prefix("local:track:"))
+                .or_else(|| id.strip_prefix("yt:video:"))
+                .unwrap_or(id);
+            let sp = format!("spotify:track:{}", clean);
+            let yt = format!("yt:video:{}", clean);
+            let loc = format!("local:track:{}", clean);
+            let file_clean = id.strip_prefix("file://").unwrap_or(id);
+
+            let _ = conn.execute(
+                "DELETE FROM downloaded_tracks WHERE source_track_id = ?1 OR source_track_id = ?2 OR source_track_id = ?3 OR source_track_id = ?4 OR file_path = ?5 OR file_path LIKE ?6;",
+                params![id, sp, yt, loc, file_clean, format!("%{}", file_clean)],
+            );
+            let _ = conn.execute(
+                "DELETE FROM resolution_cache WHERE source_track_id = ?1 OR source_track_id = ?2 OR source_track_id = ?3 OR source_track_id = ?4 OR local_archive_path = ?5 OR local_archive_path LIKE ?6;",
+                params![id, sp, yt, loc, file_clean, format!("%{}", file_clean)],
+            );
+            let _ = conn.execute(
+                "DELETE FROM lyrics_cache WHERE source_track_id = ?1 OR source_track_id = ?2 OR source_track_id = ?3 OR source_track_id = ?4;",
+                params![id, sp, yt, loc],
+            );
+            let _ = conn.execute(
+                "DELETE FROM playlist_tracks WHERE source_track_id = ?1 OR source_track_id = ?2 OR source_track_id = ?3 OR source_track_id = ?4;",
+                params![id, sp, yt, loc],
+            );
+        }
+
+        // Also delete by case-insensitive title and artist match
+        if !title.is_empty() {
+            let _ = conn.execute(
+                "DELETE FROM downloaded_tracks WHERE LOWER(title) = LOWER(?1) AND (LOWER(artist) = LOWER(?2) OR ?2 = '' OR artist = 'Unknown Artist');",
+                params![title, artist],
+            );
+            let _ = conn.execute(
+                "DELETE FROM playlist_tracks WHERE LOWER(clean_title) = LOWER(?1) AND (LOWER(artist) = LOWER(?2) OR ?2 = '' OR artist = 'Unknown Artist');",
+                params![title, artist],
+            );
+            let _ = conn.execute(
+                "DELETE FROM resolution_cache WHERE local_archive_path LIKE ?1;",
+                params![format!("%{}%", title)],
+            );
+        }
+
         Ok(())
+    }
+
+    /// Purges all downloaded_tracks and resolution_cache rows whose files are no longer on disk.
+    pub fn purge_missing_files(&self) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT source_track_id, file_path FROM downloaded_tracks;")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut to_delete = Vec::new();
+        for r in rows.flatten() {
+            let path = std::path::Path::new(&r.1);
+            if !path.exists() {
+                to_delete.push(r.0);
+            }
+        }
+        for id in &to_delete {
+            let _ = conn.execute("DELETE FROM downloaded_tracks WHERE source_track_id = ?1;", params![id]);
+            let _ = conn.execute("DELETE FROM resolution_cache WHERE source_track_id = ?1;", params![id]);
+            let _ = conn.execute("DELETE FROM playlist_tracks WHERE source_track_id = ?1;", params![id]);
+        }
+        Ok(to_delete.len())
     }
 
     /// Retrieve track title and artist metadata from local database (downloaded or playlist tracks).

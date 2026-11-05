@@ -269,38 +269,55 @@ fn handle_delete_track(app: &mut App) {
       let title = track.name.clone();
       let artist = track.artists.join(", ");
       let track_id = track.uri.clone().or_else(|| track.id.clone()).unwrap_or_else(|| title.clone());
+      let raw_uri = track.uri.clone().unwrap_or_default();
+      let raw_id = track.id.clone().unwrap_or_default();
+      let local_tag = format!("local:track:{}", crate::sources::lossless_relay::archiver::sanitize_filename(&format!("{}-{}", artist, title)));
 
-      // 1. Delete from SQLite database (both downloaded_tracks and liked_songs)
+      // 1. Delete permanently from SQLite database across all tables & cache
       if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
-        let _ = db.delete_downloaded_track(&track_id);
-        if let Some(ref uri) = track.uri {
-          let _ = db.delete_downloaded_track(uri);
-        }
-        let track_key = format!("{}:{}", artist.to_lowercase(), title.to_lowercase());
-        let _ = db.delete_downloaded_track(&track_key);
+        let mut ids: Vec<&str> = vec![&track_id];
+        if !raw_uri.is_empty() { ids.push(&raw_uri); }
+        if !raw_id.is_empty() { ids.push(&raw_id); }
+        ids.push(&local_tag);
+        let _ = db.delete_track_permanently(&title, &artist, &ids);
+        let _ = db.purge_missing_files();
       }
 
-      // 2. Delete local audio file from disk if present
-      if let Some(ref uri) = track.uri {
-        if let Some(path_str) = uri.strip_prefix("file://") {
-          let p = std::path::PathBuf::from(path_str);
-          if p.exists() {
-            let _ = std::fs::remove_file(&p);
-          }
+      // 2. Delete local audio and associated files from disk (Music/EchoVena archive)
+      if let Some(path_str) = track.uri.as_deref().and_then(|u| u.strip_prefix("file://")) {
+        let p = std::path::PathBuf::from(path_str);
+        if p.exists() {
+          let _ = std::fs::remove_file(&p);
         }
       }
       if let Some(root) = crate::core::paths::music_archive_dir() {
-        let candidate_opus = root.join(format!("{}.opus", title));
-        if candidate_opus.exists() {
-          let _ = std::fs::remove_file(&candidate_opus);
-        }
-        let candidate_flac = root.join(format!("{}.flac", title));
-        if candidate_flac.exists() {
-          let _ = std::fs::remove_file(&candidate_flac);
+        for ext in &["opus", "flac", "m4a", "mp3", "webm", "elrc", "jpg", "jpeg", "png"] {
+          let candidate = root.join(format!("{}.{}", title, ext));
+          if candidate.exists() {
+            let _ = std::fs::remove_file(&candidate);
+          }
+          let artist_candidate = root.join(format!("{} - {}.{}", artist, title, ext));
+          if artist_candidate.exists() {
+            let _ = std::fs::remove_file(&artist_candidate);
+          }
         }
       }
 
-      // 3. Remove from track_table.tracks
+      // 3. Purge cached files in audio cache (~/.cache/echovena/audio/)
+      if let Some(audio_cache) = crate::core::paths::audio_cache_dir() {
+        if let Ok(entries) = std::fs::read_dir(&audio_cache) {
+          for entry in entries.flatten() {
+            let p = entry.path();
+            if let Some(fname) = p.file_name().and_then(|f| f.to_str()) {
+              if fname.contains(&title) {
+                let _ = std::fs::remove_file(&p);
+              }
+            }
+          }
+        }
+      }
+
+      // 4. Remove from in-memory track table & caches
       if idx < app.track_table.tracks.len() {
         app.track_table.tracks.remove(idx);
       }
@@ -310,7 +327,15 @@ fn handle_delete_track(app: &mut App) {
         app.view.track_table_index = 0;
       }
 
-      app.set_status_message(format!("Deleted '{}' from Song List", title), 4);
+      for page in &mut app.library_mut().saved_tracks.pages {
+        page.items.retain(|t| t.name != title && t.uri != track.uri);
+      }
+      app.liked_song_ids_set_mut().remove(&track_id);
+      if !raw_uri.is_empty() {
+        app.liked_song_ids_set_mut().remove(&raw_uri);
+      }
+
+      app.set_status_message(format!("Permanently deleted '{}' from Song List & cache", title), 4);
     }
   } else {
     app.apply(Action::OpenRemoveTrackDialog);

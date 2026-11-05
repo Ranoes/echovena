@@ -425,23 +425,23 @@ impl App {
 
   pub fn populate_saved_tracks_from_local_and_db(&mut self) {
     if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+      // 1. Purge any orphan cache rows whose files were deleted, then scan disk
+      let _ = db.purge_missing_files();
       if let Some(root) = crate::core::paths::music_archive_dir() {
         crate::sources::lossless_relay::archiver::scan_and_sync_local_downloads(&db, &root);
       }
       let mut local_tracks: Vec<crate::core::plugin_api::TrackInfo> = Vec::new();
 
-      // 1. Load downloaded tracks from disk/SQLite
+      // 2. Load downloaded tracks from disk/SQLite (only existing files!)
       if let Ok(downloaded) = db.list_downloaded_tracks() {
         for (i, d) in downloaded.into_iter().enumerate() {
           let file_path = std::path::Path::new(&d.file_path);
-          let is_on_disk = file_path.exists();
-          let uri = if is_on_disk {
-            url::Url::from_file_path(file_path)
-              .map(|u| u.to_string())
-              .unwrap_or_else(|_| format!("file://{}", d.file_path))
-          } else {
-            d.source_track_id.clone()
-          };
+          if !file_path.exists() {
+            continue;
+          }
+          let uri = url::Url::from_file_path(file_path)
+            .map(|u| u.to_string())
+            .unwrap_or_else(|_| format!("file://{}", d.file_path));
           local_tracks.push(crate::core::plugin_api::TrackInfo {
             uri: Some(uri),
             name: d.title,
@@ -452,7 +452,7 @@ impl App {
             album_id: None,
             artist_refs: Vec::new(),
             is_playable: true,
-            is_local: is_on_disk,
+            is_local: true,
             track_number: (i + 1) as u32,
             explicit: false,
             image_url: d.cover_art_url,

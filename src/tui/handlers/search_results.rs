@@ -809,6 +809,16 @@ pub fn handler(key: Key, app: &mut App) {
       }
       Key::Enter => {
         if let Some(item) = app.selected_live_search_item().cloned() {
+          // If in Music or Video scope, or if item has video_id / is playable music, play it directly!
+          if app.search_scope == SearchScope::Music
+            || app.search_scope == SearchScope::Video
+            || item.scope == SearchScope::Music
+            || item.scope == SearchScope::Video
+            || item.video_id.is_some()
+          {
+            app.play_selected_live_search_item();
+            return;
+          }
           match item.scope {
             SearchScope::Album => {
               let id = item.playlist_id.as_deref().unwrap_or(&item.id);

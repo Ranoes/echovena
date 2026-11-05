@@ -342,13 +342,6 @@ fn parse_ytm_card_shelf(card: &Value, default_scope: SearchScope) -> Option<Sear
                 })
             })
         })
-        .or_else(|| {
-            card["subtitle"]["runs"].as_array().and_then(|runs| {
-                runs.iter().find_map(|r| {
-                    r["navigationEndpoint"]["browseEndpoint"]["browseId"].as_str()
-                })
-            })
-        })
         .map(|s| s.to_string());
 
     let (artist, album, duration_str) = parse_ytm_subtitle_runs(&card["subtitle"]["runs"]);
@@ -359,7 +352,11 @@ fn parse_ytm_card_shelf(card: &Value, default_scope: SearchScope) -> Option<Sear
     extract_card_badges(card, &mut badges);
 
     // Determine scope / classification
-    let scope = if browse_id.as_ref().is_some_and(|b| b.starts_with("MPREb_") || b.starts_with("OLAK5uy_") || b.starts_with("VL")) {
+    let scope = if default_scope == SearchScope::Music || default_scope == SearchScope::Video {
+        default_scope
+    } else if video_id.is_some() {
+        SearchScope::Music
+    } else if browse_id.as_ref().is_some_and(|b| b.starts_with("MPREb_") || b.starts_with("OLAK5uy_") || b.starts_with("VL")) {
         SearchScope::Album
     } else if browse_id.as_ref().is_some_and(|b| b.starts_with("UC") || b.starts_with("FEmusic_")) {
         SearchScope::Artist
@@ -367,8 +364,6 @@ fn parse_ytm_card_shelf(card: &Value, default_scope: SearchScope) -> Option<Sear
         SearchScope::Album
     } else if default_scope == SearchScope::Artist {
         SearchScope::Artist
-    } else if video_id.is_some() {
-        SearchScope::Music
     } else {
         default_scope
     };
@@ -441,19 +436,6 @@ fn parse_ytm_responsive_list_item(renderer: &Value, default_scope: SearchScope) 
                 ["musicPlayButtonRenderer"]["playNavigationEndpoint"]["browseEndpoint"]["browseId"]
                 .as_str()
         })
-        .or_else(|| {
-            renderer["flexColumns"].as_array().and_then(|cols| {
-                cols.iter().find_map(|c| {
-                    c["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"]
-                        .as_array()
-                        .and_then(|runs| {
-                            runs.iter().find_map(|r| {
-                                r["navigationEndpoint"]["browseEndpoint"]["browseId"].as_str()
-                            })
-                        })
-                })
-            })
-        })
         .map(|s| s.to_string());
 
     let flex_cols = renderer["flexColumns"].as_array()?;
@@ -483,7 +465,11 @@ fn parse_ytm_responsive_list_item(renderer: &Value, default_scope: SearchScope) 
     extract_list_item_badges(renderer, &mut badges);
 
     // Determine scope / classification
-    let scope = if browse_id.as_ref().is_some_and(|b| b.starts_with("MPREb_") || b.starts_with("OLAK5uy_") || b.starts_with("VL")) {
+    let scope = if default_scope == SearchScope::Music || default_scope == SearchScope::Video {
+        default_scope
+    } else if video_id.is_some() {
+        SearchScope::Music
+    } else if browse_id.as_ref().is_some_and(|b| b.starts_with("MPREb_") || b.starts_with("OLAK5uy_") || b.starts_with("VL")) {
         SearchScope::Album
     } else if browse_id.as_ref().is_some_and(|b| b.starts_with("UC") || b.starts_with("FEmusic_")) {
         SearchScope::Artist
@@ -491,8 +477,6 @@ fn parse_ytm_responsive_list_item(renderer: &Value, default_scope: SearchScope) 
         SearchScope::Album
     } else if default_scope == SearchScope::Artist {
         SearchScope::Artist
-    } else if video_id.is_some() {
-        SearchScope::Music
     } else {
         default_scope
     };
