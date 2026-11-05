@@ -1127,6 +1127,8 @@ async fn start_youtube_queue(app: &Arc<Mutex<App>>, uris: &[String], start_idx: 
         resume_at: None,
         prebuffering_id: None,
         prebuffered_id: None,
+        radio_fetched_for: None,
+        radio_fetching: false,
       };
       // Honor the player-global decoded shuffle for the freshly-built queue.
       if guard.decoded_shuffle {
@@ -1137,6 +1139,7 @@ async fn start_youtube_queue(app: &Arc<Mutex<App>>, uris: &[String], start_idx: 
       drop(guard);
       spawn_karaoke_lyrics_fetch(Arc::clone(app), display, artists, dur);
       spawn_eager_queue_prebuffer(Arc::clone(app));
+      spawn_infinite_autoplay_prefetch(Arc::clone(app));
     }
     Ok(Err(e)) => set_error(app, decode_hint(app, e).await).await,
     Err(e) => {
@@ -1172,6 +1175,55 @@ async fn skip(app: &Arc<Mutex<App>>, direction: Direction) -> bool {
   match target {
     Some(idx) => play_index(app, idx).await,
     None => {
+      if matches!(direction, Direction::Next) {
+        let (can_autoplay, seed_id) = {
+          let guard = app.lock().await;
+          let ap = guard.user_config.behavior.streaming_autoplay;
+          let seed = guard.youtube_playback.as_ref().and_then(|s| {
+            s.tracks.get(s.index).and_then(|t| {
+              t.id.clone().or_else(|| t.uri.as_deref().and_then(super::extract_youtube_video_id))
+            })
+          });
+          (ap, seed)
+        };
+        if can_autoplay {
+          if let Some(seed_id) = seed_id {
+            let importer = crate::sources::lossless_relay::youtube_importer::YouTubeImporter::new();
+            if let Ok(radio_tracks) = importer.fetch_youtube_radio_tracks(&seed_id).await {
+              let next_target = {
+                let mut guard = app.lock().await;
+                if let Some(s) = guard.youtube_playback.as_mut() {
+                  let existing_ids: std::collections::HashSet<String> = s.tracks.iter()
+                    .filter_map(|t| t.id.clone().or_else(|| t.uri.as_deref().and_then(super::extract_youtube_video_id)))
+                    .collect();
+                  let start_len = s.tracks.len();
+                  for t in radio_tracks {
+                    let tid = t.id.clone()
+                      .or_else(|| t.uri.as_deref().and_then(super::extract_youtube_video_id));
+                    if let Some(id) = tid {
+                      if !existing_ids.contains(&id) && id != seed_id {
+                        s.tracks.push(t);
+                      }
+                    }
+                  }
+                  if s.tracks.len() > start_len {
+                    Some(s.index + 1)
+                  } else {
+                    None
+                  }
+                } else {
+                  None
+                }
+              };
+              if let Some(idx) = next_target {
+                play_index(app, idx).await;
+                return true;
+              }
+            }
+          }
+        }
+      }
+
       // Queue boundary: clear the optimistic guard so it doesn't wedge
       // auto-advance off for the rest of the track.
       if let Some(s) = app.lock().await.youtube_playback.as_mut() {
@@ -1402,6 +1454,7 @@ async fn commit_index(
     drop(guard);
     spawn_karaoke_lyrics_fetch(Arc::clone(app), display, artists, dur);
     spawn_eager_queue_prebuffer(Arc::clone(app));
+    spawn_infinite_autoplay_prefetch(Arc::clone(app));
   }
 }
 
@@ -1454,6 +1507,99 @@ pub(crate) fn spawn_eager_queue_prebuffer(app: Arc<Mutex<App>>) {
           }
         }
       }
+    }
+  });
+}
+
+/// Algorithmic infinite auto-play: automatically discovers and appends YouTube Radio tracks
+/// when playback approaches or reaches the end of the active queue.
+pub(crate) fn spawn_infinite_autoplay_prefetch(app: Arc<Mutex<App>>) {
+  tokio::spawn(async move {
+    let (should_fetch, current_video_id, current_title, current_artist) = {
+      let mut guard = app.lock().await;
+      if !guard.user_config.behavior.streaming_autoplay {
+        return;
+      }
+      let Some(s) = guard.youtube_playback.as_mut() else {
+        return;
+      };
+      // Only fetch when queue is nearing completion (remaining <= 2 tracks)
+      let remaining = s.tracks.len().saturating_sub(s.index);
+      if remaining > 2 {
+        return;
+      }
+      if s.radio_fetching {
+        return;
+      }
+      let Some(curr) = s.tracks.get(s.index) else {
+        return;
+      };
+      let vid = curr.id.clone()
+        .or_else(|| curr.uri.as_deref().and_then(super::extract_youtube_video_id));
+      let Some(video_id) = vid else {
+        return;
+      };
+      if s.radio_fetched_for.as_deref() == Some(&video_id) {
+        return;
+      }
+      s.radio_fetching = true;
+      (true, video_id, curr.name.clone(), curr.artists.join(", "))
+    };
+
+    if !should_fetch {
+      return;
+    }
+
+    log::info!("Infinite Auto-Play: Fetching radio recommendations for video {current_video_id} ('{current_title}')");
+    let importer = crate::sources::lossless_relay::youtube_importer::YouTubeImporter::new();
+    let radio_tracks = match importer.fetch_youtube_radio_tracks(&current_video_id).await {
+      Ok(tracks) if !tracks.is_empty() => tracks,
+      err => {
+        log::warn!("InnerTube radio fetch failed or empty ({:?}), falling back to related search...", err);
+        let query = format!("{} mix music", current_artist);
+        let source = build_source(&app).await;
+        match source.search(&query).await {
+          Ok(results) => results.tracks,
+          Err(e) => {
+            log::error!("Auto-Play fallback search failed: {e:#}");
+            Vec::new()
+          }
+        }
+      }
+    };
+
+    let mut guard = app.lock().await;
+    let Some(s) = guard.youtube_playback.as_mut() else {
+      return;
+    };
+    s.radio_fetching = false;
+    s.radio_fetched_for = Some(current_video_id.clone());
+
+    if radio_tracks.is_empty() {
+      return;
+    }
+
+    let existing_ids: std::collections::HashSet<String> = s.tracks.iter()
+      .filter_map(|t| t.id.clone().or_else(|| t.uri.as_deref().and_then(super::extract_youtube_video_id)))
+      .collect();
+
+    let mut added = 0;
+    for track in radio_tracks {
+      let tid = track.id.clone()
+        .or_else(|| track.uri.as_deref().and_then(super::extract_youtube_video_id));
+      if let Some(id) = tid {
+        if !existing_ids.contains(&id) && id != current_video_id {
+          s.tracks.push(track);
+          added += 1;
+        }
+      }
+    }
+
+    if added > 0 {
+      guard.set_status_message(format!("Auto-Play: Discovered and queued {} similar tracks", added), 4);
+      drop(guard);
+      // Trigger eager pre-buffering on the newly discovered upcoming tracks
+      spawn_eager_queue_prebuffer(Arc::clone(&app));
     }
   });
 }

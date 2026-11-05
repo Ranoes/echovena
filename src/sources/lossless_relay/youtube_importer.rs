@@ -10,6 +10,7 @@ use std::process::Stdio;
 use tokio::process::Command;
 
 const YTM_BROWSE_URL: &str = "https://music.youtube.com/youtubei/v1/browse";
+const YTM_NEXT_URL: &str = "https://music.youtube.com/youtubei/v1/next";
 const DEFAULT_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
@@ -1232,6 +1233,156 @@ impl YouTubeImporter {
 
         Ok(playlist)
     }
+
+    /// Fetches YouTube Music algorithmic radio / auto-play recommendations for a given seed video ID.
+    /// Uses YouTube Music's InnerTube `v1/next` endpoint with `playlistId: "RDAMVM{videoId}"`.
+    pub async fn fetch_youtube_radio_tracks(&self, video_id: &str) -> Result<Vec<TrackInfo>> {
+        let clean_vid = parse_youtube_url(video_id)
+            .and_then(|r| match r {
+                YouTubeResource::Video(id) => Some(id),
+                _ => None,
+            })
+            .unwrap_or_else(|| video_id.to_string());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(USER_AGENT, HeaderValue::from_static(DEFAULT_USER_AGENT));
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        if let Some(cookie_str) = crate::sources::sync::auth::YouTubeAuthHandler::resolve_cookie_header() {
+            if let Ok(val) = HeaderValue::from_str(&cookie_str) {
+                headers.insert(reqwest::header::COOKIE, val);
+            }
+        }
+
+        let payload = serde_json::json!({
+            "context": {
+                "client": {
+                    "clientName": "WEB_REMIX",
+                    "clientVersion": "1.20240401.01.00",
+                    "hl": "en",
+                    "gl": "US"
+                }
+            },
+            "videoId": clean_vid,
+            "playlistId": format!("RDAMVM{}", clean_vid),
+            "isAudioOnly": true
+        });
+
+        let resp = self
+            .client
+            .post(YTM_NEXT_URL)
+            .headers(headers)
+            .json(&payload)
+            .send()
+            .await
+            .context("failed to execute InnerTube next radio request")?;
+
+        if !resp.status().is_success() {
+            return Err(anyhow!("InnerTube radio request returned status {}", resp.status()));
+        }
+
+        let body: Value = resp.json().await.context("failed to parse InnerTube radio JSON response")?;
+
+        let mut tracks = Vec::new();
+        let contents = find_playlist_panel_contents(&body);
+
+        if let Some(items) = contents {
+            for (idx, item) in items.iter().enumerate() {
+                let renderer = item.get("playlistPanelVideoRenderer")
+                    .or_else(|| item.get("playlistPanelVideoWrapperRenderer")
+                        .and_then(|w| w.get("primaryRenderer"))
+                        .and_then(|p| p.get("playlistPanelVideoRenderer")));
+
+                let Some(r) = renderer else {
+                    continue;
+                };
+
+                let vid = match r["videoId"].as_str() {
+                    Some(v) if !v.is_empty() => v.to_string(),
+                    _ => continue,
+                };
+
+                // Skip the seed video itself
+                if vid == clean_vid {
+                    continue;
+                }
+
+                let raw_title = r["title"]["runs"][0]["text"].as_str().unwrap_or("Unknown Title");
+                let artist_name = r["longBylineText"]["runs"][0]["text"].as_str()
+                    .or_else(|| r["shortBylineText"]["runs"][0]["text"].as_str());
+                let (clean_artist, clean_title) = clean_youtube_title(raw_title, artist_name);
+
+                let raw_duration = r["lengthText"]["runs"][0]["text"].as_str().unwrap_or("0:00");
+                let duration_ms = parse_duration_str(raw_duration);
+
+                let track_cover = r["thumbnail"]["thumbnails"]
+                    .as_array()
+                    .and_then(|arr| arr.last())
+                    .and_then(|t| t["url"].as_str())
+                    .map(|s| crate::sources::lossless_relay::archiver::upgrade_cover_art_url_to_hd(s));
+
+                let album_name = r["longBylineText"]["runs"].as_array().and_then(|runs| {
+                    if runs.len() >= 3 {
+                        runs.get(2).and_then(|r| r["text"].as_str()).map(|s| s.to_string())
+                    } else {
+                        None
+                    }
+                }).unwrap_or_default();
+
+                tracks.push(TrackInfo {
+                    id: Some(vid.clone()),
+                    uri: Some(format!("youtube:video:{}", vid)),
+                    name: clean_title,
+                    artists: vec![clean_artist],
+                    album: album_name,
+                    duration_ms: duration_ms as u64,
+                    album_id: None,
+                    artist_refs: vec![],
+                    is_playable: true,
+                    is_local: false,
+                    track_number: idx as u32 + 1,
+                    explicit: false,
+                    image_url: track_cover,
+                    release_date: None,
+                    generated_name: None,
+                });
+            }
+        }
+
+        Ok(tracks)
+    }
+}
+
+/// Helper function to find playlist panel contents in YouTube Music JSON responses
+fn find_playlist_panel_contents<'a>(val: &'a Value) -> Option<&'a Vec<Value>> {
+    if let Some(arr) = val["contents"]["singleColumnMusicWatchNextResultsRenderer"]["tabbedRenderer"]["watchNextTabbedResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["musicQueueRenderer"]["content"]["playlistPanelRenderer"]["contents"].as_array() {
+        return Some(arr);
+    }
+    if let Some(arr) = val["musicQueueRenderer"]["content"]["playlistPanelRenderer"]["contents"].as_array() {
+        return Some(arr);
+    }
+    find_playlist_panel_recursive(val)
+}
+
+fn find_playlist_panel_recursive<'a>(val: &'a Value) -> Option<&'a Vec<Value>> {
+    if let Some(obj) = val.as_object() {
+        if let Some(panel) = obj.get("playlistPanelRenderer") {
+            if let Some(contents) = panel.get("contents").and_then(|c| c.as_array()) {
+                return Some(contents);
+            }
+        }
+        for (_, v) in obj {
+            if let Some(found) = find_playlist_panel_recursive(v) {
+                return Some(found);
+            }
+        }
+    } else if let Some(arr) = val.as_array() {
+        for v in arr {
+            if let Some(found) = find_playlist_panel_recursive(v) {
+                return Some(found);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1384,5 +1535,57 @@ mod tests {
         );
         assert_eq!(artist, "NewJeans");
         assert_eq!(title, "Ditto");
+    }
+
+    #[test]
+    fn test_find_playlist_panel_contents_and_radio_parser() {
+        let fake_json = serde_json::json!({
+            "contents": {
+                "singleColumnMusicWatchNextResultsRenderer": {
+                    "tabbedRenderer": {
+                        "watchNextTabbedResultsRenderer": {
+                            "tabs": [
+                                {
+                                    "tabRenderer": {
+                                        "content": {
+                                            "musicQueueRenderer": {
+                                                "content": {
+                                                    "playlistPanelRenderer": {
+                                                        "contents": [
+                                                            {
+                                                                "playlistPanelVideoRenderer": {
+                                                                    "videoId": "seed_vid_123",
+                                                                    "title": { "runs": [{ "text": "Seed Song" }] },
+                                                                    "longBylineText": { "runs": [{ "text": "Artist A" }, { "text": " • " }, { "text": "Album A" }] },
+                                                                    "lengthText": { "runs": [{ "text": "3:20" }] }
+                                                                }
+                                                            },
+                                                            {
+                                                                "playlistPanelVideoRenderer": {
+                                                                    "videoId": "radio_vid_456",
+                                                                    "title": { "runs": [{ "text": "Discovered Radio Track" }] },
+                                                                    "longBylineText": { "runs": [{ "text": "Artist B" }, { "text": " • " }, { "text": "Album B" }] },
+                                                                    "lengthText": { "runs": [{ "text": "4:15" }] },
+                                                                    "thumbnail": {
+                                                                        "thumbnails": [{ "url": "https://lh3.googleusercontent.com/test=w120-h120" }]
+                                                                    }
+                                                                }
+                                                            }
+                                                        ]
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        });
+
+        let contents = find_playlist_panel_contents(&fake_json).expect("contents should be found");
+        assert_eq!(contents.len(), 2);
     }
 }

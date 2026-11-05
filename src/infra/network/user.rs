@@ -84,6 +84,7 @@ pub trait UserNetwork {
   /// picker (used by plugin data reads).
   async fn get_devices(&mut self, navigate: bool);
   async fn get_made_for_you(&mut self);
+  async fn fetch_youtube_discover_shelves(&self) -> Vec<DiscoverShelf>;
   /// `navigate: false` refreshes the data without opening the screen (used by
   /// plugin data reads).
   #[allow(dead_code)]
@@ -166,9 +167,88 @@ impl UserNetwork for Network {
     let result = self
       .spotify_get_typed::<MadeForYou>("views/made-for-x", &[])
       .await;
-    self
-      .finish_made_for_you(result.map(|page| page.sections))
-      .await;
+    match result {
+      Ok(page) => {
+        self.finish_made_for_you(Ok(page.sections)).await;
+      }
+      Err(_) => {
+        let yt_shelves = self.fetch_youtube_discover_shelves().await;
+        self.finish_made_for_you(Ok(yt_shelves)).await;
+      }
+    }
+  }
+
+  async fn fetch_youtube_discover_shelves(&self) -> Vec<DiscoverShelf> {
+    let mut shelves = Vec::new();
+
+    #[cfg(feature = "youtube")]
+    {
+      let current_video_info = {
+        let guard = self.app.lock().await;
+        guard.youtube_playback.as_ref().and_then(|yt| {
+          yt.current().map(|t| {
+            let vid = t.id.clone()
+              .or_else(|| t.uri.as_deref().and_then(crate::infra::youtube::extract_youtube_video_id))
+              .unwrap_or_default();
+            (vid, t.name.clone(), t.artists.join(", "), t.image_url.clone())
+          })
+        })
+      };
+
+      if let Some((vid, title, artist, img)) = current_video_info {
+        if !vid.is_empty() {
+          shelves.push(DiscoverShelf {
+            title: format!("Inspired by '{}'", title),
+            playlists: vec![
+              crate::core::app::DiscoverPlaylist {
+                uri: format!("youtube:playlist:RDAMVM{}", vid),
+                name: format!("Radio: {} - {}", title, artist),
+                description: Some("Algorithmic radio station powered by YouTube Music".to_string()),
+                image_url: img,
+              },
+              crate::core::app::DiscoverPlaylist {
+                uri: format!("youtube:playlist:RD{}", vid),
+                name: format!("Mix: {}", artist),
+                description: Some(format!("Endless playlist mix featuring {} and similar artists", artist)),
+                image_url: None,
+              },
+            ],
+          });
+        }
+      }
+    }
+
+    shelves.push(DiscoverShelf {
+      title: "Featured YouTube Discovery and Mixes".to_string(),
+      playlists: vec![
+        crate::core::app::DiscoverPlaylist {
+          uri: "youtube:playlist:RDCLAK5uy_kLWShQWe6opYfhH1YqvRRbtx8ugKJUsA4".to_string(),
+          name: "Top Hits Global".to_string(),
+          description: Some("The hottest tracks streaming worldwide on YouTube".to_string()),
+          image_url: None,
+        },
+        crate::core::app::DiscoverPlaylist {
+          uri: "youtube:playlist:RDCLAK5uy_kmPRjHDECIcuVwnKsx2Ng7fy9ahwL0x8M".to_string(),
+          name: "Deep Focus and Study Beats".to_string(),
+          description: Some("Instrumental focus and concentration soundscapes".to_string()),
+          image_url: None,
+        },
+        crate::core::app::DiscoverPlaylist {
+          uri: "youtube:playlist:RDCLAK5uy_n9F594t9N8uUqWf8o7_Y0g5F7M8yWJ0eM".to_string(),
+          name: "Lo-Fi Lounge and Chillhop".to_string(),
+          description: Some("Relaxed lo-fi beats, mellow melodies, and vintage warmth".to_string()),
+          image_url: None,
+        },
+        crate::core::app::DiscoverPlaylist {
+          uri: "youtube:playlist:RDCLAK5uy_m-Hk7zP8U9_wX1mK5eL6vN3o0p1q2r3s4".to_string(),
+          name: "Acoustic Coffeehouse".to_string(),
+          description: Some("Warm acoustic songs, unplugged sets, and singer-songwriters".to_string()),
+          image_url: None,
+        },
+      ],
+    });
+
+    shelves
   }
 
   async fn get_recently_played(&mut self, navigate: bool) {

@@ -235,6 +235,10 @@ pub struct YouTubePlaybackState {
   pub prebuffering_id: Option<String>,
   /// Video id successfully prebuffered in the background (if any).
   pub prebuffered_id: Option<String>,
+  /// Video id for which algorithmic radio recommendations were fetched (avoids duplicate fetches).
+  pub radio_fetched_for: Option<String>,
+  /// Whether an auto-play radio fetch is currently in flight.
+  pub radio_fetching: bool,
 }
 
 impl YouTubePlaybackState {
@@ -1193,6 +1197,8 @@ mod tests {
       resume_at: None,
       prebuffering_id: None,
       prebuffered_id: None,
+      radio_fetched_for: None,
+      radio_fetching: false,
     };
 
     state.maybe_prebuffer_next();
