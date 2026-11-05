@@ -28,6 +28,41 @@ pub fn sanitize_filename(name: &str) -> String {
     }
 }
 
+/// Upgrades standard Google User Content / YouTube Music / YouTube thumbnail URLs to 1200x1200+ HD
+pub fn upgrade_cover_art_url_to_hd(url: &str) -> String {
+    // 1. Google / YouTube Music UserContent URLs (e.g., =w120-h120-l90-rj or =s120)
+    if url.contains("googleusercontent.com") || url.contains("ggpht.com") {
+        if let Ok(re_wh) = regex::Regex::new(r"=w\d+-h\d+.*") {
+            if re_wh.is_match(url) {
+                return re_wh.replace(url, "=s1200").to_string();
+            }
+        }
+        if let Ok(re_s) = regex::Regex::new(r"=s\d+.*") {
+            if re_s.is_match(url) {
+                return re_s.replace(url, "=s1200").to_string();
+            }
+        }
+        if !url.contains('=') {
+            return format!("{}=s1200", url);
+        }
+    }
+
+    // 2. YouTube static video thumbnails (i.ytimg.com)
+    if url.contains("i.ytimg.com") {
+        if url.contains("hqdefault.jpg")
+            || url.contains("mqdefault.jpg")
+            || url.contains("sddefault.jpg")
+            || url.contains("default.jpg")
+        {
+            if let Ok(re_yt) = regex::Regex::new(r"/(hqdefault|mqdefault|sddefault|default)\.jpg") {
+                return re_yt.replace(url, "/maxresdefault.jpg").to_string();
+            }
+        }
+    }
+
+    url.to_string()
+}
+
 /// Tags an audio file with Vorbis comments and embedded cover art using lofty
 pub fn tag_flac_file(
     file_path: &Path,
@@ -412,10 +447,15 @@ pub async fn resolve_and_archive_track_with_source(
         }
     };
 
-    // Cover art fetch
+    // Cover art fetch (automatically upgraded to 1200x1200+ HD)
     let mut cover_bytes = None;
     if let Some(ref url) = track.cover_art_url {
-        if let Ok(resp) = reqwest::get(url).await {
+        let hd_url = upgrade_cover_art_url_to_hd(url);
+        if let Ok(resp) = reqwest::get(&hd_url).await {
+            if let Ok(b) = resp.bytes().await {
+                cover_bytes = Some(b.to_vec());
+            }
+        } else if let Ok(resp) = reqwest::get(url).await {
             if let Ok(b) = resp.bytes().await {
                 cover_bytes = Some(b.to_vec());
             }
@@ -696,5 +736,20 @@ mod tests {
         assert_eq!(pl_track.album.as_deref(), Some("Discovery"));
         assert_eq!(pl_track.position, 3);
         assert_eq!(pl_track.source_track_id, "youtube:abc123xyz");
+    }
+
+    #[test]
+    fn test_upgrade_cover_art_url_to_hd() {
+        let google_url = "https://yt3.googleusercontent.com/abc=w120-h120-l90-rj";
+        assert_eq!(
+            upgrade_cover_art_url_to_hd(google_url),
+            "https://yt3.googleusercontent.com/abc=s1200"
+        );
+
+        let yt_thumb = "https://i.ytimg.com/vi/abc123xyz/hqdefault.jpg";
+        assert_eq!(
+            upgrade_cover_art_url_to_hd(yt_thumb),
+            "https://i.ytimg.com/vi/abc123xyz/maxresdefault.jpg"
+        );
     }
 }

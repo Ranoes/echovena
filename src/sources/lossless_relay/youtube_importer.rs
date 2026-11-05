@@ -504,7 +504,7 @@ impl YouTubeImporter {
                     .as_array()
                     .and_then(|arr| arr.last())
                     .and_then(|t| t["url"].as_str())
-                    .map(|s| s.to_string());
+                    .map(|s| crate::sources::lossless_relay::archiver::upgrade_cover_art_url_to_hd(s));
 
                 tracks.push(PlaylistTrack {
                     playlist_id: canonical_id.clone(),
@@ -884,7 +884,7 @@ impl YouTubeImporter {
                                     .as_array()
                                     .and_then(|arr| arr.last())
                                     .and_then(|t| t["url"].as_str())
-                                    .map(|s| s.to_string());
+                                    .map(|s| crate::sources::lossless_relay::archiver::upgrade_cover_art_url_to_hd(s));
 
                                 top_songs.push(TrackInfo {
                                     uri: Some(uri.clone()),
@@ -1042,7 +1042,7 @@ impl YouTubeImporter {
                     .as_array()
                     .and_then(|arr| arr.last())
                     .and_then(|t| t["url"].as_str())
-                    .map(|s| s.to_string());
+                    .map(|s| crate::sources::lossless_relay::archiver::upgrade_cover_art_url_to_hd(s));
 
                 tracks.push(PlaylistTrack {
                     playlist_id: canonical_id.clone(),
@@ -1155,7 +1155,7 @@ impl YouTubeImporter {
                     .as_array()
                     .and_then(|arr| arr.last())
                     .and_then(|t| t["url"].as_str())
-                    .map(|s| s.to_string());
+                    .map(|s| crate::sources::lossless_relay::archiver::upgrade_cover_art_url_to_hd(s));
 
                 tracks.push(PlaylistTrack {
                     playlist_id: String::new(), // will set below
