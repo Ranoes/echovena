@@ -388,7 +388,7 @@ fn parse_ytm_card_shelf(card: &Value, default_scope: SearchScope) -> Option<Sear
         .as_array()
         .and_then(|arr| arr.last())
         .and_then(|t| t["url"].as_str())
-        .map(|s| s.to_string());
+        .map(crate::sources::lossless_relay::archiver::upgrade_cover_art_url_to_hd);
 
     let is_playable = video_id.is_some() || scope == SearchScope::Music;
 
@@ -502,7 +502,7 @@ fn parse_ytm_responsive_list_item(renderer: &Value, default_scope: SearchScope) 
         .as_array()
         .and_then(|arr| arr.last())
         .and_then(|t| t["url"].as_str())
-        .map(|s| s.to_string());
+        .map(crate::sources::lossless_relay::archiver::upgrade_cover_art_url_to_hd);
 
     Some(SearchResultItem {
         id,
@@ -621,7 +621,7 @@ pub fn parse_yt_web_search_response(json: &Value, default_scope: SearchScope) ->
                     .as_array()
                     .and_then(|arr| arr.last())
                     .and_then(|t| t["url"].as_str())
-                    .map(|s| s.to_string());
+                    .map(crate::sources::lossless_relay::archiver::upgrade_cover_art_url_to_hd);
 
                 results.push(SearchResultItem {
                     id: format!("yt:video:{}", vid),

@@ -140,6 +140,15 @@ pub async fn route_youtube_event(app: &Arc<Mutex<App>>, event: &IoEvent) -> bool
         };
         if !table_uris.is_empty() {
           start_youtube_queue(app, &table_uris, offset.unwrap_or(0)).await;
+        } else if uri.starts_with("youtube:playlist:") || uri.starts_with("yt:playlist:") {
+          load_playlist_tracks(app, uri).await;
+          let loaded_uris: Vec<String> = {
+            let guard = app.lock().await;
+            guard.track_table.tracks.iter().filter_map(|t| t.uri.clone().or_else(|| t.id.clone())).collect()
+          };
+          if !loaded_uris.is_empty() {
+            start_youtube_queue(app, &loaded_uris, offset.unwrap_or(0)).await;
+          }
         } else {
           start_youtube_queue(app, std::slice::from_ref(uri), 0).await;
         }
@@ -316,52 +325,115 @@ async fn load_playlists(app: &Arc<Mutex<App>>) {
 
 /// Open a playlist's saved tracks in the shared track table.
 async fn load_playlist_tracks(app: &Arc<Mutex<App>>, uri: &str) {
-  let file = match read_playlists_file().await {
-    Ok(f) => f,
-    Err(e) => {
-      set_error(
-        app,
-        crate::infra::app_strings(app)
-          .await
-          .status
-          .infra
-          .youtube_playlists_failed(&e.to_string()),
-      )
-      .await;
+  // 1. Check local playlists file (user-created YouTube playlists in playlists.json)
+  if let Ok(file) = read_playlists_file().await {
+    if let Some(playlist) = super::playlists::find_playlist(&file, uri) {
+      let rows: Vec<TrackInfo> = playlist
+        .tracks
+        .iter()
+        .map(super::playlists::stored_to_track_info)
+        .collect();
+      let mut guard = app.lock().await;
+      guard.set_source_track_table(
+        uri,
+        rows,
+        crate::core::app::TrackTableContext::YouTubePlaylist,
+      );
+      guard.youtube_open_playlist = Some(uri.to_string());
+      if guard.get_current_route().id != crate::core::app::RouteId::TrackTable {
+        guard.push_navigation_stack(
+          crate::core::app::RouteId::TrackTable,
+          crate::core::app::ActiveBlock::TrackTable,
+        );
+      }
       return;
     }
-  };
-  let Some(playlist) = super::playlists::find_playlist(&file, uri) else {
-    set_error(
-      app,
-      crate::infra::app_strings(app)
-        .await
-        .status
-        .infra
-        .youtube_playlist_missing
-        .to_string(),
-    )
-    .await;
-    return;
-  };
-  let rows: Vec<TrackInfo> = playlist
-    .tracks
-    .iter()
-    .map(super::playlists::stored_to_track_info)
-    .collect();
-  let mut guard = app.lock().await;
-  guard.set_source_track_table(
-    uri,
-    rows,
-    crate::core::app::TrackTableContext::YouTubePlaylist,
-  );
-  guard.youtube_open_playlist = Some(uri.to_string());
-  if guard.get_current_route().id != crate::core::app::RouteId::TrackTable {
-    guard.push_navigation_stack(
-      crate::core::app::RouteId::TrackTable,
-      crate::core::app::ActiveBlock::TrackTable,
-    );
   }
+
+  // 2. Check local SQLite imported playlists / cached playlist tracks
+  if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+    let clean = uri
+      .strip_prefix("youtube:playlist:")
+      .or_else(|| uri.strip_prefix("yt:playlist:"))
+      .unwrap_or(uri);
+    if let Ok(db_tracks) = db.get_playlist_tracks(uri).or_else(|_| db.get_playlist_tracks(clean)) {
+      if !db_tracks.is_empty() {
+        let rows: Vec<TrackInfo> = db_tracks
+          .iter()
+          .map(crate::sources::lossless_relay::archiver::playlist_track_to_track_info)
+          .collect();
+        let mut guard = app.lock().await;
+        guard.set_source_track_table(
+          uri,
+          rows,
+          crate::core::app::TrackTableContext::YouTubePlaylist,
+        );
+        guard.youtube_open_playlist = Some(uri.to_string());
+        if guard.get_current_route().id != crate::core::app::RouteId::TrackTable {
+          guard.push_navigation_stack(
+            crate::core::app::RouteId::TrackTable,
+            crate::core::app::ActiveBlock::TrackTable,
+          );
+        }
+        return;
+      }
+    }
+  }
+
+  // 3. Online fetch via YouTube InnerTube (for Discover playlists, Radio, Mixes, Charts)
+  let clean_pid = uri
+    .strip_prefix("youtube:playlist:")
+    .or_else(|| uri.strip_prefix("yt:playlist:"))
+    .or_else(|| uri.strip_prefix("youtube:"))
+    .or_else(|| uri.strip_prefix("yt:"))
+    .unwrap_or(uri);
+
+  let importer = crate::sources::lossless_relay::youtube_importer::YouTubeImporter::new();
+
+  let fetched_tracks: Option<Vec<TrackInfo>> = if clean_pid.starts_with("RDAMVM") || clean_pid.starts_with("RD") {
+    let seed_id = clean_pid
+      .strip_prefix("RDAMVM")
+      .or_else(|| clean_pid.strip_prefix("RD"))
+      .unwrap_or(clean_pid);
+    importer.fetch_youtube_radio_tracks(seed_id).await.ok()
+  } else {
+    importer.fetch_innertube_playlist(clean_pid).await.ok().map(|(_pl, pl_tracks)| {
+      pl_tracks
+        .iter()
+        .map(crate::sources::lossless_relay::archiver::playlist_track_to_track_info)
+        .collect()
+    })
+  };
+
+  if let Some(rows) = fetched_tracks {
+    if !rows.is_empty() {
+      let mut guard = app.lock().await;
+      guard.set_source_track_table(
+        uri,
+        rows,
+        crate::core::app::TrackTableContext::YouTubePlaylist,
+      );
+      guard.youtube_open_playlist = Some(uri.to_string());
+      if guard.get_current_route().id != crate::core::app::RouteId::TrackTable {
+        guard.push_navigation_stack(
+          crate::core::app::RouteId::TrackTable,
+          crate::core::app::ActiveBlock::TrackTable,
+        );
+      }
+      return;
+    }
+  }
+
+  set_error(
+    app,
+    crate::infra::app_strings(app)
+      .await
+      .status
+      .infra
+      .youtube_playlist_missing
+      .to_string(),
+  )
+  .await;
 }
 
 /// Create a playlist and refresh the sidebar.

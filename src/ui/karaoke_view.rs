@@ -217,21 +217,29 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
         .split(np_inner);
 
     // Render Album Artwork
-    let art_h = np_layout[0].height.saturating_sub(1);
-    let art_w = (art_h * 2).min(np_layout[0].width.saturating_sub(2));
-    let x_offset = np_layout[0].x + (np_layout[0].width.saturating_sub(art_w)) / 2;
-    let art_rect = Rect {
-        x: x_offset,
-        y: np_layout[0].y,
-        width: art_w,
-        height: art_h,
-    };
+    let bounds = np_layout[0];
+    let available_image_size = Rect::new(
+        0,
+        0,
+        bounds.width.saturating_sub(2),
+        bounds.height.saturating_sub(1),
+    );
 
     #[cfg(feature = "cover-art")]
     {
         if app.cover_art.available() {
+            let fitted_size = crate::tui::cover_art::fullscreen_size_for(available_image_size, &app.cover_art)
+                .unwrap_or_else(|| {
+                    let art_h = bounds.height.saturating_sub(1);
+                    let art_w = (art_h * 2).min(bounds.width.saturating_sub(2));
+                    Rect::new(0, 0, art_w, art_h)
+                });
+            let art_rect = crate::tui::layout::center_rect_within(bounds, fitted_size);
             crate::tui::cover_art::render_fullscreen(f, art_rect, &app.cover_art, &app.user_config);
         } else {
+            let art_h = bounds.height.saturating_sub(1).min(6);
+            let art_w = (art_h * 2).min(bounds.width.saturating_sub(2));
+            let art_rect = crate::tui::layout::center_rect_within(bounds, Rect::new(0, 0, art_w, art_h));
             let placeholder = vec![
                 Line::from(""),
                 Line::from(Span::styled("┌───────────────────┐", Style::default().fg(Color::DarkGray))),
@@ -245,11 +253,14 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
     }
     #[cfg(not(feature = "cover-art"))]
     {
+        let art_h = bounds.height.saturating_sub(1).min(6);
+        let art_w = (art_h * 2).min(bounds.width.saturating_sub(2));
+        let art_rect = crate::tui::layout::center_rect_within(bounds, Rect::new(0, 0, art_w, art_h));
         let placeholder = vec![
             Line::from(""),
             Line::from(Span::styled("♪ ♫ [EchoVena HD Art] ♫ ♪", Style::default().fg(Color::Cyan))),
         ];
-        f.render_widget(Paragraph::new(placeholder).alignment(Alignment::Center), np_layout[0]);
+        f.render_widget(Paragraph::new(placeholder).alignment(Alignment::Center), art_rect);
     }
 
     // Song Info (Title, Artist, Album)

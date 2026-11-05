@@ -39,7 +39,7 @@ pub fn parse_youtube_url(input: &str) -> Option<YouTubeResource> {
     {
         return Some(YouTubeResource::Video(id.to_string()));
     }
-    if (trimmed.starts_with("PL") || trimmed.starts_with("OLAK5uy_") || trimmed.starts_with("RDCLAK5uy_") || trimmed.starts_with("VLPL"))
+    if (trimmed.starts_with("PL") || trimmed.starts_with("OLAK5uy_") || trimmed.starts_with("RDCLAK5uy_") || trimmed.starts_with("VLPL") || trimmed.starts_with("RDAMVM") || trimmed.starts_with("RD"))
         && !trimmed.contains('/') && !trimmed.contains(' ')
     {
         return Some(YouTubeResource::Playlist(trimmed.to_string()));
@@ -337,7 +337,51 @@ impl YouTubeImporter {
         let clean_pid = playlist_id
             .strip_prefix("yt:playlist:")
             .or_else(|| playlist_id.strip_prefix("yt:browse:"))
+            .or_else(|| playlist_id.strip_prefix("youtube:playlist:"))
+            .or_else(|| playlist_id.strip_prefix("youtube:browse:"))
+            .or_else(|| playlist_id.strip_prefix("youtube:"))
+            .or_else(|| playlist_id.strip_prefix("yt:"))
             .unwrap_or(playlist_id);
+
+        // If this is a Radio or Endless Mix playlist (RDAMVM... or RD...), fetch via radio endpoint
+        if clean_pid.starts_with("RDAMVM") || clean_pid.starts_with("RD") {
+            let seed = clean_pid
+                .strip_prefix("RDAMVM")
+                .or_else(|| clean_pid.strip_prefix("RD"))
+                .unwrap_or(clean_pid);
+            let radio_tracks = self.fetch_youtube_radio_tracks(seed).await?;
+            let now = Utc::now().timestamp();
+            let cover = radio_tracks.first().and_then(|t| t.image_url.clone());
+            let playlist = ImportedPlaylist {
+                id: format!("yt:playlist:{}", clean_pid),
+                platform: "youtube".to_string(),
+                title: format!("Radio Mix ({})", seed),
+                author: Some("YouTube Music".to_string()),
+                source_url: format!("https://music.youtube.com/watch?v={}&list={}", seed, clean_pid),
+                cover_art_url: cover,
+                snapshot_id: None,
+                track_count: radio_tracks.len() as i64,
+                last_synced_at: now,
+            };
+            let tracks = radio_tracks
+                .into_iter()
+                .enumerate()
+                .map(|(i, t)| PlaylistTrack {
+                    playlist_id: playlist.id.clone(),
+                    position: i as i64,
+                    source_track_id: t.id.unwrap_or_else(|| format!("yt:video:{}", seed)),
+                    raw_title: t.name.clone(),
+                    clean_title: t.name,
+                    artist: t.artists.join(", "),
+                    album: if t.album.is_empty() { None } else { Some(t.album) },
+                    duration_ms: t.duration_ms as i64,
+                    isrc: None,
+                    cover_art_url: t.image_url,
+                })
+                .collect();
+            return Ok((playlist, tracks));
+        }
+
         let browse_id = if clean_pid.starts_with("VL")
             || clean_pid.starts_with("MPREb_")
             || clean_pid.starts_with("UC")
@@ -412,22 +456,28 @@ impl YouTubeImporter {
 
         let mut tracks = Vec::new();
 
-        // Extract items from musicShelfRenderer or musicPlaylistShelfRenderer
-        let contents = &body["contents"]["singleColumnBrowseResultsRenderer"]["tabs"][0]
-            ["tabRenderer"]["content"]["sectionListRenderer"]["contents"][0];
+        // Extract items from musicShelfRenderer or musicPlaylistShelfRenderer across all sections
+        let mut item_list: Vec<&Value> = Vec::new();
+        if let Some(sections) = body["contents"]["singleColumnBrowseResultsRenderer"]["tabs"][0]
+            ["tabRenderer"]["content"]["sectionListRenderer"]["contents"].as_array()
+        {
+            for sec in sections {
+                if let Some(arr) = sec["musicPlaylistShelfRenderer"]["contents"].as_array() {
+                    item_list.extend(arr);
+                } else if let Some(arr) = sec["musicShelfRenderer"]["contents"].as_array() {
+                    item_list.extend(arr);
+                }
+            }
+        }
+        if item_list.is_empty() {
+            if let Some(arr) = body["contents"]["twoColumnBrowseResultsRenderer"]["secondaryContents"]
+                ["sectionListRenderer"]["contents"][0]["musicPlaylistShelfRenderer"]["contents"].as_array()
+            {
+                item_list.extend(arr);
+            }
+        }
 
-        let items = contents["musicResponsiveHeaderRenderer"].as_object().and_then(|_| {
-            contents["musicPlaylistShelfRenderer"]["contents"].as_array()
-        }).or_else(|| {
-            contents["musicShelfRenderer"]["contents"].as_array()
-        }).or_else(|| {
-            body["contents"]["twoColumnBrowseResultsRenderer"]["secondaryContents"]
-                ["sectionListRenderer"]["contents"][0]["musicPlaylistShelfRenderer"]["contents"]
-                .as_array()
-        });
-
-        if let Some(item_list) = items {
-            for (idx, item) in item_list.iter().enumerate() {
+        for (idx, item) in item_list.iter().enumerate() {
                 let renderer = &item["musicResponsiveListItemRenderer"];
                 if renderer.is_null() {
                     continue;
