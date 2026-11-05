@@ -16,6 +16,9 @@ pub fn needs_romanization(text: &str) -> bool {
             || ('\u{0400}'..='\u{04FF}').contains(&c)
             // Greek
             || ('\u{0370}'..='\u{03FF}').contains(&c)
+            // CJK Unified Ideographs & Extension A (Kanji / Hanzi / Hanja)
+            || ('\u{4E00}'..='\u{9FFF}').contains(&c)
+            || ('\u{3400}'..='\u{4DBF}').contains(&c)
     })
 }
 

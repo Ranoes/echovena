@@ -1406,21 +1406,60 @@ pub(crate) async fn refetch_active_karaoke_lyrics(
     }
   }
 
-  // Auto Waterfall: Priority LRCLIB -> Paxsenix
-  let client = crate::lyrics::lrclib_elrc::LrclibClient::new("https://lrclib.net/api/get");
-  let mut timeline = client.fetch_lyrics(&clean_title, &clean_artist, None, dur_sec).await.ok();
+  // Auto Waterfall: Priority LRCLIB (exact get -> fuzzy search) -> Paxsenix
+  let client = crate::lyrics::lrclib_elrc::LrclibClient::default();
+  let mut timeline = None;
 
-  // If not found with title + artist, try with clean title
-  if timeline.is_none() {
-    timeline = client.fetch_lyrics(&clean_title, "", None, dur_sec).await.ok();
+  // 1. Exact match via LRCLIB /api/get (if artist is known)
+  if !clean_artist.is_empty() && clean_artist != "Unknown Artist" {
+    timeline = client.fetch_lyrics(&clean_title, &clean_artist, None, dur_sec).await.ok();
   }
 
-  // If still not found, try Paxsenix
+  // 2. Fuzzy search via LRCLIB /api/search with "clean_artist clean_title"
+  if timeline.is_none() && !clean_artist.is_empty() && clean_artist != "Unknown Artist" {
+    timeline = client.search_lyrics(&format!("{} {}", clean_artist, clean_title)).await.ok();
+  }
+
+  // 3. Fuzzy search via LRCLIB /api/search with clean_title
+  if timeline.is_none() && !clean_title.is_empty() {
+    timeline = client.search_lyrics(&clean_title).await.ok();
+  }
+
+  // 4. Fuzzy search via LRCLIB /api/search with raw YouTube artist + title
+  if timeline.is_none() && !artist.is_empty() && !title.is_empty() {
+    timeline = client.search_lyrics(&format!("{} {}", artist, title)).await.ok();
+  }
+
+  // 5. Fuzzy search via LRCLIB /api/search with raw YouTube title
+  if timeline.is_none() && !title.is_empty() && title != clean_title {
+    timeline = client.search_lyrics(&title).await.ok();
+  }
+
+  // 6. Paxsenix fallback with "clean_artist clean_title"
   if timeline.is_none() {
-    let query_str = format!("{} {}", clean_artist, clean_title);
+    let query_str = if !clean_artist.is_empty() && clean_artist != "Unknown Artist" {
+      format!("{} {}", clean_artist, clean_title)
+    } else {
+      clean_title.clone()
+    };
     let url = "https://lyrics.paxsenix.org/lyrics";
     let http = reqwest::Client::new();
     if let Ok(resp) = http.get(url).query(&[("q", &query_str)]).send().await {
+      if let Ok(text) = resp.text().await {
+        if text.trim_start().starts_with('<') {
+          timeline = crate::lyrics::paxsenix_ttml::parse_apple_music_ttml(&text, "paxsenix_ttml").ok();
+        } else {
+          timeline = crate::lyrics::paxsenix_ttml::parse_musixmatch_richsync(&text, "paxsenix_richsync").ok();
+        }
+      }
+    }
+  }
+
+  // 7. Paxsenix fallback with raw title
+  if timeline.is_none() && !title.is_empty() && title != clean_title {
+    let url = "https://lyrics.paxsenix.org/lyrics";
+    let http = reqwest::Client::new();
+    if let Ok(resp) = http.get(url).query(&[("q", &title)]).send().await {
       if let Ok(text) = resp.text().await {
         if text.trim_start().starts_with('<') {
           timeline = crate::lyrics::paxsenix_ttml::parse_apple_music_ttml(&text, "paxsenix_ttml").ok();

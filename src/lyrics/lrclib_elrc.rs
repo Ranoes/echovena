@@ -109,10 +109,24 @@ struct LrclibResponse {
     synced_lyrics: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LrclibSearchResult {
+    pub id: Option<i64>,
+    pub name: Option<String>,
+    pub track_name: Option<String>,
+    pub artist_name: Option<String>,
+    pub album_name: Option<String>,
+    pub duration: Option<f64>,
+    pub synced_lyrics: Option<String>,
+    pub plain_lyrics: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct LrclibClient {
     client: reqwest::Client,
     base_url: String,
+    search_url: String,
 }
 
 impl Default for LrclibClient {
@@ -123,9 +137,16 @@ impl Default for LrclibClient {
 
 impl LrclibClient {
     pub fn new(base_url: &str) -> Self {
+        let clean = base_url.trim_end_matches('/').to_string();
+        let search = clean.replace("/api/get", "/api/search");
         Self {
             client: reqwest::Client::builder().build().unwrap(),
-            base_url: base_url.trim_end_matches('/').to_string(),
+            base_url: clean,
+            search_url: if search.ends_with("/api/search") {
+                search
+            } else {
+                "https://lrclib.net/api/search".to_string()
+            },
         }
     }
 
@@ -170,6 +191,38 @@ impl LrclibClient {
         }
 
         Err(anyhow!("no synced lyrics found on LRCLIB"))
+    }
+
+    /// Fuzzy searches LRCLIB API by query string (track name, artist name, or title)
+    pub async fn search_lyrics(&self, query: &str) -> Result<KaraokeTimeline> {
+        let q = query.trim();
+        if q.is_empty() {
+            return Err(anyhow!("query is empty"));
+        }
+
+        let resp = self
+            .client
+            .get(&self.search_url)
+            .query(&[("q", q)])
+            .header(reqwest::header::USER_AGENT, DEFAULT_USER_AGENT)
+            .send()
+            .await
+            .context("failed sending LRCLIB search request")?;
+
+        if !resp.status().is_success() {
+            return Err(anyhow!("LRCLIB search API returned status {}", resp.status()));
+        }
+
+        let results: Vec<LrclibSearchResult> = resp.json().await?;
+        for item in results {
+            if let Some(synced) = item.synced_lyrics {
+                if !synced.trim().is_empty() {
+                    return parse_enhanced_lrc(&synced, "lrclib");
+                }
+            }
+        }
+
+        Err(anyhow!("no synced lyrics found in LRCLIB search results for {:?}", q))
     }
 }
 

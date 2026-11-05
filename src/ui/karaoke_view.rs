@@ -311,7 +311,8 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
                     rendered_lines.push(Line::from(orig_spans).alignment(alignment));
 
                     // Row 2: Romanized text stacked directly beneath in sync!
-                    if let Some(ref rom_line) = line.romanization {
+                    let rom_line_opt = line.romanization.as_deref().or(line.translation.as_deref());
+                    if let Some(rom_line) = rom_line_opt {
                         let mut rom_spans = Vec::new();
                         if !line.words.is_empty() {
                             for word in &line.words {
@@ -362,7 +363,7 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
                     );
                 }
                 crate::core::app::LyricsDisplayMode::Romanized => {
-                    let text = line.romanization.as_deref().unwrap_or(&line.text);
+                    let text = line.romanization.as_deref().or(line.translation.as_deref()).unwrap_or(&line.text);
                     rendered_lines.push(
                         Line::from(Span::styled(text, Style::default().fg(Color::DarkGray)))
                             .alignment(alignment),
@@ -373,7 +374,8 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
                         Line::from(Span::styled(&line.text, Style::default().fg(Color::DarkGray)))
                             .alignment(alignment),
                     );
-                    if let Some(ref rom) = line.romanization {
+                    let rom_opt = line.romanization.as_deref().or(line.translation.as_deref());
+                    if let Some(rom) = rom_opt {
                         rendered_lines.push(
                             Line::from(Span::styled(
                                 rom,
@@ -394,7 +396,7 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
                     );
                 }
                 crate::core::app::LyricsDisplayMode::Romanized => {
-                    let text = line.romanization.as_deref().unwrap_or(&line.text);
+                    let text = line.romanization.as_deref().or(line.translation.as_deref()).unwrap_or(&line.text);
                     rendered_lines.push(
                         Line::from(Span::styled(text, Style::default().fg(Color::Gray)))
                             .alignment(alignment),
@@ -405,7 +407,8 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
                         Line::from(Span::styled(&line.text, Style::default().fg(Color::Gray)))
                             .alignment(alignment),
                     );
-                    if let Some(ref rom) = line.romanization {
+                    let rom_opt = line.romanization.as_deref().or(line.translation.as_deref());
+                    if let Some(rom) = rom_opt {
                         rendered_lines.push(
                             Line::from(Span::styled(
                                 rom,

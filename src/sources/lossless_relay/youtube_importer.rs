@@ -134,15 +134,12 @@ pub fn parse_duration_str(duration_str: &str) -> i64 {
 
 /// Sanitizes YouTube video titles and uploader names to isolate clean Artist and Title
 pub fn clean_youtube_title(raw_title: &str, uploader: Option<&str>) -> (String, String) {
-    let mut title = raw_title.to_string();
+    let mut title = raw_title.trim().to_string();
 
-    // 1. Strip common noise tags in parentheses or brackets (case-insensitive)
+    // 1. Strip common noise tags in any brackets: (), [], 【】, （）, ［］, 《》, 〔〕
     let noise_patterns = [
-        r"(?i)\s*\[\s*(official\s*(music\s*)?video|official\s*audio|official\s*hd\s*video|official\s*4k\s*video|lyric\s*video|official\s*lyric\s*video|mv|hd|4k|visualizer|audio|lyrics?)\s*\]",
-        r"(?i)\s*\(\s*(official\s*(music\s*)?video|official\s*audio|official\s*hd\s*video|official\s*4k\s*(remaster|video)?|lyric\s*video|official\s*lyric\s*video|mv|hd|4k|visualizer|audio|lyrics?|performance\s*video|dance\s*practice)\s*\)",
-        r"(?i)\s*\[\s*(explicit|clean|remastered|4k\s*remaster)\s*\]",
-        r"(?i)\s*\(\s*(explicit|clean|remastered|4k\s*remaster)\s*\)",
-        r"(?i)\s*\b(ft\.|feat\.)\s+[^\(\[\-]+",
+        r"(?i)\s*[\[\(\【\（\［\《\〔]\s*(official\s*(music\s*)?video|official\s*audio|official\s*hd\s*video|official\s*4k\s*(remaster|video)?|lyric\s*video|official\s*lyric\s*video|mv|pv|hd|4k|visualizer|audio|lyrics?|performance\s*video|dance\s*practice|dance\s*video|special\s*video|teaser|explicit|clean|remastered|4k\s*remaster|music\s*video|公式|歌詞|clip|side\s*[a-z0-9]+|ver\.|version)\s*[\]\)\】\）\］\》\〕]",
+        r"(?i)\s*\b(ft\.|feat\.)\s+[^\(\[\-【（]+",
     ];
 
     for pat in &noise_patterns {
@@ -151,15 +148,24 @@ pub fn clean_youtube_title(raw_title: &str, uploader: Option<&str>) -> (String, 
         }
     }
 
+    // 2. Strip trailing / leading unbracketed noise tags
+    if let Ok(re) = Regex::new(r"(?i)\s*[-–—:/]?\s*(official\s*(music\s*)?video|official\s*audio|official\s*hd\s*video|performance\s*video|dance\s*practice|music\s*video|lyric\s*video|visualizer|-?music\s*clip-?|mv|pv|special\s*video)\s*$") {
+        title = re.replace(&title, "").to_string();
+    }
+    if let Ok(re) = Regex::new(r"^(?i)\s*(mv|pv|official\s*video)\s*[-–—:/／]?\s*") {
+        title = re.replace(&title, "").to_string();
+    }
+
     title = title.trim().to_string();
 
-    // 2. Clean channel/uploader name
+    // 3. Clean channel/uploader name
     let clean_uploader = uploader.map(|u| {
         let mut c = u.to_string();
         let uploader_suffixes = [
             r"(?i)\s*-\s*topic\b",
             r"(?i)vevo\b",
-            r"(?i)\s+official\b",
+            r"(?i)\s+official(\s+(youtube\s+)?channel)?\b",
+            r"(?i)\s+channel\b",
             r"(?i)\s+records\b",
             r"(?i)\s+music\b",
         ];
@@ -171,34 +177,80 @@ pub fn clean_youtube_title(raw_title: &str, uploader: Option<&str>) -> (String, 
         c.trim().to_string()
     });
 
-    // 3. Check for hyphenated "Artist - Title" or "Artist — Title" or "Artist : Title"
-    let separators = [" - ", " – ", " — ", " : "];
-    for sep in &separators {
-        if let Some((left, right)) = title.split_once(sep) {
-            let candidate_artist = left.trim().trim_matches('"').trim_matches('\'').trim();
-            let mut candidate_title = right.trim().trim_matches('"').trim_matches('\'').trim();
-
-            // Additional cleanup on candidate title (e.g. trailing tags)
-            if let Ok(re) = Regex::new(r#"(?i)\s*["']?\s*(official\s*video|mv|hd|audio)\s*["']?$"#) {
-                candidate_title = candidate_title.trim();
-                let cleaned = re.replace(candidate_title, "").to_string();
-                if !candidate_artist.is_empty() && !cleaned.is_empty() {
-                    return (candidate_artist.to_string(), cleaned.trim().to_string());
-                }
-            }
-
+    // 4. Japanese quote patterns: Artist「Title」 or Artist『Title』
+    if let Ok(re) = Regex::new(r#"^([^「『【\(\[\s]+.*?)\s*[「『]([^」』]+)[」』]"#) {
+        if let Some(caps) = re.captures(&title) {
+            let candidate_artist = caps[1].trim().trim_matches(|c: char| c == '-' || c == '—' || c == '–' || c == '/' || c == '／' || c == '"' || c == '\'').trim();
+            let candidate_title = caps[2].trim().trim_matches(|c: char| c == '"' || c == '\'' || c == '【' || c == '】').trim();
             if !candidate_artist.is_empty() && !candidate_title.is_empty() {
-                return (
-                    candidate_artist.to_string(),
-                    candidate_title.to_string(),
-                );
+                return (candidate_artist.to_string(), candidate_title.to_string());
             }
         }
     }
 
-    // 4. If no separator pattern matched, use cleaned uploader as artist (if available)
-    let artist = clean_uploader.unwrap_or_else(|| "Unknown Artist".to_string());
-    (artist, title)
+    // Japanese quote reverse pattern: 「Title」/ Artist or 『Title』- Artist
+    if let Ok(re) = Regex::new(r#"^[「『]([^」』]+)[」』]\s*[-–—:/／]\s*(.*)$"#) {
+        if let Some(caps) = re.captures(&title) {
+            let candidate_title = caps[1].trim().trim_matches(|c: char| c == '"' || c == '\'' || c == '【' || c == '】').trim();
+            let candidate_artist = caps[2].trim().trim_matches(|c: char| c == '-' || c == '—' || c == '–' || c == '/' || c == '／' || c == '"' || c == '\'').trim();
+            if !candidate_artist.is_empty() && !candidate_title.is_empty() {
+                return (candidate_artist.to_string(), candidate_title.to_string());
+            }
+        }
+    }
+
+    // 5. Quote patterns: Artist 'Title' or Artist "Title"
+    if let Ok(re) = Regex::new(r#"^([^'"\(\[]+?)\s*['"]([^'"]+)['"]"#) {
+        if let Some(caps) = re.captures(&title) {
+            let mut candidate_artist = caps[1].trim().to_string();
+            let candidate_title = caps[2].trim();
+            if let Some((main_art, _)) = candidate_artist.split_once('(') {
+                if !main_art.trim().is_empty() {
+                    candidate_artist = main_art.trim().to_string();
+                }
+            }
+            if !candidate_artist.is_empty() && !candidate_title.is_empty() {
+                return (candidate_artist, candidate_title.to_string());
+            }
+        }
+    }
+
+    // 6. Check for separators: " - ", " – ", " — ", " : ", "／", " / "
+    let separators = [" - ", " – ", " — ", " : ", "／", " / "];
+    for sep in &separators {
+        if let Some((left, right)) = title.split_once(sep) {
+            let left_trimmed = left.trim().trim_matches(|c: char| c == '"' || c == '\'' || c == '【' || c == '】' || c == '「' || c == '」' || c == '『' || c == '』').trim().to_string();
+            let mut right_trimmed = right.trim().trim_matches(|c: char| c == '"' || c == '\'' || c == '【' || c == '】' || c == '「' || c == '」' || c == '『' || c == '』').trim().to_string();
+
+            if let Ok(re) = Regex::new(r#"(?i)\s*["']?\s*(official\s*video|mv|hd|audio)\s*["']?$"#) {
+                let cleaned = re.replace(&right_trimmed, "").trim().to_string();
+                if !cleaned.is_empty() {
+                    right_trimmed = cleaned;
+                }
+            }
+
+            if !left_trimmed.is_empty() && !right_trimmed.is_empty() {
+                // If uploader matches right side, then right is artist and left is title (e.g. "アイドル／YOASOBI")
+                if let Some(ref u) = clean_uploader {
+                    let u_lower = u.to_lowercase();
+                    if u_lower.contains(&right_trimmed.to_lowercase()) && !u_lower.contains(&left_trimmed.to_lowercase()) {
+                        return (right_trimmed, left_trimmed);
+                    }
+                }
+                // Default: left is artist, right is title
+                return (left_trimmed, right_trimmed);
+            }
+        }
+    }
+
+    // 7. Fallback: if no separator matched, clean title and use cleaned uploader
+    let clean_title = title
+        .trim_matches(|c: char| c == '"' || c == '\'' || c == '【' || c == '】' || c == '「' || c == '」' || c == '『' || c == '』')
+        .trim()
+        .to_string();
+
+    let artist = clean_uploader.filter(|u| !u.is_empty()).unwrap_or_else(|| "Unknown Artist".to_string());
+    (artist, clean_title)
 }
 
 #[derive(Clone)]
@@ -1105,5 +1157,37 @@ mod tests {
         );
         assert_eq!(artist, "Radiohead");
         assert_eq!(title, "Creep");
+
+        // Japanese Artist「Title」 pattern with trailing unbracketed tag
+        let (artist, title) = clean_youtube_title(
+            "YOASOBI「アイドル」 Official Music Video",
+            Some("Ayase / YOASOBI"),
+        );
+        assert_eq!(artist, "YOASOBI");
+        assert_eq!(title, "アイドル");
+
+        // CJK MV bracket with full-width slash and uploader matching right
+        let (artist, title) = clean_youtube_title(
+            "【MV】アイドル／YOASOBI",
+            Some("Ayase / YOASOBI"),
+        );
+        assert_eq!(artist, "YOASOBI");
+        assert_eq!(title, "アイドル");
+
+        // Japanese Artist『Title』 pattern with clip tag
+        let (artist, title) = clean_youtube_title(
+            "LiSA 『炎』 -MUSiC CLiP-",
+            Some("LiSA Official YouTube Channel"),
+        );
+        assert_eq!(artist, "LiSA");
+        assert_eq!(title, "炎");
+
+        // Korean Artist 'Title' pattern with bilingual name
+        let (artist, title) = clean_youtube_title(
+            "NewJeans (뉴진스) 'Ditto' Official MV (Performance ver.)",
+            Some("HYBE LABELS"),
+        );
+        assert_eq!(artist, "NewJeans");
+        assert_eq!(title, "Ditto");
     }
 }
