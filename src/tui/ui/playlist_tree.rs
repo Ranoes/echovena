@@ -214,16 +214,20 @@ pub fn draw_playlist_tree_view(f: &mut Frame<'_>, app: &App, area: Rect) {
 
   // 3. Footer Action Hints
   let footer_spans = vec![
+    Span::styled(" [h] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+    Span::raw("Collapse  │"),
+    Span::styled(" [l] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+    Span::raw("Expand  │"),
     Span::styled(" [Enter/o] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-    Span::raw("Open Song List / Play Track  |"),
+    Span::raw("Open / Play  │"),
     Span::styled(" [z] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-    Span::raw("Queue Track  |"),
+    Span::raw("Queue  │"),
     Span::styled(" [s] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-    Span::raw("Archive  |"),
+    Span::raw("Archive  │"),
     Span::styled(" [d] ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-    Span::raw("Delete  |"),
+    Span::raw("Delete  │"),
     Span::styled(" [Tab] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-    Span::raw("Switch Category  |"),
+    Span::raw("Category  │"),
     Span::styled(" [Esc/q] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
     Span::raw("Back"),
   ];

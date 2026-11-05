@@ -685,7 +685,9 @@ pub fn handler(key: Key, app: &mut App) {
     Key::Esc | Key::Char('q') if app.get_current_route().active_block == ActiveBlock::Playlists => {
       app.pop_navigation_stack();
     }
-    k if common_key_events::toward_content_event(k, &app.user_config) => {
+    k if common_key_events::toward_content_event(k, &app.user_config)
+      && app.get_current_route().active_block == ActiveBlock::MyPlaylists =>
+    {
       common_key_events::focus_content(app)
     }
     k if common_key_events::down_event(k, &app.user_config.keys) => select_next(app),
@@ -742,8 +744,20 @@ pub fn handler(key: Key, app: &mut App) {
     Key::Char('l') | Key::Right => {
       let tree = get_playlist_tree_items(app);
       if let Some(idx) = app.view.selected_playlist_index {
-        if let Some(PlaylistTreeItem::PlaylistHeader { id, is_expanded: false, .. }) = tree.get(idx) {
-          app.view.expanded_playlists.insert(id.clone());
+        if let Some(item) = tree.get(idx) {
+          match item {
+            PlaylistTreeItem::PlaylistHeader { id, is_expanded, .. } => {
+              if !is_expanded {
+                app.view.expanded_playlists.insert(id.clone());
+              } else {
+                open_source_playlist(app, Some(id.clone()));
+              }
+            }
+            PlaylistTreeItem::TrackLeaf { playlist_id, .. } => {
+              open_source_playlist(app, Some(playlist_id.clone()));
+            }
+            _ => {}
+          }
         }
       }
     }
@@ -754,15 +768,26 @@ pub fn handler(key: Key, app: &mut App) {
           match item {
             PlaylistTreeItem::PlaylistHeader { id, is_expanded: true, .. } => {
               app.view.expanded_playlists.remove(id);
+              let new_len = get_playlist_tree_items(app).len();
+              if new_len > 0 {
+                app.view.selected_playlist_index = Some(idx.min(new_len - 1));
+              }
+            }
+            PlaylistTreeItem::PlaylistHeader { is_expanded: false, .. } => {
+              common_key_events::focus_sidebar(app);
             }
             PlaylistTreeItem::TrackLeaf { playlist_id, .. } => {
               if let Some(parent_idx) = tree.iter().position(|it| matches!(it, PlaylistTreeItem::PlaylistHeader { id, .. } if id == playlist_id)) {
                 app.view.selected_playlist_index = Some(parent_idx);
               }
             }
-            _ => {}
+            _ => {
+              common_key_events::focus_sidebar(app);
+            }
           }
         }
+      } else {
+        common_key_events::focus_sidebar(app);
       }
     }
     Key::Char('o') | Key::Char('O') => {
@@ -787,6 +812,10 @@ pub fn handler(key: Key, app: &mut App) {
         if let Some(PlaylistTreeItem::PlaylistHeader { id, is_expanded, .. }) = tree.get(idx) {
           if *is_expanded {
             app.view.expanded_playlists.remove(id);
+            let new_len = get_playlist_tree_items(app).len();
+            if new_len > 0 {
+              app.view.selected_playlist_index = Some(idx.min(new_len - 1));
+            }
           } else {
             app.view.expanded_playlists.insert(id.clone());
           }

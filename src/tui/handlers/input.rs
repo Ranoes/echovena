@@ -196,7 +196,6 @@ pub fn handler(key: Key, app: &mut App) {
             Some(ActiveBlock::SearchResultBlock),
             Some(ActiveBlock::SearchResultBlock),
           );
-          app.clear_live_search();
         }
       } else {
         process_input(app, input_str);
