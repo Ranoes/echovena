@@ -416,17 +416,7 @@ pub fn handler(key: Key, app: &mut App) {
         }
         _ => (),
       },
-      _ if key == app.user_config.keys.add_item_to_queue => {
-        let track = app
-          .artist
-          .as_ref()
-          .filter(|artist| artist.artist_selected_block == ArtistBlock::TopTracks)
-          .and_then(selected_top_track);
-        if let Some(track) = track {
-          app.apply(Action::QueueTrackNext(track));
-        }
-      }
-      Key::Char('Z') => {
+      Key::Char('e') => {
         let track = app
           .artist
           .as_ref()
@@ -434,6 +424,16 @@ pub fn handler(key: Key, app: &mut App) {
           .and_then(selected_top_track);
         if let Some(track) = track {
           app.apply(Action::QueueTrack(track));
+        }
+      }
+      Key::Char('E') => {
+        let track = app
+          .artist
+          .as_ref()
+          .filter(|artist| artist.artist_selected_block == ArtistBlock::TopTracks)
+          .and_then(selected_top_track);
+        if let Some(track) = track {
+          app.apply(Action::QueueTrackNext(track));
         }
       }
       _ => {}

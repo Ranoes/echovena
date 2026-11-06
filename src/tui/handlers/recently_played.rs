@@ -79,22 +79,22 @@ pub fn handler(key: Key, app: &mut App) {
         app.apply(Action::RecommendFromTrackId { id, name });
       }
     }
-    _ if key == app.user_config.keys.add_item_to_queue => {
-      let track = app
-        .recently_played
-        .as_ref()
-        .and_then(|r| r.items.get(app.view.recently_played_index).cloned());
-      if let Some(track) = track {
-        app.apply(Action::QueueTrackNext(track));
-      }
-    }
-    Key::Char('Z') => {
+    Key::Char('e') => {
       let track = app
         .recently_played
         .as_ref()
         .and_then(|r| r.items.get(app.view.recently_played_index).cloned());
       if let Some(track) = track {
         app.apply(Action::QueueTrack(track));
+      }
+    }
+    Key::Char('E') => {
+      let track = app
+        .recently_played
+        .as_ref()
+        .and_then(|r| r.items.get(app.view.recently_played_index).cloned());
+      if let Some(track) = track {
+        app.apply(Action::QueueTrackNext(track));
       }
     }
     _ => {}

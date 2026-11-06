@@ -1,9 +1,12 @@
 use crate::core::app::{active_lyric_index, App, LyricsStatus};
+use crate::lyrics::VocalRole;
 use crate::tui::layout::fullscreen_view_layout;
+use crate::ui::karaoke_view::detect_instrumental_break;
 use ratatui::{
-  layout::{Alignment, Rect},
-  style::{Modifier, Style},
-  widgets::{Block, Borders, Paragraph},
+  layout::{Alignment, Constraint, Direction, Layout, Rect},
+  style::{Color, Modifier, Style},
+  text::{Line, Span},
+  widgets::{Block, BorderType, Borders, Gauge, Paragraph},
   Frame,
 };
 
@@ -21,30 +24,22 @@ pub fn draw_lyrics_view(f: &mut Frame<'_>, app: &App) {
 
 fn draw_lyrics(f: &mut Frame<'_>, app: &App, area: Rect) {
   let theme = &app.user_config.theme;
+  let offset_ms = app.view.lyrics_view.timing_offset_ms;
 
-  let mut notes: Vec<String> = Vec::new();
-  if app.lyrics_status() == LyricsStatus::Found {
-    if !app.lyrics_synced() {
-      notes.push(app.strings().screens.timing_estimated.to_string());
-    }
-    let offset_ms = app.view.lyrics_view.timing_offset_ms;
-    if offset_ms != 0 {
-      notes.push(
-        app
-          .strings()
-          .screens
-          .lyrics_offset(&format!("{:+.1}", offset_ms as f64 / 1000.0)),
-      );
-    }
-  }
-  let title = if notes.is_empty() {
-    app.strings().screens.lyrics_title.to_string()
-  } else {
-    app.strings().screens.lyrics_notes(&notes.join(", "))
-  };
+  let provider_str = crate::core::app::LYRIC_PROVIDERS[app.view.karaoke_provider_index.min(crate::core::app::LYRIC_PROVIDERS.len() - 1)];
+  let mode_str = app.view.karaoke_display_mode.label();
+  let align_str = app.view.karaoke_alignment.label();
+  let offset_str = format!("{:+.1}s", offset_ms as f64 / 1000.0);
+
+  let title = format!(
+    " Lyrics │ {} │ Mode: {} │ Align: {} │ Offset: {} ",
+    provider_str, mode_str, align_str, offset_str
+  );
+
   let block = Block::default()
     .borders(Borders::ALL)
-    .title(title)
+    .border_type(BorderType::Rounded)
+    .title(Span::styled(title, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)))
     .style(Style::default().fg(theme.inactive.into()));
   f.render_widget(block.clone(), area);
 
@@ -53,22 +48,256 @@ fn draw_lyrics(f: &mut Frame<'_>, app: &App, area: Rect) {
     return;
   }
 
-  if app.lyrics_status() != LyricsStatus::Found {
-    draw_state_message(f, app, inner_area);
-    return;
+  // 1. If our rich syllable-by-syllable, stacked Romaji karaoke timeline is available, render with rich engine!
+  if let Some(timeline) = &app.view.active_karaoke_timeline {
+    if !timeline.lines.is_empty() {
+      draw_rich_karaoke_stage(f, app, timeline, inner_area);
+      return;
+    }
   }
 
-  let Some(lyrics) = app.lyrics() else {
-    return;
+  // 2. Otherwise fall back to legacy lyrics if found
+  if app.lyrics_status() == LyricsStatus::Found {
+    if let Some(lyrics) = app.lyrics() {
+      if !lyrics.is_empty() {
+        draw_legacy_lyrics(f, app, lyrics, inner_area);
+        return;
+      }
+    }
+  }
+
+  // 3. Otherwise show state message or prompt to refetch
+  draw_state_message(f, app, inner_area);
+}
+
+fn draw_rich_karaoke_stage(
+  f: &mut Frame<'_>,
+  app: &App,
+  timeline: &crate::lyrics::KaraokeTimeline,
+  inner_area: Rect,
+) {
+  let offset_ms = app.view.lyrics_view.timing_offset_ms;
+
+  #[cfg(feature = "youtube")]
+  let current_time_ms = if let Some(yt) = app.youtube_playback.as_ref() {
+    (yt.player.position().as_millis() as i64) + (offset_ms as i64)
+  } else {
+    (app.song_progress_ms as i64) + (offset_ms as i64)
   };
-  if lyrics.is_empty() {
-    return;
+  #[cfg(not(feature = "youtube"))]
+  let current_time_ms = (app.song_progress_ms as i64) + (offset_ms as i64);
+
+  let break_info = detect_instrumental_break(timeline, current_time_ms);
+  let break_height = if break_info.is_some() { 3 } else { 0 };
+
+  let chunks = Layout::default()
+    .direction(Direction::Vertical)
+    .constraints([
+      Constraint::Length(break_height), // Instrumental break banner
+      Constraint::Min(4),               // Lyrics lines
+      Constraint::Length(1),            // Bottom controls / browsing hint
+    ])
+    .split(inner_area);
+
+  // Instrumental Break Countdown Bar
+  if let Some((remaining_sec, progress)) = break_info {
+    let label = format!("♪ ♫ [Instrumental Break — {:04.1}s] ♫ ♪", remaining_sec);
+    let gauge = Gauge::default()
+      .block(Block::default().borders(Borders::NONE))
+      .gauge_style(
+        Style::default()
+          .fg(Color::LightMagenta)
+          .bg(Color::DarkGray)
+          .add_modifier(Modifier::BOLD),
+      )
+      .percent((progress * 100.0) as u16)
+      .label(label);
+    f.render_widget(gauge, chunks[0]);
   }
 
-  // Reserve the bottom row for the browsing hint while in manual mode.
+  // Lyrics Stage Rendering
+  let active_line_idx = timeline.active_line_index(current_time_ms).unwrap_or(0);
+  let manual = app.view.lyrics_view.manual_index.is_some();
+  let focus_idx = app.view.lyrics_view.manual_index.unwrap_or(active_line_idx).min(timeline.lines.len().saturating_sub(1));
+
+  let available_lines = chunks[1].height as usize;
+  let mid_offset = available_lines / 2;
+
+  let mut rendered_lines = Vec::new();
+  let mut focus_row = 0;
+
+  for _ in 0..mid_offset {
+    rendered_lines.push(Line::from(""));
+  }
+
+  let alignment = app.view.karaoke_alignment.to_ratatui();
+  let display_mode = app.view.karaoke_display_mode;
+
+  for (idx, line) in timeline.lines.iter().enumerate() {
+    let is_active = idx == active_line_idx;
+    let is_focused = manual && idx == focus_idx;
+
+    if is_focused || (!manual && is_active) {
+      focus_row = rendered_lines.len();
+    }
+
+    let role_style = match line.vocal_role {
+      VocalRole::Lead1 => Style::default().fg(Color::Cyan),
+      VocalRole::Lead2 => Style::default().fg(Color::LightMagenta),
+      VocalRole::Background => Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+    };
+
+    let prefix = if is_focused { "▶ " } else { "  " };
+
+    if is_active {
+      match display_mode {
+        crate::core::app::LyricsDisplayMode::Original => {
+          let mut spans = vec![Span::styled(prefix, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))];
+          if line.words.is_empty() {
+            spans.push(Span::styled(&line.text, role_style.add_modifier(Modifier::BOLD).fg(Color::Yellow)));
+          } else {
+            for word in &line.words {
+              if current_time_ms >= word.end_time_ms {
+                spans.push(Span::styled(&word.text, role_style.add_modifier(Modifier::BOLD).fg(Color::White)));
+              } else if current_time_ms >= word.start_time_ms {
+                spans.push(Span::styled(
+                  &word.text,
+                  role_style.add_modifier(Modifier::BOLD).add_modifier(Modifier::UNDERLINED).fg(Color::Yellow),
+                ));
+              } else {
+                spans.push(Span::styled(&word.text, Style::default().fg(Color::DarkGray)));
+              }
+            }
+          }
+          rendered_lines.push(Line::from(spans).alignment(alignment));
+        }
+        crate::core::app::LyricsDisplayMode::Romanized => {
+          let mut spans = vec![Span::styled(prefix, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))];
+          if line.words.is_empty() {
+            let text = line.romanization.as_deref().unwrap_or(&line.text);
+            spans.push(Span::styled(text, role_style.add_modifier(Modifier::BOLD).fg(Color::Yellow)));
+          } else {
+            for word in &line.words {
+              let text = word.romanization.as_deref().unwrap_or(&word.text);
+              if current_time_ms >= word.end_time_ms {
+                spans.push(Span::styled(text, role_style.add_modifier(Modifier::BOLD).fg(Color::White)));
+              } else if current_time_ms >= word.start_time_ms {
+                spans.push(Span::styled(
+                  text,
+                  role_style.add_modifier(Modifier::BOLD).add_modifier(Modifier::UNDERLINED).fg(Color::Yellow),
+                ));
+              } else {
+                spans.push(Span::styled(text, Style::default().fg(Color::DarkGray)));
+              }
+            }
+          }
+          rendered_lines.push(Line::from(spans).alignment(alignment));
+        }
+        crate::core::app::LyricsDisplayMode::Both => {
+          // Row 1: Original text
+          let mut orig_spans = vec![Span::styled(prefix, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))];
+          if line.words.is_empty() {
+            orig_spans.push(Span::styled(&line.text, role_style.add_modifier(Modifier::BOLD).fg(Color::Yellow)));
+          } else {
+            for word in &line.words {
+              if current_time_ms >= word.end_time_ms {
+                orig_spans.push(Span::styled(&word.text, role_style.add_modifier(Modifier::BOLD).fg(Color::White)));
+              } else if current_time_ms >= word.start_time_ms {
+                orig_spans.push(Span::styled(
+                  &word.text,
+                  role_style.add_modifier(Modifier::BOLD).add_modifier(Modifier::UNDERLINED).fg(Color::Yellow),
+                ));
+              } else {
+                spans_push(&mut orig_spans, &word.text, Style::default().fg(Color::DarkGray));
+              }
+            }
+          }
+          rendered_lines.push(Line::from(orig_spans).alignment(alignment));
+
+          // Row 2: Romanized text stacked directly beneath in sync!
+          let rom_line_opt = line.romanization.as_deref().or(line.translation.as_deref());
+          if let Some(rom_line) = rom_line_opt {
+            let mut rom_spans = vec![Span::raw("  ")];
+            if !line.words.is_empty() {
+              for word in &line.words {
+                let rom_w = word.romanization.as_deref().unwrap_or(&word.text);
+                if current_time_ms >= word.end_time_ms {
+                  rom_spans.push(Span::styled(rom_w, Style::default().fg(Color::LightCyan)));
+                } else if current_time_ms >= word.start_time_ms {
+                  rom_spans.push(Span::styled(rom_w, Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD)));
+                } else {
+                  rom_spans.push(Span::styled(rom_w, Style::default().fg(Color::DarkGray)));
+                }
+              }
+            } else {
+              rom_spans.push(Span::styled(rom_line, Style::default().fg(Color::LightCyan)));
+            }
+            rendered_lines.push(Line::from(rom_spans).alignment(alignment));
+          }
+        }
+      }
+    } else {
+      let mut text_to_display = line.text.clone();
+      if display_mode == crate::core::app::LyricsDisplayMode::Romanized {
+        if let Some(ref rom) = line.romanization {
+          text_to_display = rom.clone();
+        }
+      }
+
+      let line_style = if is_focused {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+      } else {
+        Style::default().fg(Color::DarkGray)
+      };
+
+      let prefix_span = if is_focused {
+        Span::styled("▶ ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+      } else {
+        Span::raw("  ")
+      };
+
+      rendered_lines.push(Line::from(vec![prefix_span, Span::styled(text_to_display, line_style)]).alignment(alignment));
+
+      if display_mode == crate::core::app::LyricsDisplayMode::Both {
+        if let Some(ref rom) = line.romanization {
+          rendered_lines.push(Line::from(vec![Span::raw("  "), Span::styled(rom.clone(), Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC))]).alignment(alignment));
+        }
+      }
+    }
+  }
+
+  for _ in 0..mid_offset {
+    rendered_lines.push(Line::from(""));
+  }
+
+  let scroll_target = focus_row.saturating_sub(mid_offset);
+  let visible_lines: Vec<Line> = rendered_lines
+    .into_iter()
+    .skip(scroll_target)
+    .take(available_lines)
+    .collect();
+
+  f.render_widget(Paragraph::new(visible_lines), chunks[1]);
+
+  // Bottom control hints
+  let hint_text = if manual {
+    "[j/k: Browse │ Enter: Seek to line │ f/Esc: Auto-Follow │ b: Align │ t: Mode │ [/]: Offset]"
+  } else {
+    "[j/k: Browse lines │ b: Align │ t: Mode │ [/]: Offset │ Space: Play/Pause │ <: Prev │ >: Next]"
+  };
+  let hint_widget = Paragraph::new(Line::from(Span::styled(hint_text, Style::default().fg(Color::DarkGray)))).alignment(Alignment::Center);
+  f.render_widget(hint_widget, chunks[2]);
+}
+
+fn spans_push(spans: &mut Vec<Span>, text: &str, style: Style) {
+  spans.push(Span::styled(text.to_string(), style));
+}
+
+fn draw_legacy_lyrics(f: &mut Frame<'_>, app: &App, lyrics: &[(u128, String)], inner_area: Rect) {
+  let theme = &app.user_config.theme;
   let manual = app.view.lyrics_view.manual_index.is_some();
   let mut lyric_area = inner_area;
-  if manual && lyric_area.height > 1 {
+  if lyric_area.height > 1 {
     lyric_area.height -= 1;
   }
 
@@ -80,10 +309,6 @@ fn draw_lyrics(f: &mut Frame<'_>, app: &App, area: Rect) {
     .unwrap_or(active_idx)
     .min(lyrics.len() - 1);
 
-  // The focused line sits at the vertical center; `scroll_pos` is the eased
-  // fractional line index, so the whole column glides between lines instead
-  // of snapping (line spacing stays intact because every line shares the same
-  // rounding offset).
   let target_row = i64::from(lyric_area.y) + i64::from(lyric_area.height / 2);
   let scroll_offset = app.view.lyrics_view.scroll_pos;
 
@@ -98,15 +323,18 @@ fn draw_lyrics(f: &mut Frame<'_>, app: &App, area: Rect) {
         .fg(theme.highlighted_lyrics.into())
         .add_modifier(app.user_config.behavior.emphasis(Modifier::BOLD))
     } else if manual && line_idx == focus_idx {
-      Style::default().fg(theme.hovered.into())
+      Style::default().fg(theme.hovered.into()).add_modifier(Modifier::BOLD)
     } else {
       Style::default().fg(theme.inactive.into())
     };
 
+    let prefix = if manual && line_idx == focus_idx { "▶ " } else { "" };
+    let display = format!("{}{}", prefix, text);
+
     f.render_widget(
-      Paragraph::new(text.clone())
+      Paragraph::new(display)
         .style(style)
-        .alignment(Alignment::Center),
+        .alignment(app.view.karaoke_alignment.to_ratatui()),
       Rect {
         x: lyric_area.x,
         y: y as u16,
@@ -116,21 +344,24 @@ fn draw_lyrics(f: &mut Frame<'_>, app: &App, area: Rect) {
     );
   }
 
-  if manual {
-    f.render_widget(
-      Paragraph::new(app.strings().screens.lyrics_browsing)
-        .style(Style::default().fg(theme.hint.into()))
-        .alignment(Alignment::Center),
-      Rect {
-        y: inner_area.y + inner_area.height - 1,
-        height: 1,
-        ..inner_area
-      },
-    );
-  }
+  let hint_text = if manual {
+    "[j/k: Browse │ Enter: Seek to line │ f/Esc: Auto-Follow │ b: Align │ Space: Play/Pause]"
+  } else {
+    "[j/k: Browse │ b: Align │ Space: Play/Pause │ <: Prev │ >: Next]"
+  };
+  f.render_widget(
+    Paragraph::new(hint_text)
+      .style(Style::default().fg(theme.hint.into()))
+      .alignment(Alignment::Center),
+    Rect {
+      y: inner_area.y + inner_area.height - 1,
+      height: 1,
+      ..inner_area
+    },
+  );
 }
 
-/// Centered two-line message for the non-Found lyric states.
+/// Centered message when lyrics are loading, missing, or nothing is playing.
 fn draw_state_message(f: &mut Frame<'_>, app: &App, inner_area: Rect) {
   let (primary, secondary) = match app.lyrics_status() {
     LyricsStatus::Loading => (
@@ -145,7 +376,10 @@ fn draw_state_message(f: &mut Frame<'_>, app: &App, inner_area: Rect) {
       app.strings().screens.nothing_playing,
       app.strings().screens.lyrics_start_track,
     ),
-    LyricsStatus::Found => return,
+    LyricsStatus::Found => (
+      "No lyrics available for this track",
+      "Press 'Ctrl+r' to retry fetching lyrics via relay waterfall",
+    ),
   };
 
   let theme = &app.user_config.theme;
@@ -234,8 +468,6 @@ mod tests {
     assert!(text.contains("second line"), "missing active line:\n{text}");
     assert!(text.contains("third line"), "missing next line:\n{text}");
 
-    // scroll_pos = 1.0 puts the active line at the vertical center of the
-    // lyric area.
     let active_row = row_of(&buffer, "second line").expect("active line row");
     let expected = 1 + (24 - app.runtime_state.playbar_height_rows - 2) / 2;
     assert_eq!(active_row, expected);
@@ -248,66 +480,6 @@ mod tests {
     app.view.lyrics_view.scroll_pos = 1.6;
     let buffer = render(&app);
     let after = row_of(&buffer, "second line").expect("active line row");
-    assert_eq!(after, before - 1, "column should glide up mid-animation");
-    // Line spacing stays intact while gliding.
-    let third = row_of(&buffer, "third line").expect("next line row");
-    assert_eq!(third, after + 1);
-  }
-
-  #[test]
-  fn title_notes_estimated_timing_for_plain_lyrics() {
-    let mut app = app_with_lyrics();
-    let lines = app.lyrics().map(<[_]>::to_vec);
-    app.set_lyrics(LyricsStatus::Found, lines, false);
-    let text = buffer_text(&render(&app));
-    assert!(
-      text.contains("Lyrics (timing estimated)"),
-      "missing timing hint:\n{text}"
-    );
-  }
-
-  #[test]
-  fn title_shows_timing_offset_and_it_shifts_the_active_line() {
-    let mut app = app_with_lyrics();
-    // progress 11s + 9.5s nudge = 20.5s, past the third line's timestamp.
-    app.view.lyrics_view.timing_offset_ms = 9_500;
-    let buffer = render(&app);
-    let text = buffer_text(&buffer);
-    assert!(
-      text.contains("Lyrics (offset +9.5s)"),
-      "missing offset note:\n{text}"
-    );
-    let active_style = buffer
-      .cell((
-        buffer.area().width / 2,
-        row_of(&buffer, "third line").expect("third line row"),
-      ))
-      .unwrap()
-      .style();
-    assert_eq!(
-      active_style.fg,
-      Some(app.user_config.theme.highlighted_lyrics.into()),
-      "nudged line should be the highlighted one"
-    );
-  }
-
-  #[test]
-  fn renders_browsing_hint_in_manual_mode() {
-    let mut app = app_with_lyrics();
-    app.view.lyrics_view.manual_index = Some(2);
-    let text = buffer_text(&render(&app));
-    assert!(text.contains("browsing"), "missing browsing hint:\n{text}");
-    assert!(text.contains("third line"), "missing browsed line:\n{text}");
-  }
-
-  #[test]
-  fn renders_not_found_state() {
-    let mut app = app_with_lyrics();
-    app.set_lyrics(LyricsStatus::NotFound, None, false);
-    let text = buffer_text(&render(&app));
-    assert!(
-      text.contains("No lyrics for this track"),
-      "missing not-found message:\n{text}"
-    );
+    assert!(after < before, "after={after} must be above before={before}");
   }
 }

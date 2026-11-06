@@ -48,6 +48,7 @@ use crate::core::app::{
   ActiveBlock, App, ArtistBlock, InputContext, PlaybackOwner, RouteId, SearchResultBlock,
   TrackTableContext,
 };
+#[allow(unused_imports)]
 use crate::core::source::Source;
 use crate::tui::event::Key;
 
@@ -149,16 +150,16 @@ pub fn handle_app(key: Key, app: &mut App) {
     return;
   }
 
-  // Full-Screen Karaoke Stage View: intercept keys when visible.
+  // Full-Screen Now Playing Dashboard / Karaoke Stage View: intercept keys when visible.
   if app.view.karaoke_stage_visible {
     match key {
-      Key::Esc | Key::Char('q') | Key::Char('k') => {
+      Key::Esc | Key::Char('q') | Key::Char('O') => {
         app.view.karaoke_stage_visible = false;
       }
       k if k == app.user_config.keys.back => {
         app.view.karaoke_stage_visible = false;
       }
-      Key::Char('K') => {
+      Key::Char('b') => {
         app.view.karaoke_alignment = app.view.karaoke_alignment.cycle();
         app.set_status_message(format!("Lyrics Position: {}", app.view.karaoke_alignment.label()), 3);
       }
@@ -167,19 +168,62 @@ pub fn handle_app(key: Key, app: &mut App) {
         app.view.karaoke_show_romanization = app.view.karaoke_display_mode != crate::core::app::LyricsDisplayMode::Original;
         app.set_status_message(format!("Lyrics Mode: {}", app.view.karaoke_display_mode.label()), 3);
       }
-      Key::Char('R') | Key::Char('r') => {
+      Key::Ctrl('r') => {
         app.set_status_message("Re-fetching lyrics via auto waterfall...".to_string(), 4);
         app.dispatch(crate::infra::network::IoEvent::RefetchKaraokeLyrics { force: true });
       }
       Key::Char('[') => {
         app.view.lyrics_view.timing_offset_ms -= 100;
+        app.set_status_message(format!("Lyrics Offset: {:+.1}s", app.view.lyrics_view.timing_offset_ms as f64 / 1000.0), 3);
       }
       Key::Char(']') => {
         app.view.lyrics_view.timing_offset_ms += 100;
+        app.set_status_message(format!("Lyrics Offset: {:+.1}s", app.view.lyrics_view.timing_offset_ms as f64 / 1000.0), 3);
+      }
+      Key::Char('j') | Key::Down => {
+        lyrics_view::scroll_by(app, 1);
+      }
+      Key::Char('k') | Key::Up => {
+        lyrics_view::scroll_by(app, -1);
+      }
+      Key::Char('f') => {
+        app.view.lyrics_view.manual_index = None;
+        app.set_status_message("Resumed lyrics auto-follow".to_string(), 3);
+      }
+      Key::Enter => {
+        if let Some(target) = app.view.lyrics_view.manual_index {
+          if let Some(timeline) = &app.view.active_karaoke_timeline {
+            if let Some(line) = timeline.lines.get(target) {
+              let seek_ms = line.start_time_ms.max(0) as u32;
+              app.dispatch(crate::infra::network::IoEvent::Seek(seek_ms));
+              app.set_status_message(format!("Jumped playback to line {}: {:02}:{:02}", target + 1, seek_ms / 60_000, (seek_ms / 1_000) % 60), 4);
+            }
+          }
+        }
+      }
+      // Media controls
+      Key::Char(' ') => { let _ = app.apply(Action::TogglePlayback); }
+      Key::Char('>') => { let _ = app.apply(Action::NextTrack); }
+      Key::Char('<') => { let _ = app.apply(Action::PreviousTrack); }
+      Key::Char('.') => { let _ = app.apply(Action::SeekForward); }
+      Key::Char(',') => { let _ = app.apply(Action::SeekBackward); }
+      Key::Char('+') | Key::Char('=') => { let _ = app.apply(Action::VolumeUp); }
+      Key::Char('-') => { let _ = app.apply(Action::VolumeDown); }
+      Key::Char('r') => { let _ = app.apply(Action::CycleRepeat); }
+      Key::Char('R') => { let _ = app.apply(Action::ToggleShuffle); }
+      Key::Char('s') | Key::Char('S') | Key::Char('Z') => {}
+      Key::Char('w') => { let _ = app.apply(Action::OpenAddPlayingTrackDialog); }
+      Key::Char('y') => {
+        copy_url(app, Action::CopyUrl(CopyTarget::CurrentSong));
+      }
+      Key::Char('Y') => {
+        copy_url(app, Action::CopyUrl(CopyTarget::CurrentAlbum));
       }
       _ => {}
     }
-    return;
+    if !matches!(key, Key::Char('s') | Key::Char('S') | Key::Char('Z')) {
+      return;
+    }
   }
 
   // URL Import modal: intercept keys when visible.
@@ -611,74 +655,58 @@ pub fn handle_app(key: Key, app: &mut App) {
       copy_url(app, Action::CopyUrl(CopyTarget::CurrentAlbum));
     }
     _ if key == app.user_config.keys.audio_analysis => {
-      app.apply(Action::Navigate(NavTarget::Analysis));
+      if is_input_mode(app) {
+        handle_block_events(key, app);
+      } else if app.get_current_route().active_block == ActiveBlock::Analysis
+        || app.get_current_route().id == RouteId::Analysis
+      {
+        app.pop_navigation_stack();
+      } else {
+        app.apply(Action::Navigate(NavTarget::Analysis));
+      }
     }
     _ if key == app.user_config.keys.lyrics_view => {
-      app.apply(Action::Navigate(NavTarget::Lyrics));
+      if is_input_mode(app) {
+        handle_block_events(key, app);
+      } else if app.get_current_route().active_block == ActiveBlock::LyricsView
+        || app.get_current_route().id == RouteId::LyricsView
+      {
+        app.pop_navigation_stack();
+      } else {
+        app.apply(Action::Navigate(NavTarget::Lyrics));
+      }
     }
     _ if key == app.user_config.keys.miniplayer_view => {
       if is_input_mode(app) {
         handle_block_events(key, app);
+      } else if app.get_current_route().active_block == ActiveBlock::MiniPlayer {
+        app.pop_navigation_stack();
+      } else {
+        app.apply(Action::Navigate(NavTarget::MiniPlayer));
+      }
+    }
+    Key::Char('M') => {
+      if is_input_mode(app) {
+        handle_block_events(key, app);
+      } else if app.get_current_route().active_block == ActiveBlock::MiniPlayer {
+        app.pop_navigation_stack();
       } else {
         app.apply(Action::Navigate(NavTarget::MiniPlayer));
       }
     }
     #[cfg(feature = "cover-art")]
     _ if key == app.user_config.keys.cover_art_view => {
-      app.push_navigation_stack(RouteId::CoverArtView, ActiveBlock::CoverArtView);
-    }
-    _ if key == app.user_config.keys.listening_party => {
-      app.apply(Action::Navigate(NavTarget::Party));
-    }
-    _ if key == app.user_config.keys.like_track => {
       if is_input_mode(app) {
         handle_block_events(key, app);
-      } else if app.active_source == Source::Radio {
-        if app.get_current_route().active_block == ActiveBlock::SearchResultBlock {
-          handle_block_events(key, app);
-        } else if !search_results::favorite_current_radio_station(app) {
-          app.set_status_message(app.strings().status.app.no_radio_playing.to_string(), 4);
-        }
-      } else if app.active_source.supports_like() {
-        app.apply(Action::ToggleSaveCurrentItem);
+      } else if app.get_current_route().active_block == ActiveBlock::CoverArtView
+        || app.get_current_route().id == RouteId::CoverArtView
+      {
+        app.pop_navigation_stack();
       } else {
-        app.set_status_message(
-          app
-            .strings()
-            .status
-            .app
-            .like_source_unavailable(app.strings().sidebar.source_label(app.active_source)),
-          4,
-        );
+        app.push_navigation_stack(RouteId::CoverArtView, ActiveBlock::CoverArtView);
       }
     }
-    #[cfg(feature = "scripting")]
-    _ if app.user_config.plugin_command_keys.contains_key(&key) => {
-      if is_input_mode(app) {
-        handle_block_events(key, app);
-      } else if let Some(name) = app.user_config.plugin_command_keys.get(&key).cloned() {
-        app.queue_plugin_command(name);
-      }
-    }
-    Key::Char('R') => {
-      if is_input_mode(app) {
-        handle_block_events(key, app);
-      } else if app.view.karaoke_stage_visible {
-        let provider_name = crate::core::app::LYRIC_PROVIDERS[app.view.karaoke_provider_index];
-        app.set_status_message(format!("Re-fetching lyrics via {}...", provider_name), 4);
-        app.dispatch(crate::infra::network::IoEvent::RefetchKaraokeLyrics { force: true });
-      } else {
-        app.view.relay_status_visible = !app.view.relay_status_visible;
-      }
-    }
-    Key::Char('U') => {
-      if is_input_mode(app) {
-        handle_block_events(key, app);
-      } else {
-        app.view.url_import_visible = !app.view.url_import_visible;
-      }
-    }
-    Key::Char('K') => {
+    Key::Char('O') => {
       if is_input_mode(app) {
         handle_block_events(key, app);
       } else {
@@ -688,27 +716,64 @@ pub fn handle_app(key: Key, app: &mut App) {
         }
       }
     }
-    Key::Char('[') => {
+    Key::Char('I') => {
       if is_input_mode(app) {
         handle_block_events(key, app);
       } else {
-        app.view.lyrics_view.timing_offset_ms -= 100;
+        app.view.url_import_visible = !app.view.url_import_visible;
+        if app.view.url_import_visible {
+          app.view.url_import_input.clear();
+          app.view.url_import_status = None;
+          app.view.url_import_in_progress = false;
+        }
       }
     }
-    Key::Char(']') => {
+    Key::Char('i') => {
       if is_input_mode(app) {
         handle_block_events(key, app);
       } else {
-        app.view.lyrics_view.timing_offset_ms += 100;
+        common_key_events::focus_sidebar(app);
       }
     }
-    Key::Char('T') => {
+    Key::Char('A') => {
+      if is_input_mode(app) {
+        handle_block_events(key, app);
+      } else if app.get_current_route().active_block == ActiveBlock::CreatePlaylistForm {
+        app.pop_navigation_stack();
+      } else {
+        app.push_navigation_stack(RouteId::CreatePlaylist, ActiveBlock::CreatePlaylistForm);
+      }
+    }
+    Key::Char('\'') => {
+      if is_input_mode(app) {
+        handle_block_events(key, app);
+      } else if app.get_current_route().active_block == ActiveBlock::SortMenu {
+        app.pop_navigation_stack();
+      } else {
+        sort_menu::open_sort_menu(app, crate::core::sort::SortContext::PlaylistTracks);
+      }
+    }
+    Key::Char('w') => {
       if is_input_mode(app) {
         handle_block_events(key, app);
       } else {
-        app.view.karaoke_display_mode = app.view.karaoke_display_mode.cycle();
-        app.view.karaoke_show_romanization = app.view.karaoke_display_mode != crate::core::app::LyricsDisplayMode::Original;
-        app.set_status_message(format!("Lyrics Display Mode: {}", app.view.karaoke_display_mode.label()), 3);
+        app.apply(Action::OpenAddPlayingTrackDialog);
+      }
+    }
+    Key::Char('W') => {
+      if is_input_mode(app) {
+        handle_block_events(key, app);
+      } else {
+        let active = app.get_current_route().active_block;
+        if active == ActiveBlock::TrackTable
+          || active == ActiveBlock::SearchResultBlock
+          || active == ActiveBlock::AlbumTracks
+          || active == ActiveBlock::Playlists
+        {
+          handle_block_events(key, app);
+        } else {
+          app.apply(Action::OpenAddTrackDialog);
+        }
       }
     }
     Key::Char('P') => {
@@ -847,7 +912,7 @@ pub fn handle_app(key: Key, app: &mut App) {
         }
       }
     }
-    Key::Char('S') => {
+    Key::Char('S') | Key::Char('Z') => {
       if is_input_mode(app) {
         handle_block_events(key, app);
       } else {
@@ -971,26 +1036,12 @@ pub fn handle_app(key: Key, app: &mut App) {
         resize::reset_layout(app);
       }
     }
-    Key::Char('w') => {
+    Key::Char('X') => {
       if is_input_mode(app) {
         handle_block_events(key, app);
       } else {
-        let active = app.get_current_route().active_block;
-        if active == ActiveBlock::TrackTable
-          || active == ActiveBlock::SearchResultBlock
-          || active == ActiveBlock::AlbumTracks
-        {
-          handle_block_events(key, app);
-        } else {
-          app.apply(Action::OpenAddPlayingTrackDialog);
-        }
-      }
-    }
-    Key::Char('W') => {
-      if is_input_mode(app) {
+        // Delete entire playlist in selected context
         handle_block_events(key, app);
-      } else {
-        app.apply(Action::OpenAddPlayingTrackDialog);
       }
     }
     _ => handle_block_events(key, app),

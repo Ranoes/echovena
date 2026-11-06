@@ -21,7 +21,7 @@ pub fn handler(key: Key, app: &mut App) {
   let available_fields = context.available_fields();
 
   match key {
-    Key::Esc | Key::Char(',') => {
+    Key::Esc | Key::Char('\'') | Key::Char('q') => {
       close_sort_menu(app);
     }
     k if common_key_events::up_event(k, &app.user_config.keys) => {

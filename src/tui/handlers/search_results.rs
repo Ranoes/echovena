@@ -427,6 +427,7 @@ fn handle_enter_event_on_hovered_block(app: &mut App) {
   };
 }
 
+#[allow(dead_code)]
 fn handle_recommended_tracks(app: &mut App) {
   match app.view.search_selected_block {
     SearchResultBlock::AlbumSearch => {}
@@ -487,6 +488,7 @@ pub(super) fn favorite_current_radio_station(app: &mut App) -> bool {
 }
 
 #[cfg(not(feature = "internet-radio"))]
+#[allow(dead_code)]
 pub(super) fn favorite_current_radio_station(_app: &mut App) -> bool {
   false
 }
@@ -839,12 +841,12 @@ pub fn handler(key: Key, app: &mut App) {
         app.play_selected_live_search_item();
         return;
       }
-      Key::Char('z') => {
-        app.queue_selected_live_search_item_next();
+      Key::Char('e') => {
+        app.queue_selected_live_search_item_end();
         return;
       }
-      Key::Char('Z') => {
-        app.queue_selected_live_search_item_end();
+      Key::Char('E') => {
+        app.queue_selected_live_search_item_next();
         return;
       }
       _ => {}
@@ -1018,10 +1020,12 @@ pub fn handler(key: Key, app: &mut App) {
       }
       SearchResultBlock::Empty => {}
     },
-    Key::Char('r') => handle_recommended_tracks(app),
-    _ if key == app.user_config.keys.add_item_to_queue => handle_add_item_to_queue(app),
-    Key::Char('Z') => handle_add_item_to_queue_end(app),
+    Key::Char('e') => handle_add_item_to_queue_end(app),
+    Key::Char('E') => handle_add_item_to_queue(app),
     Key::Char('s') => handle_save_track_event(app),
+    Key::Char('\'') => {
+      super::sort_menu::open_sort_menu(app, crate::core::sort::SortContext::SavedAlbums);
+    }
     _ => {}
   }
 }

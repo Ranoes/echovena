@@ -792,7 +792,7 @@ pub fn handler(key: Key, app: &mut App) {
         }
       }
     }
-    Key::Char('z') => {
+    Key::Char('e') => {
       let tree = get_playlist_tree_items(app);
       if let Some(idx) = app.view.selected_playlist_index {
         if let Some(PlaylistTreeItem::TrackLeaf { title, artist, uri, track_id, duration_ms, .. }) = tree.get(idx) {
@@ -815,7 +815,63 @@ pub fn handler(key: Key, app: &mut App) {
             generated_name: None,
           };
           app.apply(Action::QueueTrack(track_info));
-          app.set_status_message(format!("Queued '{}'", title), 3);
+          app.set_status_message(format!("Queued '{}' to end of queue", title), 3);
+        }
+      }
+    }
+    Key::Char('E') => {
+      let tree = get_playlist_tree_items(app);
+      if let Some(idx) = app.view.selected_playlist_index {
+        if let Some(PlaylistTreeItem::TrackLeaf { title, artist, uri, track_id, duration_ms, .. }) = tree.get(idx) {
+          let u = uri.clone().or_else(|| if !track_id.is_empty() { Some(format!("youtube:video:{}", track_id)) } else { None });
+          let track_info = TrackInfo {
+            uri: u,
+            name: title.clone(),
+            artists: vec![artist.clone()],
+            album: String::new(),
+            duration_ms: *duration_ms,
+            id: Some(track_id.clone()),
+            album_id: None,
+            artist_refs: Vec::new(),
+            is_playable: true,
+            is_local: false,
+            track_number: 1,
+            explicit: false,
+            image_url: None,
+            release_date: None,
+            generated_name: None,
+          };
+          app.apply(Action::QueueTrackNext(track_info));
+          app.set_status_message(format!("Queued '{}' as next played song", title), 3);
+        }
+      }
+    }
+    Key::Char('w') => {
+      app.apply(Action::OpenAddPlayingTrackDialog);
+    }
+    Key::Char('W') => {
+      let tree = get_playlist_tree_items(app);
+      if let Some(idx) = app.view.selected_playlist_index {
+        if let Some(PlaylistTreeItem::TrackLeaf { title, artist, uri, track_id, duration_ms, .. }) = tree.get(idx) {
+          let u = uri.clone().or_else(|| if !track_id.is_empty() { Some(format!("youtube:video:{}", track_id)) } else { None });
+          let track_info = TrackInfo {
+            uri: u,
+            name: title.clone(),
+            artists: vec![artist.clone()],
+            album: String::new(),
+            duration_ms: *duration_ms,
+            id: Some(track_id.clone()),
+            album_id: None,
+            artist_refs: Vec::new(),
+            is_playable: true,
+            is_local: false,
+            track_number: 1,
+            explicit: false,
+            image_url: None,
+            release_date: None,
+            generated_name: None,
+          };
+          app.begin_add_track_info_to_playlist_flow(&track_info);
         }
       }
     }
@@ -847,10 +903,35 @@ pub fn handler(key: Key, app: &mut App) {
         }
       }
     }
-    Key::Char('a') | Key::Char('n') | Key::Char('N') | Key::Char('c') => {
+    Key::Char('S') | Key::Char('Z') => {
+      let tree = get_playlist_tree_items(app);
+      if let Some(idx) = app.view.selected_playlist_index {
+        let target_pl_id = match tree.get(idx) {
+          Some(PlaylistTreeItem::PlaylistHeader { id, .. }) => Some(id.clone()),
+          Some(PlaylistTreeItem::TrackLeaf { playlist_id, .. }) => Some(playlist_id.clone()),
+          _ => None,
+        };
+        if let Some(pl_id) = target_pl_id {
+          let dl_source = app.active_download_source;
+          tokio::spawn(async move {
+            if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+              if let Ok(tracks) = db.get_playlist_tracks(&pl_id) {
+                if let Some(root) = crate::core::paths::music_archive_dir() {
+                  for t in tracks {
+                    let _ = crate::sources::lossless_relay::archiver::resolve_and_archive_track_with_source(&db, &t, &root, dl_source).await;
+                  }
+                }
+              }
+            }
+          });
+          app.set_status_message(format!("Queued batch playlist download [{}] to ~/Music/EchoVena...", dl_source.label()), 4);
+        }
+      }
+    }
+    Key::Char('a') | Key::Char('A') => {
       app.push_navigation_stack(RouteId::CreatePlaylist, ActiveBlock::CreatePlaylistForm);
     }
-    Key::Char('u') | Key::Char('U') => {
+    Key::Char('u') | Key::Char('U') | Key::Char('I') => {
       app.view.url_import_visible = true;
       app.view.url_import_input.clear();
       app.view.url_import_status = None;
@@ -876,6 +957,36 @@ pub fn handler(key: Key, app: &mut App) {
               }
             }
           }
+          return;
+        } else if let Some(PlaylistTreeItem::PlaylistHeader { id, title, .. }) = tree.get(idx) {
+          if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+            let _ = db.delete_imported_playlist(id);
+          }
+          app.apply(Action::DeletePlaylist(id.clone()));
+          app.set_status_message(format!("Deleted playlist '{}'", title), 4);
+          let new_len = get_playlist_tree_items(app).len();
+          app.view.selected_playlist_index = if new_len > 0 { Some(idx.min(new_len - 1)) } else { None };
+          return;
+        }
+      }
+      handle_delete_playlist(app);
+    }
+    Key::Char('X') => {
+      let tree = get_playlist_tree_items(app);
+      if let Some(idx) = app.view.selected_playlist_index {
+        let to_delete = match tree.get(idx) {
+          Some(PlaylistTreeItem::TrackLeaf { playlist_id, .. }) => Some((playlist_id.clone(), playlist_id.clone())),
+          Some(PlaylistTreeItem::PlaylistHeader { id, title, .. }) => Some((id.clone(), title.clone())),
+          _ => None,
+        };
+        if let Some((pl_id, title)) = to_delete {
+          if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+            let _ = db.delete_imported_playlist(&pl_id);
+          }
+          app.apply(Action::DeletePlaylist(pl_id));
+          app.set_status_message(format!("Deleted entire playlist '{}'", title), 4);
+          let new_len = get_playlist_tree_items(app).len();
+          app.view.selected_playlist_index = if new_len > 0 { Some(idx.min(new_len - 1)) } else { None };
           return;
         }
       }

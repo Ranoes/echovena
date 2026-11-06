@@ -107,11 +107,17 @@ pub fn handler(key: Key, app: &mut App) {
     k if k == app.user_config.keys.previous_page => {
       app.view.track_table_index = app.view.track_table_index.saturating_sub(page_step(app));
     }
-    Key::Char('w') | Key::Char('a') => {
+    Key::Char('w') => {
+      app.apply(Action::OpenAddPlayingTrackDialog);
+    }
+    Key::Char('W') => {
       app.apply(Action::OpenAddTrackDialog);
     }
     Key::Char('d') | Key::Char('D') | Key::Char('x') | Key::Delete => {
       handle_delete_track(app);
+    }
+    Key::Char('X') => {
+      handle_delete_current_playlist(app);
     }
     // `handle_app` routes to `handle_escape` first, so `Esc` handling here unreachable.
     Key::Char('q') if app.is_playlist_track_filter_active() => {
@@ -121,7 +127,6 @@ pub fn handler(key: Key, app: &mut App) {
       app.clear_saved_track_filter();
     }
     Key::Char('s') => handle_save_track_event(app),
-    Key::Char('S') => play_random_song(app),
     Key::Char('m') | Key::Char('M') => {
       if let Some(track) = app.track_table.tracks.get(app.view.track_table_index) {
         let track_id = track.uri.clone().unwrap_or_else(|| track.id.clone().unwrap_or_else(|| track.name.clone()));
@@ -138,14 +143,10 @@ pub fn handler(key: Key, app: &mut App) {
     }
     k if k == app.user_config.keys.jump_to_end => jump_to_end(app),
     k if k == app.user_config.keys.jump_to_start => jump_to_start(app),
-    //recommended song radio
-    Key::Char('r') => {
-      handle_recommended_tracks(app);
-    }
-    _ if key == app.user_config.keys.add_item_to_queue => on_queue(app),
-    Key::Char('Z') => on_queue_end(app),
+    Key::Char('e') => on_queue_end(app),
+    Key::Char('E') => on_queue(app),
     // Open sort menu
-    Key::Char(',') => {
+    Key::Char('\'') => {
       super::sort_menu::open_sort_menu(app, crate::core::sort::SortContext::PlaylistTracks);
     }
     _ => {}
@@ -160,6 +161,7 @@ fn handle_save_track_event(app: &mut App) {
   };
 }
 
+#[allow(dead_code)]
 fn handle_recommended_tracks(app: &mut App) {
   if let Some(track) = app
     .track_table
@@ -173,6 +175,7 @@ fn handle_recommended_tracks(app: &mut App) {
 
 /// Play a random track from the table's context. Offsets are computed here so
 /// `apply` stays deterministic.
+#[allow(dead_code)]
 fn play_random_song(app: &mut App) {
   if let Some(context) = &app.track_table.context {
     match context {
@@ -367,6 +370,18 @@ fn handle_delete_track(app: &mut App) {
   }
 }
 
+fn handle_delete_current_playlist(app: &mut App) {
+  if let Some(playlist_id) = app.current_playlist_track_table_id() {
+    let uri = playlist_id.uri();
+    if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+      let _ = db.delete_imported_playlist(&uri);
+    }
+    app.apply(Action::DeletePlaylist(uri));
+    app.set_status_message("Deleted playlist".to_string(), 4);
+    app.pop_navigation_stack();
+  }
+}
+
 fn jump_to_end(app: &mut App) {
   if !app.track_table.tracks.is_empty() {
     app.view.track_table_index = app.track_table.tracks.len() - 1;
@@ -525,6 +540,7 @@ fn current_playlist_context_id(app: &App) -> Option<String> {
   app.current_playlist_track_table_id().map(|id| id.uri())
 }
 
+#[allow(dead_code)]
 fn current_playlist_total_tracks(app: &App) -> Option<u32> {
   app.current_playlist_track_total()
 }

@@ -98,7 +98,7 @@ pub fn handler(key: Key, app: &mut App) {
       app.view.artists_list_index = app.view.artists_list_index.saturating_sub(page_step(app));
     }
     // Open sort menu
-    Key::Char(',') => {
+    Key::Char('\'') => {
       super::sort_menu::open_sort_menu(app, crate::core::sort::SortContext::SavedArtists);
     }
     _ => {}

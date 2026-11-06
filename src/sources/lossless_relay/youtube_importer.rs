@@ -570,7 +570,6 @@ impl YouTubeImporter {
                     cover_art_url: track_cover,
                 });
             }
-        }
 
         let playlist = ImportedPlaylist {
             id: canonical_id,

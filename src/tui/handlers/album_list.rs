@@ -65,7 +65,7 @@ pub fn handler(key: Key, app: &mut App) {
       }
     }
     // Open sort menu
-    Key::Char(',') => {
+    Key::Char('\'') => {
       super::sort_menu::open_sort_menu(app, crate::core::sort::SortContext::SavedAlbums);
     }
     _ => {}

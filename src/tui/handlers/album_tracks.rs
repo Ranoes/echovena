@@ -62,19 +62,18 @@ pub fn handler(key: Key, app: &mut App) {
         });
       }
     }
-    //recommended playlist based on selected track
-    Key::Char('r') => {
-      handle_recommended_tracks(app);
+    Key::Char('e') => {
+      if let Some(track) = selected_album_track(app).cloned() {
+        app.apply(Action::QueueTrack(track));
+      }
     }
-    _ if key == app.user_config.keys.add_item_to_queue => {
+    Key::Char('E') => {
       if let Some(track) = selected_album_track(app).cloned() {
         app.apply(Action::QueueTrackNext(track));
       }
     }
-    Key::Char('Z') => {
-      if let Some(track) = selected_album_track(app).cloned() {
-        app.apply(Action::QueueTrack(track));
-      }
+    Key::Char('\'') => {
+      super::sort_menu::open_sort_menu(app, crate::core::sort::SortContext::SavedAlbums);
     }
     _ => {}
   };
@@ -173,6 +172,7 @@ fn handle_low_event(app: &mut App) {
   }
 }
 
+#[allow(dead_code)]
 fn handle_recommended_tracks(app: &mut App) {
   let identity =
     selected_album_track(app).and_then(|track| Some((track.id.clone()?, track.name.clone())));

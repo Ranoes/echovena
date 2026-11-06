@@ -290,6 +290,7 @@ impl Database {
 
     pub fn delete_imported_playlist(&self, id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        let _ = conn.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?1;", params![id]);
         conn.execute("DELETE FROM imported_playlists WHERE id = ?1;", params![id])
             .context("failed to delete imported playlist")?;
         Ok(())
