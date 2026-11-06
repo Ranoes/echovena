@@ -1240,9 +1240,9 @@ impl UserConfig {
         // every bare character.
         #[cfg(feature = "ai-dj")]
         dj_pick_model: Key::Ctrl('g'),
-        jump_to_artist_album: Key::Char('A'),
+        jump_to_artist_album: Key::Ctrl('A'),
         jump_to_context: Key::Char('o'),
-        manage_devices: Key::Ctrl('d'),
+        manage_devices: Key::Char('i'),
         decrease_volume: Key::Char('-'),
         increase_volume: Key::Char('+'),
         toggle_playback: Key::Char(' '),
@@ -1449,7 +1449,51 @@ impl UserConfig {
     }
   }
 
-  pub fn load_keybindings(&mut self, keybindings: KeyBindingsString) -> Result<()> {
+  pub fn load_keybindings(&mut self, mut keybindings: KeyBindingsString) -> Result<()> {
+    // Auto-migrate legacy Spotatui keybindings to normalized EchoVena 2.0 bindings
+    if keybindings.generate_recap.as_deref() == Some("R") {
+      keybindings.generate_recap = Some("ctrl-r".to_string());
+    }
+    if keybindings.shuffle.as_deref() == Some("ctrl-s") {
+      keybindings.shuffle = Some("R".to_string());
+    }
+    if keybindings.repeat.as_deref() == Some("ctrl-r") {
+      keybindings.repeat = Some("r".to_string());
+    }
+    if keybindings.manage_devices.as_deref() == Some("d") {
+      keybindings.manage_devices = Some("i".to_string());
+    }
+    if keybindings.jump_to_artist_album.as_deref() == Some("A") {
+      keybindings.jump_to_artist_album = Some("ctrl-A".to_string());
+    }
+    if keybindings.cover_art_view.as_deref() == Some("G") {
+      keybindings.cover_art_view = Some("N".to_string());
+    }
+    if keybindings.jump_to_album.as_deref() == Some("a") {
+      keybindings.jump_to_album = Some("G".to_string());
+    }
+    if keybindings.copy_song_url.as_deref() == Some("c") {
+      keybindings.copy_song_url = Some("y".to_string());
+    }
+    if keybindings.copy_album_url.as_deref() == Some("C") {
+      keybindings.copy_album_url = Some("Y".to_string());
+    }
+    if keybindings.add_item_to_queue.as_deref() == Some("z") {
+      keybindings.add_item_to_queue = Some("e".to_string());
+    }
+    if keybindings.next_track.as_deref() == Some("n") {
+      keybindings.next_track = Some(">".to_string());
+    }
+    if keybindings.previous_track.as_deref() == Some("p") {
+      keybindings.previous_track = Some("<".to_string());
+    }
+    if keybindings.seek_forwards.as_deref() == Some(">") {
+      keybindings.seek_forwards = Some(".".to_string());
+    }
+    if keybindings.seek_backwards.as_deref() == Some("<") {
+      keybindings.seek_backwards = Some(",".to_string());
+    }
+
     macro_rules! to_keys {
       ($name: ident) => {
         if let Some(key_string) = keybindings.$name {

@@ -53,6 +53,7 @@ pub fn handler(key: Key, app: &mut App) {
     k if common_key_events::middle_event(k) => handle_middle_event(app),
     k if common_key_events::low_event(k) => handle_low_event(app),
     Key::Char('s') => handle_save_event(app),
+    Key::Char('S') => super::handle_save_album_or_playlist(app),
     Key::Char('w') => handle_save_album_event(app),
     Key::Enter => {
       if let Some((uri, offset)) = open_album_start(app) {
@@ -80,7 +81,7 @@ pub fn handler(key: Key, app: &mut App) {
 }
 
 /// The track under the cursor of whichever album context is open.
-fn selected_album_track(app: &App) -> Option<&TrackInfo> {
+pub(super) fn selected_album_track(app: &App) -> Option<&TrackInfo> {
   match app.album_table_context {
     AlbumTableContext::Full => app
       .selected_album_full

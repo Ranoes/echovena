@@ -487,8 +487,8 @@ pub(super) fn favorite_current_radio_station(app: &mut App) -> bool {
   true
 }
 
-#[cfg(not(feature = "internet-radio"))]
 #[allow(dead_code)]
+#[cfg(not(feature = "internet-radio"))]
 pub(super) fn favorite_current_radio_station(_app: &mut App) -> bool {
   false
 }
