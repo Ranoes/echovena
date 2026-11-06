@@ -14,6 +14,7 @@ use super::player::draw_playbar;
 use crate::tui::theme::EmphasisExt;
 
 pub fn draw_lyrics_view(f: &mut Frame<'_>, app: &App) {
+  f.render_widget(ratatui::widgets::Clear, f.area());
   let (content_area, playbar_area) = fullscreen_view_layout(&app.runtime_state, f.area());
 
   draw_lyrics(f, app, content_area);
@@ -40,7 +41,7 @@ fn draw_lyrics(f: &mut Frame<'_>, app: &App, area: Rect) {
     .borders(Borders::ALL)
     .border_type(BorderType::Rounded)
     .title(Span::styled(title, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)))
-    .style(Style::default().fg(theme.inactive.into()));
+    .style(Style::default().fg(theme.inactive.into()).bg(theme.background.into()));
   f.render_widget(block.clone(), area);
 
   let inner_area = block.inner(area);
@@ -264,6 +265,10 @@ fn draw_rich_karaoke_stage(
         }
       }
     }
+
+    if app.view.lyrics_line_spacing > 0 {
+      rendered_lines.push(Line::from(""));
+    }
   }
 
   for _ in 0..mid_offset {
@@ -281,9 +286,9 @@ fn draw_rich_karaoke_stage(
 
   // Bottom control hints
   let hint_text = if manual {
-    "[j/k: Browse │ Enter: Seek to line │ f/Esc: Auto-Follow │ b: Align │ t: Mode │ [/]: Offset]"
+    "[j/k: Browse │ Enter: Seek to line │ f/Esc: Auto-Follow │ b: Align │ t: Mode │ p: Spacing │ [/]: Offset]"
   } else {
-    "[j/k: Browse lines │ b: Align │ t: Mode │ [/]: Offset │ Space: Play/Pause │ <: Prev │ >: Next]"
+    "[j/k: Browse lines │ b: Align │ t: Mode │ p: Spacing │ [/]: Offset]"
   };
   let hint_widget = Paragraph::new(Line::from(Span::styled(hint_text, Style::default().fg(Color::DarkGray)))).alignment(Alignment::Center);
   f.render_widget(hint_widget, chunks[2]);
@@ -311,9 +316,10 @@ pub(crate) fn draw_legacy_lyrics(f: &mut Frame<'_>, app: &App, lyrics: &[(u128, 
 
   let target_row = i64::from(lyric_area.y) + i64::from(lyric_area.height / 2);
   let scroll_offset = app.view.lyrics_view.scroll_pos;
+  let line_spacing = if app.view.lyrics_line_spacing > 0 { 2 } else { 1 };
 
   for (line_idx, (_, text)) in lyrics.iter().enumerate() {
-    let y = target_row + (line_idx as f64 - scroll_offset).round() as i64;
+    let y = target_row + ((line_idx * line_spacing) as f64 - scroll_offset * line_spacing as f64).round() as i64;
     if y < i64::from(lyric_area.y) || y >= i64::from(lyric_area.y) + i64::from(lyric_area.height) {
       continue;
     }
@@ -345,9 +351,9 @@ pub(crate) fn draw_legacy_lyrics(f: &mut Frame<'_>, app: &App, lyrics: &[(u128, 
   }
 
   let hint_text = if manual {
-    "[j/k: Browse │ Enter: Seek to line │ f/Esc: Auto-Follow │ b: Align │ Space: Play/Pause]"
+    "[j/k: Browse │ Enter: Seek to line │ f/Esc: Auto-Follow │ b: Align │ p: Spacing]"
   } else {
-    "[j/k: Browse │ b: Align │ Space: Play/Pause │ <: Prev │ >: Next]"
+    "[j/k: Browse │ b: Align │ p: Spacing]"
   };
   f.render_widget(
     Paragraph::new(hint_text)
@@ -469,7 +475,8 @@ mod tests {
     assert!(text.contains("third line"), "missing next line:\n{text}");
 
     let active_row = row_of(&buffer, "second line").expect("active line row");
-    let expected = 1 + (24 - app.runtime_state.playbar_height_rows - 2) / 2;
+    let available_height = (24 - app.runtime_state.playbar_height_rows - 2).saturating_sub(1);
+    let expected = 1 + available_height / 2;
     assert_eq!(active_row, expected);
   }
 
@@ -481,5 +488,22 @@ mod tests {
     let buffer = render(&app);
     let after = row_of(&buffer, "second line").expect("active line row");
     assert!(after < before, "after={after} must be above before={before}");
+  }
+
+  #[test]
+  fn test_lyrics_line_spacing_spaces_lines() {
+    let mut app = app_with_lyrics();
+    // Default spacing = 0: adjacent lines have distance 1
+    let buf_compact = render(&app);
+    let r1_compact = row_of(&buf_compact, "second line").expect("row 2");
+    let r2_compact = row_of(&buf_compact, "third line").expect("row 3");
+    assert_eq!(r2_compact - r1_compact, 1);
+
+    // Spaced mode: lines separated by 1 blank line (distance 2)
+    app.view.lyrics_line_spacing = 1;
+    let buf_spaced = render(&app);
+    let r1_spaced = row_of(&buf_spaced, "second line").expect("row 2 spaced");
+    let r2_spaced = row_of(&buf_spaced, "third line").expect("row 3 spaced");
+    assert_eq!(r2_spaced - r1_spaced, 2);
   }
 }

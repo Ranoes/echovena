@@ -261,6 +261,7 @@ pub struct ViewState {
   pub karaoke_display_mode: LyricsDisplayMode,
   pub karaoke_alignment: KaraokeAlignment,
   pub karaoke_provider_index: usize,
+  pub lyrics_line_spacing: usize,
 }
 
 pub const LYRIC_PROVIDERS: [&str; 4] = [

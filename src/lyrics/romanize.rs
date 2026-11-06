@@ -394,6 +394,15 @@ pub fn is_chinese_text(text: &str) -> bool {
         return false;
     }
 
+    // If it is a single kanji recognized in our Japanese kanji dictionary, treat as Japanese
+    if text.chars().count() == 1 {
+        if let Some(c) = text.chars().next() {
+            if cjk_data::lookup_kanji(c).is_some() {
+                return false;
+            }
+        }
+    }
+
     true
 }
 

@@ -665,7 +665,9 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
             }
         }
 
-        rendered_lines.push(Line::from(""));
+        if app.view.lyrics_line_spacing > 0 {
+            rendered_lines.push(Line::from(""));
+        }
     }
 
     // Scroll so that `active_row` is always placed at the vertical midpoint (`mid_offset`)
@@ -677,10 +679,12 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
     let footer_text = Line::from(vec![
         Span::styled("[Esc/q]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
         Span::styled(" Back   ", Style::default().fg(Color::White)),
-        Span::styled("[T]", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-        Span::styled(" Mode (Orig/Rom/Both)   ", Style::default().fg(Color::White)),
-        Span::styled("[K]", Style::default().fg(Color::LightCyan).add_modifier(Modifier::BOLD)),
-        Span::styled(" Align (L/C/R)   ", Style::default().fg(Color::White)),
+        Span::styled("[t]", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::styled(" Mode   ", Style::default().fg(Color::White)),
+        Span::styled("[b]", Style::default().fg(Color::LightCyan).add_modifier(Modifier::BOLD)),
+        Span::styled(" Align   ", Style::default().fg(Color::White)),
+        Span::styled("[p]", Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD)),
+        Span::styled(" Spacing   ", Style::default().fg(Color::White)),
         Span::styled("[R]", Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD)),
         Span::styled(" Refetch   ", Style::default().fg(Color::White)),
         Span::styled("[ [ / ] ]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),

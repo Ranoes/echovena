@@ -10,6 +10,11 @@ pub fn handler(key: Key, app: &mut App) {
       app.view.karaoke_alignment = app.view.karaoke_alignment.cycle();
       app.set_status_message(format!("Lyrics Position: {}", app.view.karaoke_alignment.label()), 3);
     }
+    Key::Char('p') => {
+      app.view.lyrics_line_spacing = if app.view.lyrics_line_spacing == 0 { 1 } else { 0 };
+      let label = if app.view.lyrics_line_spacing > 0 { "+1 Line (Spaced)" } else { "0 Lines (Compact)" };
+      app.set_status_message(format!("Lyrics Line Spacing: {}", label), 3);
+    }
     Key::Char('t') | Key::Char('T') => {
       app.view.karaoke_display_mode = app.view.karaoke_display_mode.cycle();
       app.view.karaoke_show_romanization = app.view.karaoke_display_mode != crate::core::app::LyricsDisplayMode::Original;
