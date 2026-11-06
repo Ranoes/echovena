@@ -242,9 +242,11 @@ pub fn draw_action_bar(f: &mut Frame<'_>, app: &App, area: Rect) {
 
   let items = [
     ("/", "Search"),
-    ("O", "Dashboard"),
+    ("T", "Dashboard"),
     ("B", "Lyrics"),
+    ("G", "Album"),
     ("N", "Art"),
+    ("M", "Mini Player"),
     ("e/E", "Queue"),
     ("w/W", "Add Playlist"),
     ("s/S", "Save"),

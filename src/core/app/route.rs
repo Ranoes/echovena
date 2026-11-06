@@ -443,42 +443,171 @@ impl App {
     }
   }
 
-  pub(crate) fn jump_to_album(&mut self) {
-    let non_spotify_info = self.current_non_spotify_track_info();
-    let event = match self.playing_item() {
-      PlayingItem::Spotify(PlayableItem::Track(track)) => {
-        Ok(IoEvent::GetAlbumTracks(Box::new(track.album.clone())))
-      }
-      PlayingItem::Spotify(PlayableItem::Episode(episode)) => Ok(IoEvent::GetShowEpisodes(
-        Box::new(crate::core::plugin_api::ShowInfo::from(&episode.show)),
-      )),
-      PlayingItem::Spotify(_) => return,
-      PlayingItem::QueuedSpotify(track) => {
-        match (&track.album_id, track.id.as_ref().or(track.uri.as_ref())) {
-          (Some(album_id), _) => Ok(IoEvent::GetAlbum(album_id.clone())),
-          (None, Some(track_id)) => Ok(IoEvent::GetAlbumForTrack(track_id.clone())),
-          (None, None) => Err(self.strings().status.app.queued_no_album),
+  pub(crate) fn open_album_drilldown(&mut self, album_id: &str, title: &str, artist: &str, year: &Option<String>) {
+    let mut tracks = Vec::new();
+    if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+      if let Ok(pl_tracks) = db.get_playlist_tracks(album_id) {
+        for t in pl_tracks {
+          tracks.push(crate::core::plugin_api::TrackInfo {
+            uri: Some(t.source_track_id.clone()),
+            name: t.clean_title,
+            artists: vec![t.artist],
+            album: title.to_string(),
+            duration_ms: t.duration_ms as u64,
+            id: Some(t.source_track_id),
+            album_id: Some(album_id.to_string()),
+            artist_refs: Vec::new(),
+            is_playable: true,
+            is_local: false,
+            track_number: 1,
+            explicit: false,
+            image_url: t.cover_art_url,
+            release_date: None,
+            generated_name: None,
+          });
         }
       }
-      PlayingItem::NotSpotify | PlayingItem::Nothing => {
-        if let Some((_title, artist, album_opt)) = non_spotify_info {
-          if let Some(album) = album_opt {
-            self.push_navigation_stack(RouteId::Search, ActiveBlock::SearchResultBlock);
-            Ok(IoEvent::FetchAlbumDetail(album.clone(), album))
-          } else if !artist.is_empty() {
-            self.push_navigation_stack(RouteId::Search, ActiveBlock::SearchResultBlock);
-            Ok(IoEvent::FetchArtistDetail(artist.clone(), artist))
-          } else {
-            Err(self.strings().status.app.playing_no_artist)
+    }
+
+    if tracks.is_empty() {
+      if let Some(ref paged) = self.search_results().tracks {
+        for t in &paged.items {
+          if t.album.to_lowercase().contains(&title.to_lowercase()) {
+            tracks.push(t.clone());
           }
-        } else {
-          Err(self.strings().status.app.nothing_playing)
         }
       }
+    }
+
+    self.push_navigation_stack(RouteId::Search, ActiveBlock::SearchResultBlock);
+    self.view.search_drilldown = SearchDrilldown::AlbumDetail {
+      album_id: album_id.to_string(),
+      title: title.to_string(),
+      artist: artist.to_string(),
+      year: year.clone(),
+      cover_art_url: None,
+      tracks,
+      selected_index: 0,
+      from_artist: None,
     };
-    match event {
-      Ok(event) => self.dispatch(event),
-      Err(status) => self.set_status_message(status, 4),
+
+    self.dispatch(IoEvent::FetchAlbumDetail(
+      album_id.to_string(),
+      title.to_string(),
+    ));
+  }
+
+  pub(crate) fn jump_to_album(&mut self) {
+    let active = self.get_current_route().active_block;
+
+    // 1. Try cursor from TrackTable
+    if active == ActiveBlock::TrackTable {
+      if let Some(track) = self.track_table.tracks.get(self.view.track_table_index) {
+        let album_title = if !track.album.is_empty() {
+          track.album.clone()
+        } else {
+          track.name.clone()
+        };
+        let artist = track.artists.join(", ");
+        let album_id = track.album_id.clone().unwrap_or_else(|| album_title.clone());
+        let year = track.release_date.clone();
+        self.open_album_drilldown(&album_id, &album_title, &artist, &year);
+        return;
+      }
+    }
+
+    // 2. Try cursor from SearchResultBlock
+    if active == ActiveBlock::SearchResultBlock {
+      if let SearchResultBlock::SongSearch = self.view.search_selected_block {
+        let sel_idx = self.view.search_selected_tracks_index.unwrap_or(0);
+        if let Some(track) = self.search_results().tracks.as_ref().and_then(|p| p.items.get(sel_idx)) {
+          let album_title = if !track.album.is_empty() {
+            track.album.clone()
+          } else {
+            track.name.clone()
+          };
+          let artist = track.artists.join(", ");
+          let album_id = track.album_id.clone().unwrap_or_else(|| album_title.clone());
+          let year = track.release_date.clone();
+          self.open_album_drilldown(&album_id, &album_title, &artist, &year);
+          return;
+        }
+      } else if let SearchResultBlock::AlbumSearch = self.view.search_selected_block {
+        let sel_idx = self.view.search_selected_album_index.unwrap_or(0);
+        if let Some(album) = self.search_results().albums.as_ref().and_then(|p| p.items.get(sel_idx)) {
+          let album_title = album.name.clone();
+          let artist = album.artists.iter().map(|a| a.name.clone()).collect::<Vec<_>>().join(", ");
+          let album_id = album.id.clone().unwrap_or_else(|| album.name.clone());
+          let year = album.release_date.clone();
+          self.open_album_drilldown(&album_id, &album_title, &artist, &year);
+          return;
+        }
+      }
+    }
+
+    // 3. Try Live search selected item
+    if let Some(item) = self.selected_live_search_item() {
+      let album_title = item.album.as_ref().filter(|a| !a.is_empty()).cloned().unwrap_or_else(|| item.title.clone());
+      let artist = item.artist.clone();
+      let album_id = item.playlist_id.clone().unwrap_or_else(|| item.id.clone());
+      self.open_album_drilldown(&album_id, &album_title, &artist, &None);
+      return;
+    }
+
+    // 4. Try Queue
+    if active == ActiveBlock::Queue || self.get_current_route().id == RouteId::Queue {
+      let sel = self.view.queue_selected_index;
+      if sel > 0 && sel <= self.native_queue.len() {
+        if let Some(track) = self.native_queue.get(sel - 1) {
+          let album_title = if !track.album.is_empty() {
+            track.album.clone()
+          } else {
+            track.name.clone()
+          };
+          let artist = track.artists.join(", ");
+          let album_id = track.album_id.clone().unwrap_or_else(|| album_title.clone());
+          let year = track.release_date.clone();
+          self.open_album_drilldown(&album_id, &album_title, &artist, &year);
+          return;
+        }
+      }
+    }
+
+    // 5. Try any active track_table tracks (Liked songs, saved tracks, etc.)
+    if !self.track_table.tracks.is_empty() {
+      if let Some(track) = self.track_table.tracks.get(self.view.track_table_index) {
+        let album_title = if !track.album.is_empty() {
+          track.album.clone()
+        } else {
+          track.name.clone()
+        };
+        let artist = track.artists.join(", ");
+        let album_id = track.album_id.clone().unwrap_or_else(|| album_title.clone());
+        let year = track.release_date.clone();
+        self.open_album_drilldown(&album_id, &album_title, &artist, &year);
+        return;
+      }
+    }
+
+    // 6. Fallback: Currently playing song
+    if let Some((title, artist, album_opt)) = self.current_non_spotify_track_info() {
+      let album_title = album_opt.unwrap_or(title);
+      let album_id = album_title.clone();
+      self.open_album_drilldown(&album_id, &album_title, &artist, &None);
+      return;
+    }
+
+    match self.playing_item() {
+      PlayingItem::Spotify(PlayableItem::Track(track)) => {
+        let album_title = track.album.name.clone();
+        let artist = track.artists.iter().map(|a| a.name.clone()).collect::<Vec<_>>().join(", ");
+        let album_id = track.album.id.as_ref().map(|id| id.id().to_string()).unwrap_or_else(|| album_title.clone());
+        let year = track.album.release_date.clone();
+        self.open_album_drilldown(&album_id, &album_title, &artist, &year);
+      }
+      _ => {
+        self.set_status_message("No track selected or playing to view album".to_string(), 3);
+      }
     }
   }
 

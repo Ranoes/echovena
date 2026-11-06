@@ -134,6 +134,13 @@ pub fn handle_paste(text: String, app: &mut App) {
 }
 
 pub fn handle_app(key: Key, app: &mut App) {
+  // Normalize o / O to Enter when not in text input mode
+  let key = if !is_input_mode(app) && matches!(key, Key::Char('o') | Key::Char('O')) {
+    Key::Enter
+  } else {
+    key
+  };
+
   // Relay Health modal: intercept keys when visible.
   if app.view.relay_status_visible {
     match key {
@@ -151,7 +158,7 @@ pub fn handle_app(key: Key, app: &mut App) {
   // Full-Screen Now Playing Dashboard / Karaoke Stage View: intercept keys when visible.
   if app.view.karaoke_stage_visible {
     match key {
-      Key::Esc | Key::Char('q') | Key::Char('O') => {
+      Key::Esc | Key::Char('q') | Key::Char('T') => {
         app.view.karaoke_stage_visible = false;
       }
       k if k == app.user_config.keys.back => {
@@ -161,7 +168,7 @@ pub fn handle_app(key: Key, app: &mut App) {
         app.view.karaoke_alignment = app.view.karaoke_alignment.cycle();
         app.set_status_message(format!("Lyrics Position: {}", app.view.karaoke_alignment.label()), 3);
       }
-      Key::Char('T') | Key::Char('t') => {
+      Key::Char('t') => {
         app.view.karaoke_display_mode = app.view.karaoke_display_mode.cycle();
         app.view.karaoke_show_romanization = app.view.karaoke_display_mode != crate::core::app::LyricsDisplayMode::Original;
         app.set_status_message(format!("Lyrics Mode: {}", app.view.karaoke_display_mode.label()), 3);
@@ -533,7 +540,7 @@ pub fn handle_app(key: Key, app: &mut App) {
       if is_input_mode(app) {
         handle_block_events(key, app);
       } else {
-        app.apply(Action::JumpToAlbum);
+        handle_jump_to_album(app);
       }
     }
     _ if key == app.user_config.keys.jump_to_artist_album => {
@@ -630,8 +637,16 @@ pub fn handle_app(key: Key, app: &mut App) {
     _ if key == app.user_config.keys.help => {
       help_menu::open(app);
     }
-    _ if key == app.user_config.keys.show_queue => {
-      app.apply(Action::Navigate(NavTarget::Queue));
+    _ if key == app.user_config.keys.show_queue || key == Key::Char('Q') => {
+      if is_input_mode(app) {
+        handle_block_events(key, app);
+      } else if app.get_current_route().active_block == ActiveBlock::Queue
+        || app.get_current_route().id == RouteId::Queue
+      {
+        app.pop_navigation_stack();
+      } else {
+        app.apply(Action::Navigate(NavTarget::Queue));
+      }
     }
 
     _ if key == app.user_config.keys.shuffle || key == Key::Char('R') => {
@@ -718,7 +733,7 @@ pub fn handle_app(key: Key, app: &mut App) {
         app.push_navigation_stack(RouteId::CoverArtView, ActiveBlock::CoverArtView);
       }
     }
-    Key::Char('O') => {
+    Key::Char('T') => {
       if is_input_mode(app) {
         handle_block_events(key, app);
       } else {
@@ -891,6 +906,12 @@ pub(super) fn focus_global_search(app: &mut App) {
 pub(super) fn open_global_search(app: &mut App) -> bool {
   focus_global_search(app);
   true
+}
+
+/// Jumps to the album information panel for the selected song across any active view,
+/// or falls back to currently playing track.
+pub fn handle_jump_to_album(app: &mut App) {
+  app.jump_to_album();
 }
 
 /// Archives the single highlighted or currently playing track.
@@ -1443,6 +1464,7 @@ fn handle_escape(app: &mut App) {
           }
           _ => {
             app.view.search_drilldown = crate::core::app::SearchDrilldown::None;
+            app.pop_navigation_stack();
           }
         }
       } else {

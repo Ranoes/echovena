@@ -1260,7 +1260,7 @@ impl UserConfig {
         copy_album_url: Key::Char('Y'),
         audio_analysis: Key::Char('v'),
         lyrics_view: Key::Char('B'),
-        miniplayer_view: Key::Char('T'),
+        miniplayer_view: Key::Char('M'),
         cover_art_view: Key::Char('N'),
         add_item_to_queue: Key::Char('e'),
         show_queue: Key::Char('Q'),
@@ -1468,6 +1468,9 @@ impl UserConfig {
     }
     if keybindings.cover_art_view.as_deref() == Some("G") {
       keybindings.cover_art_view = Some("N".to_string());
+    }
+    if keybindings.miniplayer_view.as_deref() == Some("T") {
+      keybindings.miniplayer_view = Some("M".to_string());
     }
     if keybindings.jump_to_album.as_deref() == Some("a") {
       keybindings.jump_to_album = Some("G".to_string());

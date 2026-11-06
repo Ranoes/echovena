@@ -8,6 +8,12 @@ use crate::tui::event::Key;
 /// - Section 2: Upcoming album/playlist/auto-play radio tracks.
 pub fn handler(key: Key, app: &mut App) {
   match key {
+    Key::Esc | Key::Char('q') | Key::Char('Q') => {
+      app.pop_navigation_stack();
+    }
+    k if k == app.user_config.keys.back || k == app.user_config.keys.show_queue => {
+      app.pop_navigation_stack();
+    }
     k if common_key_events::down_event(k, &app.user_config.keys) => move_selection(1, app),
     k if common_key_events::up_event(k, &app.user_config.keys) => move_selection(-1, app),
     // Shift+J / Shift+K reorder the selected item in native queue

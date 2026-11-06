@@ -1,6 +1,6 @@
 use crate::core::app::{App, ArtistDetailSection, SearchDrilldown};
 use ratatui::{
-  layout::{Alignment, Constraint, Layout, Rect},
+  layout::{Constraint, Layout, Rect},
   style::{Color, Modifier, Style},
   text::{Line, Span},
   widgets::{Block, BorderType, Borders, Paragraph},
@@ -8,6 +8,11 @@ use ratatui::{
 };
 
 pub fn draw_search_drilldown(f: &mut Frame<'_>, app: &App, area: Rect) {
+  if app.view.search_drilldown == SearchDrilldown::None {
+    return;
+  }
+  f.render_widget(ratatui::widgets::Clear, area);
+
   match &app.view.search_drilldown {
     SearchDrilldown::None => {}
     SearchDrilldown::AlbumDetail {
@@ -18,10 +23,9 @@ pub fn draw_search_drilldown(f: &mut Frame<'_>, app: &App, area: Rect) {
       selected_index,
       ..
     } => {
-      let [header_area, list_area, footer_area] = area.layout(&Layout::vertical([
+      let [header_area, list_area] = area.layout(&Layout::vertical([
         Constraint::Length(4),
-        Constraint::Min(5),
-        Constraint::Length(2),
+        Constraint::Min(0),
       ]));
 
       // 1. Header Box
@@ -95,19 +99,6 @@ pub fn draw_search_drilldown(f: &mut Frame<'_>, app: &App, area: Rect) {
             .title(Span::styled(format!(" Tracklist ({} songs) ", tracks.len()), Style::default().fg(Color::Cyan))),
         );
       f.render_widget(list_widget, list_area);
-
-      // 3. Footer
-      let footer = Line::from(vec![
-        Span::styled("[Enter] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::styled("Play Track & Queue Album   ", Style::default().fg(Color::White)),
-        Span::styled("[z] ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-        Span::styled("Queue Track   ", Style::default().fg(Color::White)),
-        Span::styled("[s] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        Span::styled("Download   ", Style::default().fg(Color::White)),
-        Span::styled("[Esc / q] ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-        Span::styled("Back to Search", Style::default().fg(Color::White)),
-      ]);
-      f.render_widget(Paragraph::new(footer).alignment(Alignment::Center), footer_area);
     }
     SearchDrilldown::ArtistDetail {
       name,
@@ -117,10 +108,9 @@ pub fn draw_search_drilldown(f: &mut Frame<'_>, app: &App, area: Rect) {
       selected_index,
       ..
     } => {
-      let [header_area, content_area, footer_area] = area.layout(&Layout::vertical([
+      let [header_area, content_area] = area.layout(&Layout::vertical([
         Constraint::Length(3),
-        Constraint::Min(5),
-        Constraint::Length(2),
+        Constraint::Min(0),
       ]));
 
       // 1. Header Box
@@ -210,17 +200,6 @@ pub fn draw_search_drilldown(f: &mut Frame<'_>, app: &App, area: Rect) {
           .title(Span::styled(format!(" Albums ({} releases) ", albums.len()), Style::default().fg(albums_border).add_modifier(Modifier::BOLD))),
       );
       f.render_widget(albums_widget, albums_area);
-
-      // 3. Footer
-      let footer = Line::from(vec![
-        Span::styled("[Tab] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        Span::styled("Switch Songs/Albums   ", Style::default().fg(Color::White)),
-        Span::styled("[Enter] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::styled("Play Song / Open Album   ", Style::default().fg(Color::White)),
-        Span::styled("[Esc / q] ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-        Span::styled("Back to Search", Style::default().fg(Color::White)),
-      ]);
-      f.render_widget(Paragraph::new(footer).alignment(Alignment::Center), footer_area);
     }
   }
 }

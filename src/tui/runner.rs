@@ -89,6 +89,11 @@ fn key_reaches_handlers_before_back(app: &App, key: Key) -> bool {
   if app.get_current_route().active_block == ActiveBlock::Playlists {
     return true;
   }
+  if app.get_current_route().active_block == ActiveBlock::Queue
+    || app.get_current_route().id == RouteId::Queue
+  {
+    return true;
+  }
   if modal_captures_key_before_back(app) {
     return true;
   }

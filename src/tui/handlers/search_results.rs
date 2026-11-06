@@ -334,8 +334,9 @@ fn handle_enter_event_on_selected_block(app: &mut App) {
         if let Some(album) = app.search_results().albums.as_ref().and_then(|a| a.items.get(idx)) {
           let id = album.id.clone().unwrap_or_default();
           let title = album.name.clone();
+          let artist = album.artists.first().map(|a| a.name.clone()).unwrap_or_default();
           let year = album.release_date.clone();
-          open_album_drilldown(app, &id, &title, &year);
+          open_album_drilldown_with_artist(app, &id, &title, &artist, &year);
           return;
         }
       }
@@ -545,6 +546,16 @@ fn handle_radio_key(key: Key, app: &mut App) {
 }
 
 pub fn open_album_drilldown(app: &mut App, album_id: &str, title: &str, year: &Option<String>) {
+  open_album_drilldown_with_artist(app, album_id, title, "", year);
+}
+
+pub fn open_album_drilldown_with_artist(
+  app: &mut App,
+  album_id: &str,
+  title: &str,
+  artist: &str,
+  year: &Option<String>,
+) {
   let prev_drilldown = if matches!(app.view.search_drilldown, SearchDrilldown::ArtistDetail { .. }) {
     Some(Box::new(app.view.search_drilldown.clone()))
   } else {
@@ -590,7 +601,7 @@ pub fn open_album_drilldown(app: &mut App, album_id: &str, title: &str, year: &O
   app.view.search_drilldown = SearchDrilldown::AlbumDetail {
     album_id: album_id.to_string(),
     title: title.to_string(),
-    artist: String::new(),
+    artist: artist.to_string(),
     year: year.clone(),
     cover_art_url: None,
     tracks,
@@ -645,13 +656,14 @@ pub fn open_artist_drilldown(app: &mut App, artist_id: &str, name: &str) {
 
 fn handle_drilldown_events(key: Key, app: &mut App) {
   match key {
-    Key::Esc | Key::Char('q') | Key::Backspace => {
+    Key::Esc | Key::Char('q') | Key::Char('Q') | Key::Backspace => {
       match &app.view.search_drilldown {
         SearchDrilldown::AlbumDetail { from_artist: Some(prev), .. } => {
           app.view.search_drilldown = *prev.clone();
         }
         _ => {
           app.view.search_drilldown = SearchDrilldown::None;
+          app.pop_navigation_stack();
         }
       }
     }
@@ -662,6 +674,7 @@ fn handle_drilldown_events(key: Key, app: &mut App) {
         }
         _ => {
           app.view.search_drilldown = SearchDrilldown::None;
+          app.pop_navigation_stack();
         }
       }
     }
@@ -744,7 +757,7 @@ fn handle_drilldown_events(key: Key, app: &mut App) {
             }
             ArtistDetailSection::Albums => {
               if let Some(album) = albums.get(selected_index) {
-                open_album_drilldown(app, &album.id, &album.title, &album.year);
+                open_album_drilldown_with_artist(app, &album.id, &album.title, &name, &album.year);
               }
             }
           }
@@ -824,7 +837,7 @@ pub fn handler(key: Key, app: &mut App) {
           match item.scope {
             SearchScope::Album => {
               let id = item.playlist_id.as_deref().unwrap_or(&item.id);
-              open_album_drilldown(app, id, &item.title, &None);
+              open_album_drilldown_with_artist(app, id, &item.title, &item.artist, &None);
               return;
             }
             SearchScope::Artist => {
