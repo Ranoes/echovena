@@ -193,16 +193,18 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
     let right_sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(14),   // Top: Art + Info + Playbar
-            Constraint::Length(4), // Bottom: Tiny Up Next Box (1 next track)
+            Constraint::Min(12),   // Top: Art + Info + Playbar
+            Constraint::Length(3), // Bottom: Tiny Up Next Box (1 next track)
         ])
         .split(right_area);
 
     // 1A. Now Playing Box
+    f.render_widget(Clear, right_sections[0]);
     let np_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Yellow))
+        .style(Style::default().bg(app.user_config.theme.background.into()))
         .title(Span::styled(" Now Playing ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
     let np_inner = np_block.inner(right_sections[0]);
     f.render_widget(np_block, right_sections[0]);
@@ -210,14 +212,15 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
     let np_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(6),    // Artwork
-            Constraint::Length(3), // Title & Artist/Album
-            Constraint::Length(3), // Clean Playbar without hotkey text
+            Constraint::Min(4),    // Artwork
+            Constraint::Length(2), // Title & Artist/Album
+            Constraint::Length(2), // Clean Playbar without hotkey text
         ])
         .split(np_inner);
 
     // Render Album Artwork
     let bounds = np_layout[0];
+    f.render_widget(Clear, bounds);
     let available_image_size = Rect::new(
         0,
         0,
@@ -308,10 +311,12 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
     f.render_widget(playbar_widget, np_layout[2]);
 
     // 1B. Tiny Up Next Box (Only 1 next track)
+    f.render_widget(Clear, right_sections[1]);
     let next_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::LightGreen))
+        .style(Style::default().bg(app.user_config.theme.background.into()))
         .title(Span::styled(" Up Next ", Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD)));
     let next_inner = next_block.inner(right_sections[1]);
     f.render_widget(next_block, right_sections[1]);
@@ -335,10 +340,12 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
     // =========================================================================
     // 2. LEFT COLUMN: Lyrics & Karaoke Stage
     // =========================================================================
+    f.render_widget(Clear, lyrics_area);
     let lyrics_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Cyan))
+        .style(Style::default().bg(app.user_config.theme.background.into()))
         .title(Span::styled(
             format!(" Lyrics & Karaoke │ {} │ Mode: {} │ Offset: {} ", provider_str, mode_str, offset_str),
             Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
@@ -349,6 +356,14 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
     let timeline = match &app.view.active_karaoke_timeline {
         Some(t) if !t.lines.is_empty() => t,
         _ => {
+            if app.lyrics_status() == crate::core::app::LyricsStatus::Found {
+                if let Some(lyrics) = app.lyrics() {
+                    if !lyrics.is_empty() {
+                        crate::tui::ui::lyrics::draw_legacy_lyrics(f, app, lyrics, lyrics_inner);
+                        return;
+                    }
+                }
+            }
             let waiting_text = vec![
                 Line::from(""),
                 Line::from(Span::styled(

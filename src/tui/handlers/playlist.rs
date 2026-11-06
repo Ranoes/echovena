@@ -43,7 +43,7 @@ pub fn get_playlist_tree_items(app: &App) -> Vec<PlaylistTreeItem> {
         action_id: 0,
       });
       items.push(PlaylistTreeItem::ActionItem {
-        label: "+ Import URL [Key U]".to_string(),
+        label: "+ Import URL [Key I]".to_string(),
         action_id: 1,
       });
 
@@ -95,7 +95,7 @@ pub fn get_playlist_tree_items(app: &App) -> Vec<PlaylistTreeItem> {
     // Tab 1: Spotify Playlists
     1 => {
       items.push(PlaylistTreeItem::ActionItem {
-        label: "+ Import Spotify URL [Key U]".to_string(),
+        label: "+ Import Spotify URL [Key I]".to_string(),
         action_id: 1,
       });
 
@@ -195,7 +195,7 @@ pub fn get_playlist_tree_items(app: &App) -> Vec<PlaylistTreeItem> {
     // Tab 2: YouTube Playlists
     _ => {
       items.push(PlaylistTreeItem::ActionItem {
-        label: "+ Import YouTube URL [Key U]".to_string(),
+        label: "+ Import YouTube URL [Key I]".to_string(),
         action_id: 1,
       });
 
@@ -327,14 +327,15 @@ pub fn get_playlist_tab_items(app: &App) -> Vec<String> {
     0 => {
       let mut items = vec![
         "+ Add Playlist [Key A]".to_string(),
-        "+ Import URL [Key U]".to_string(),
+        "+ Import URL [Key I]".to_string(),
       ];
       let mut found_any = false;
       if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
         if let Ok(playlists) = db.list_imported_playlists() {
           for p in playlists.into_iter().filter(|p| p.platform == "local" || p.platform == "echovena") {
             found_any = true;
-            items.push(format!("\u{25B6} [Local] {} ({} tracks)", p.title, p.track_count));
+            let count = db.get_playlist_tracks(&p.id).map(|t| t.len()).unwrap_or(p.track_count as usize);
+            items.push(format!("\u{25B6} [Local] {} ({} tracks)", p.title, count));
           }
         }
       }
@@ -345,13 +346,14 @@ pub fn get_playlist_tab_items(app: &App) -> Vec<String> {
     }
     // Tab 1: Spotify Playlists
     1 => {
-      let mut items = vec!["+ Import Spotify URL [Key U]".to_string()];
+      let mut items = vec!["+ Import Spotify URL [Key I]".to_string()];
       let mut found_any = false;
       if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
         if let Ok(playlists) = db.list_imported_playlists() {
           for p in playlists.into_iter().filter(|p| p.platform.starts_with("spotify")) {
             found_any = true;
-            items.push(format!("\u{25B6} [Spotify] {} ({} tracks)", p.title, p.track_count));
+            let count = db.get_playlist_tracks(&p.id).map(|t| t.len()).unwrap_or(p.track_count as usize);
+            items.push(format!("\u{25B6} [Spotify] {} ({} tracks)", p.title, count));
           }
         }
       }
@@ -361,13 +363,13 @@ pub fn get_playlist_tab_items(app: &App) -> Vec<String> {
         items.push(format!("\u{25B6} [Spotify] {} ({} tracks)", p.name, count));
       }
       if !found_any {
-        items.push("  (No Spotify playlists imported yet \u{2014} press 'U' to import)".to_string());
+        items.push("  (No Spotify playlists imported yet \u{2014} press 'I' to import)".to_string());
       }
       items
     }
     // Tab 2: YouTube Playlists
     _ => {
-      let mut items = vec!["+ Import YouTube URL [Key U]".to_string()];
+      let mut items = vec!["+ Import YouTube URL [Key I]".to_string()];
       let mut found_any = false;
       for p in app.youtube_playlists() {
         found_any = true;
@@ -377,12 +379,13 @@ pub fn get_playlist_tab_items(app: &App) -> Vec<String> {
         if let Ok(playlists) = db.list_imported_playlists() {
           for p in playlists.into_iter().filter(|p| p.platform == "youtube" || p.platform == "ytmusic") {
             found_any = true;
-            items.push(format!("\u{25B6} [YouTube] {} ({} tracks)", p.title, p.track_count));
+            let count = db.get_playlist_tracks(&p.id).map(|t| t.len()).unwrap_or(p.track_count as usize);
+            items.push(format!("\u{25B6} [YouTube] {} ({} tracks)", p.title, count));
           }
         }
       }
       if !found_any {
-        items.push("  (No YouTube playlists yet \u{2014} press 'U' to import)".to_string());
+        items.push("  (No YouTube playlists yet \u{2014} press 'I' to import)".to_string());
       }
       items
     }
@@ -944,7 +947,7 @@ pub fn handler(key: Key, app: &mut App) {
           if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
             if let Ok(mut tracks) = db.get_playlist_tracks(playlist_id) {
               if *position < tracks.len() {
-                tracks.remove(*position);
+                let removed = tracks.remove(*position);
                 for (new_pos, t) in tracks.iter_mut().enumerate() {
                   t.position = new_pos as i64;
                 }
@@ -953,7 +956,12 @@ pub fn handler(key: Key, app: &mut App) {
                   pl.track_count = tracks.len() as i64;
                   let _ = db.upsert_imported_playlist(&pl);
                 }
+                app.refresh_picker_playlists();
+                let rem_id = removed.source_track_id;
+                app.track_table.tracks.retain(|t| t.id.as_deref() != Some(&rem_id) && t.uri.as_deref() != Some(&rem_id));
                 app.set_status_message(format!("Removed '{}' from playlist", title), 4);
+                let new_len = get_playlist_tree_items(app).len();
+                app.view.selected_playlist_index = if new_len > 0 { Some(idx.min(new_len - 1)) } else { None };
               }
             }
           }

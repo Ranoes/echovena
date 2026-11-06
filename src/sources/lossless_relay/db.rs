@@ -136,6 +136,11 @@ impl Database {
                 FOREIGN KEY (playlist_id) REFERENCES imported_playlists(id) ON DELETE CASCADE
             );
 
+            -- Automatically synchronize imported_playlists.track_count with actual playlist_tracks count
+            UPDATE imported_playlists SET track_count = (
+                SELECT count(*) FROM playlist_tracks WHERE playlist_tracks.playlist_id = imported_playlists.id
+            ) WHERE id IN (SELECT DISTINCT playlist_id FROM playlist_tracks);
+
             CREATE TABLE IF NOT EXISTS resolution_cache (
                 source_track_id TEXT PRIMARY KEY,
                 isrc TEXT,

@@ -293,7 +293,7 @@ fn spans_push(spans: &mut Vec<Span>, text: &str, style: Style) {
   spans.push(Span::styled(text.to_string(), style));
 }
 
-fn draw_legacy_lyrics(f: &mut Frame<'_>, app: &App, lyrics: &[(u128, String)], inner_area: Rect) {
+pub(crate) fn draw_legacy_lyrics(f: &mut Frame<'_>, app: &App, lyrics: &[(u128, String)], inner_area: Rect) {
   let theme = &app.user_config.theme;
   let manual = app.view.lyrics_view.manual_index.is_some();
   let mut lyric_area = inner_area;

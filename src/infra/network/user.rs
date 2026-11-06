@@ -164,18 +164,21 @@ impl UserNetwork for Network {
   }
 
   async fn get_made_for_you(&mut self) {
-    let result = self
-      .spotify_get_typed::<MadeForYou>("views/made-for-x", &[])
-      .await;
-    match result {
-      Ok(page) => {
+    let should_try_spotify = {
+      let guard = self.app.lock().await;
+      guard.active_source == crate::core::source::Source::Spotify && guard.spotify_connected
+    };
+    if should_try_spotify {
+      let result = self
+        .spotify_get_typed::<MadeForYou>("views/made-for-x", &[])
+        .await;
+      if let Ok(page) = result {
         self.finish_made_for_you(Ok(page.sections)).await;
-      }
-      Err(_) => {
-        let yt_shelves = self.fetch_youtube_discover_shelves().await;
-        self.finish_made_for_you(Ok(yt_shelves)).await;
+        return;
       }
     }
+    let yt_shelves = self.fetch_youtube_discover_shelves().await;
+    self.finish_made_for_you(Ok(yt_shelves)).await;
   }
 
   async fn fetch_youtube_discover_shelves(&self) -> Vec<DiscoverShelf> {
@@ -222,25 +225,31 @@ impl UserNetwork for Network {
       title: "Featured YouTube Discovery and Mixes".to_string(),
       playlists: vec![
         crate::core::app::DiscoverPlaylist {
-          uri: "youtube:playlist:RDCLAK5uy_kLWShQWe6opYfhH1YqvRRbtx8ugKJUsA4".to_string(),
+          uri: "youtube:playlist:PL3-sRm8xAzY999ARkg8XztLMO-IikrsQw".to_string(),
           name: "Top Hits Global".to_string(),
           description: Some("The hottest tracks streaming worldwide on YouTube".to_string()),
           image_url: None,
         },
         crate::core::app::DiscoverPlaylist {
-          uri: "youtube:playlist:RDCLAK5uy_kmPRjHDECIcuVwnKsx2Ng7fy9ahwL0x8M".to_string(),
-          name: "Deep Focus and Study Beats".to_string(),
-          description: Some("Instrumental focus and concentration soundscapes".to_string()),
+          uri: "youtube:playlist:PLKHxJ6KFEmTuwND3aKqzuq0nf9i3lTRqq".to_string(),
+          name: "Viral 50 Global".to_string(),
+          description: Some("The most viral songs and trending tracks worldwide".to_string()),
           image_url: None,
         },
         crate::core::app::DiscoverPlaylist {
-          uri: "youtube:playlist:RDCLAK5uy_n9F594t9N8uUqWf8o7_Y0g5F7M8yWJ0eM".to_string(),
+          uri: "youtube:playlist:PL06diOotXAJLAAHBY7kIUm5GQwm2ZinOz".to_string(),
           name: "Lo-Fi Lounge and Chillhop".to_string(),
           description: Some("Relaxed lo-fi beats, mellow melodies, and vintage warmth".to_string()),
           image_url: None,
         },
         crate::core::app::DiscoverPlaylist {
-          uri: "youtube:playlist:RDCLAK5uy_m-Hk7zP8U9_wX1mK5eL6vN3o0p1q2r3s4".to_string(),
+          uri: "youtube:playlist:PLeUL1rSE3mqcTSxKcE5eKdfY44VhqCsNx".to_string(),
+          name: "Deep Focus and Study Beats".to_string(),
+          description: Some("Instrumental focus and concentration soundscapes".to_string()),
+          image_url: None,
+        },
+        crate::core::app::DiscoverPlaylist {
+          uri: "youtube:playlist:PLzgNR90nQBQCmJdLinrmlo7_Ac8QLc6-i".to_string(),
           name: "Acoustic Coffeehouse".to_string(),
           description: Some("Warm acoustic songs, unplugged sets, and singer-songwriters".to_string()),
           image_url: None,

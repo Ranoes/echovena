@@ -390,7 +390,7 @@ async fn load_playlist_tracks(app: &Arc<Mutex<App>>, uri: &str) {
 
   let importer = crate::sources::lossless_relay::youtube_importer::YouTubeImporter::new();
 
-  let fetched_tracks: Option<Vec<TrackInfo>> = if clean_pid.starts_with("RDAMVM") || clean_pid.starts_with("RD") {
+  let fetched_tracks: Option<Vec<TrackInfo>> = if (clean_pid.starts_with("RDAMVM") || clean_pid.starts_with("RD")) && !clean_pid.starts_with("RDCL") {
     let seed_id = clean_pid
       .strip_prefix("RDAMVM")
       .or_else(|| clean_pid.strip_prefix("RD"))

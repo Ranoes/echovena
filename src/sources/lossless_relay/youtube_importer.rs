@@ -344,7 +344,7 @@ impl YouTubeImporter {
             .unwrap_or(playlist_id);
 
         // If this is a Radio or Endless Mix playlist (RDAMVM... or RD...), fetch via radio endpoint
-        if clean_pid.starts_with("RDAMVM") || clean_pid.starts_with("RD") {
+        if (clean_pid.starts_with("RDAMVM") || clean_pid.starts_with("RD")) && !clean_pid.starts_with("RDCL") {
             let seed = clean_pid
                 .strip_prefix("RDAMVM")
                 .or_else(|| clean_pid.strip_prefix("RD"))
@@ -470,10 +470,31 @@ impl YouTubeImporter {
             }
         }
         if item_list.is_empty() {
-            if let Some(arr) = body["contents"]["twoColumnBrowseResultsRenderer"]["secondaryContents"]
-                ["sectionListRenderer"]["contents"][0]["musicPlaylistShelfRenderer"]["contents"].as_array()
+            if let Some(sections) = body["contents"]["twoColumnBrowseResultsRenderer"]["secondaryContents"]
+                ["sectionListRenderer"]["contents"].as_array()
             {
-                item_list.extend(arr);
+                for sec in sections {
+                    if let Some(arr) = sec["musicPlaylistShelfRenderer"]["contents"].as_array() {
+                        item_list.extend(arr);
+                    } else if let Some(arr) = sec["musicShelfRenderer"]["contents"].as_array() {
+                        item_list.extend(arr);
+                    }
+                }
+            }
+        }
+        if item_list.is_empty() {
+            if let Some(tabs) = body["contents"]["twoColumnBrowseResultsRenderer"]["tabs"].as_array() {
+                for tab in tabs {
+                    if let Some(sections) = tab["tabRenderer"]["content"]["sectionListRenderer"]["contents"].as_array() {
+                        for sec in sections {
+                            if let Some(arr) = sec["musicPlaylistShelfRenderer"]["contents"].as_array() {
+                                item_list.extend(arr);
+                            } else if let Some(arr) = sec["musicShelfRenderer"]["contents"].as_array() {
+                                item_list.extend(arr);
+                            }
+                        }
+                    }
+                }
             }
         }
 
