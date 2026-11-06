@@ -573,6 +573,41 @@ pub fn draw_song_table(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
   } else {
     app.strings().screens.songs.to_string()
   };
+  let title = format!("{} │ Scope: {} [Tab]", title, app.view.song_list_scope.label());
+
+  if app.view.song_list_scope != crate::core::app::SongListScope::Title {
+    let rows = crate::core::app::song_list_rows(
+      &app.track_table.tracks,
+      app.view.song_list_scope,
+      &app.view.song_list_expanded,
+    );
+    let cursor = app.view.song_list_cursor.min(rows.len().saturating_sub(1));
+    let visible_rows = layout_chunk.height.saturating_sub(3) as usize;
+    let offset = table_scroll_offset(cursor, visible_rows);
+    let title_idx = header.get_index(ColumnId::Title).unwrap_or(0);
+    let items = rows
+      .iter()
+      .skip(offset)
+      .take(visible_rows.max(1))
+      .map(|row| match row {
+        crate::core::app::SongListRow::Group { key, count, expanded } => {
+          let mut format = vec![String::new(); header.items.len()];
+          if let Some(cell) = format.get_mut(title_idx) {
+            *cell = format!("{} {} ({})", if *expanded { "▼" } else { "▶" }, key, count);
+          }
+          TableItem { id: String::new(), format }
+        }
+        crate::core::app::SongListRow::Track(i) => {
+          let mut item = track_table_item(&app.track_table.tracks[*i], &columns, app.strings());
+          if let Some(cell) = item.format.get_mut(title_idx) {
+            cell.insert_str(0, "    ");
+          }
+          item
+        }
+      })
+      .collect::<Vec<TableItem>>();
+    return draw_table(f, app, layout_chunk, (&title, &header), &items, cursor, offset, highlight_state);
+  }
 
   draw_table(
     f,

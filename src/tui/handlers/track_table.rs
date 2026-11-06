@@ -1,12 +1,65 @@
 use super::common_key_events;
 use crate::core::action::{Action, ListTarget};
-use crate::core::app::{App, TrackTable, TrackTableContext};
+use crate::core::app::{song_list_rows, App, SongListRow, SongListScope, TrackTable, TrackTableContext};
 use crate::tui::event::Key;
 use rspotify::prelude::Id;
+
+/// Artist / Album tree navigation. Returns `true` when the key was consumed;
+/// otherwise the track under the cursor becomes `track_table_index` so the
+/// regular track actions (queue, save, delete, ...) apply to it.
+fn grouped_handler(key: Key, app: &mut App) -> bool {
+  let rows = song_list_rows(&app.track_table.tracks, app.view.song_list_scope, &app.view.song_list_expanded);
+  if rows.is_empty() {
+    return false;
+  }
+  let len = rows.len();
+  let cur = app.view.song_list_cursor.min(len - 1);
+  let keys = &app.user_config.keys;
+  let new_cur = if common_key_events::down_event(key, keys) {
+    Some((cur + 1) % len)
+  } else if common_key_events::up_event(key, keys) {
+    Some(if cur == 0 { len - 1 } else { cur - 1 })
+  } else if common_key_events::high_event(key) {
+    Some(0)
+  } else if common_key_events::middle_event(key) {
+    Some(len / 2)
+  } else if common_key_events::low_event(key) {
+    Some(len - 1)
+  } else {
+    None
+  };
+  if let Some(c) = new_cur {
+    app.view.song_list_cursor = c;
+    return true;
+  }
+  match (&rows[cur], key) {
+    (SongListRow::Group { key: g, .. }, Key::Enter | Key::Char('l') | Key::Right | Key::Char(' ')) => {
+      if !app.view.song_list_expanded.remove(g) {
+        app.view.song_list_expanded.insert(g.clone());
+      }
+      true
+    }
+    (SongListRow::Track(i), _) => {
+      app.view.track_table_index = *i;
+      false
+    }
+    _ => false,
+  }
+}
 
 pub fn handler(key: Key, app: &mut App) {
   // A row parked by an earlier key follows only that key; the paging arms below re-park.
   app.forget_pending_row_selection();
+  if key == Key::Tab {
+    app.view.song_list_scope = app.view.song_list_scope.cycle();
+    app.view.song_list_cursor = 0;
+    app.view.song_list_expanded.clear();
+    app.set_status_message(format!("Song List scope: {}", app.view.song_list_scope.label()), 2);
+    return;
+  }
+  if app.view.song_list_scope != SongListScope::Title && grouped_handler(key, app) {
+    return;
+  }
   match key {
     k if common_key_events::toward_sidebar_event(k, &app.user_config) => {
       common_key_events::focus_sidebar(app)

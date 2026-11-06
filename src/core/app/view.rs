@@ -262,6 +262,74 @@ pub struct ViewState {
   pub karaoke_alignment: KaraokeAlignment,
   pub karaoke_provider_index: usize,
   pub lyrics_line_spacing: usize,
+  /// Song List grouping scope, cycled with `Tab` (Title / Artist / Album).
+  pub song_list_scope: SongListScope,
+  /// Expanded group keys in Artist / Album scope.
+  pub song_list_expanded: std::collections::HashSet<String>,
+  /// Cursor over the grouped rows (Artist / Album scope only).
+  pub song_list_cursor: usize,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub enum SongListScope {
+  #[default]
+  Title,
+  Artist,
+  Album,
+}
+
+impl SongListScope {
+  pub fn cycle(self) -> Self {
+    match self {
+      Self::Title => Self::Artist,
+      Self::Artist => Self::Album,
+      Self::Album => Self::Title,
+    }
+  }
+  pub fn label(self) -> &'static str {
+    match self {
+      Self::Title => "Title",
+      Self::Artist => "Artist",
+      Self::Album => "Album",
+    }
+  }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SongListRow {
+  Group { key: String, count: usize, expanded: bool },
+  /// Index into `track_table.tracks`.
+  Track(usize),
+}
+
+/// Flattens tracks into a tree of groups (sorted case-insensitively) with the
+/// tracks of expanded groups listed beneath their header.
+pub fn song_list_rows(
+  tracks: &[crate::core::plugin_api::TrackInfo],
+  scope: SongListScope,
+  expanded: &std::collections::HashSet<String>,
+) -> Vec<SongListRow> {
+  if scope == SongListScope::Title {
+    return (0..tracks.len()).map(SongListRow::Track).collect();
+  }
+  let mut groups: std::collections::BTreeMap<String, (String, Vec<usize>)> = Default::default();
+  for (i, t) in tracks.iter().enumerate() {
+    let key = match scope {
+      SongListScope::Artist => t.artists.first().cloned().unwrap_or_default(),
+      _ => t.album.clone(),
+    };
+    let key = if key.trim().is_empty() { "Unknown".to_string() } else { key };
+    groups.entry(key.to_lowercase()).or_insert_with(|| (key.clone(), Vec::new())).1.push(i);
+  }
+  let mut rows = Vec::new();
+  for (_, (key, idxs)) in groups {
+    let is_open = expanded.contains(&key);
+    rows.push(SongListRow::Group { key, count: idxs.len(), expanded: is_open });
+    if is_open {
+      rows.extend(idxs.into_iter().map(SongListRow::Track));
+    }
+  }
+  rows
 }
 
 pub const LYRIC_PROVIDERS: [&str; 4] = [
