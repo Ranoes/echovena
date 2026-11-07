@@ -7,8 +7,9 @@ pub(crate) fn library_row_requirements() -> &'static [(LibraryTarget, Requiremen
     (LibraryTarget::Discover, Requirement::None),
     (LibraryTarget::LikedSongs, Requirement::None),
     (LibraryTarget::Playlists, Requirement::None),
-    (LibraryTarget::Settings, Requirement::None),
     (LibraryTarget::Stats, Requirement::None),
+    (LibraryTarget::RecentlyPlayed, Requirement::None),
+    (LibraryTarget::Settings, Requirement::None),
     #[cfg(feature = "local-files")]
     (LibraryTarget::LocalFiles, Requirement::None),
     #[cfg(feature = "ai-dj")]
@@ -211,6 +212,64 @@ impl Artist {
 }
 
 impl App {
+  /// Populates the Recently Played / History list from the persistent local `listens.jsonl` log (up to 50 items).
+  pub fn populate_recently_played_from_history(&mut self) {
+    let listens = match crate::infra::history::load_listens() {
+      Ok(listens) => listens,
+      Err(err) => {
+        log::warn!("failed to load listens for history panel: {}", err);
+        Vec::new()
+      }
+    };
+
+    let mut items: Vec<crate::core::plugin_api::TrackInfo> = Vec::new();
+    // Reverse to get most recent plays first, take up to 50
+    for record in listens.into_iter().rev().take(50) {
+      let uri = record.item_uri.clone().or_else(|| {
+        record.item_id.as_ref().map(|id| {
+          if id.starts_with("spotify:")
+            || id.starts_with("youtube:")
+            || id.starts_with("http")
+            || id.starts_with("file:")
+          {
+            id.clone()
+          } else {
+            format!("youtube:v:{}", id)
+          }
+        })
+      });
+
+      items.push(crate::core::plugin_api::TrackInfo {
+        uri,
+        name: record.title,
+        artists: record.artists,
+        album: record.album,
+        duration_ms: record.duration_ms as u64,
+        id: record.item_id,
+        album_id: None,
+        artist_refs: Vec::new(),
+        is_playable: true,
+        is_local: record.source == crate::infra::history::HistoryPlaybackSource::NativeRawList,
+        track_number: 0,
+        explicit: false,
+        image_url: record.image_url,
+        release_date: None,
+        generated_name: None,
+      });
+    }
+
+    let total = items.len() as u32;
+    self.recently_played = Some(crate::core::pagination::CursorPaged {
+      items,
+      limit: 50,
+      next: None,
+      cursor_after: None,
+      total: Some(total),
+    });
+    self.view.recently_played_index = 0;
+    self.display_revisions.bump(DisplayDomain::RecentlyPlayed);
+  }
+
   /// Sort the recently-played track list in place per `recently_played_sort`.
   /// `Default` keeps the API's play order (a re-fetch restores it).
   pub fn sort_recently_played_items(&mut self) {
@@ -565,7 +624,7 @@ impl App {
       // The row pushes the route immediately; only the global navigate
       // binding defers the push to the network result.
       LibraryTarget::RecentlyPlayed => {
-        self.dispatch(IoEvent::GetRecentlyPlayed);
+        self.populate_recently_played_from_history();
         self.push_navigation_stack(RouteId::RecentlyPlayed, ActiveBlock::RecentlyPlayed);
       }
       LibraryTarget::Friends => {

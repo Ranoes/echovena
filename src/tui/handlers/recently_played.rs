@@ -62,6 +62,10 @@ pub fn handler(key: Key, app: &mut App) {
     }
     Key::Enter => {
       let selected = app.view.recently_played_index;
+      if let Some(ref page) = app.recently_played {
+        app.track_table.tracks = page.items.clone();
+        app.track_table.context = Some(crate::core::app::TrackTableContext::SavedTracks);
+      }
       let request = app.recently_played.as_ref().map(|page| {
         common_key_events::uri_playback_request(
           page.items.iter().map(|track| track.uri.clone()),

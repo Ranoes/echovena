@@ -1,62 +1,142 @@
 use super::common_key_events;
 use crate::core::action::Action;
-use crate::core::app::App;
+use crate::core::app::{App, StatsColumn};
 use crate::tui::event::Key;
 
 pub fn handler(key: Key, app: &mut App) {
   match key {
-    k if common_key_events::toward_sidebar_event(k, &app.user_config) => {
-      common_key_events::focus_sidebar(app)
-    }
+    Key::Esc => common_key_events::focus_sidebar(app),
+    Key::Char('h') | Key::Left => match app.view.stats_column {
+      StatsColumn::Albums => app.view.stats_column = StatsColumn::Artists,
+      StatsColumn::Artists => app.view.stats_column = StatsColumn::Tracks,
+      StatsColumn::Tracks => common_key_events::focus_sidebar(app),
+    },
+    Key::Char('l') | Key::Right => match app.view.stats_column {
+      StatsColumn::Tracks => app.view.stats_column = StatsColumn::Artists,
+      StatsColumn::Artists => app.view.stats_column = StatsColumn::Albums,
+      StatsColumn::Albums => {}
+    },
+    Key::Tab => cycle_period(app, true),
+    Key::BackTab => cycle_period(app, false),
+    Key::Char('[') => cycle_period(app, false),
+    Key::Char(']') => cycle_period(app, true),
     k if common_key_events::down_event(k, &app.user_config.keys) => {
       if let Some(stats) = &app.stats_data {
-        app.view.stats_selected_track = common_key_events::on_down_press_handler(
-          &stats.top_tracks,
-          Some(app.view.stats_selected_track),
-        );
+        match app.view.stats_column {
+          StatsColumn::Tracks => {
+            app.view.stats_selected_track = common_key_events::on_down_press_handler(
+              &stats.top_tracks,
+              Some(app.view.stats_selected_track),
+            );
+          }
+          StatsColumn::Artists => {
+            app.view.stats_selected_artist = common_key_events::on_down_press_handler(
+              &stats.top_artists,
+              Some(app.view.stats_selected_artist),
+            );
+          }
+          StatsColumn::Albums => {
+            app.view.stats_selected_album = common_key_events::on_down_press_handler(
+              &stats.top_albums,
+              Some(app.view.stats_selected_album),
+            );
+          }
+        }
       }
     }
     k if common_key_events::up_event(k, &app.user_config.keys) => {
       if let Some(stats) = &app.stats_data {
-        app.view.stats_selected_track = common_key_events::on_up_press_handler(
-          &stats.top_tracks,
-          Some(app.view.stats_selected_track),
-        );
+        match app.view.stats_column {
+          StatsColumn::Tracks => {
+            app.view.stats_selected_track = common_key_events::on_up_press_handler(
+              &stats.top_tracks,
+              Some(app.view.stats_selected_track),
+            );
+          }
+          StatsColumn::Artists => {
+            app.view.stats_selected_artist = common_key_events::on_up_press_handler(
+              &stats.top_artists,
+              Some(app.view.stats_selected_artist),
+            );
+          }
+          StatsColumn::Albums => {
+            app.view.stats_selected_album = common_key_events::on_up_press_handler(
+              &stats.top_albums,
+              Some(app.view.stats_selected_album),
+            );
+          }
+        }
       }
     }
     k if common_key_events::high_event(k) => {
       if app.stats_data.is_some() {
-        app.view.stats_selected_track = common_key_events::on_high_press_handler();
+        match app.view.stats_column {
+          StatsColumn::Tracks => {
+            app.view.stats_selected_track = common_key_events::on_high_press_handler();
+          }
+          StatsColumn::Artists => {
+            app.view.stats_selected_artist = common_key_events::on_high_press_handler();
+          }
+          StatsColumn::Albums => {
+            app.view.stats_selected_album = common_key_events::on_high_press_handler();
+          }
+        }
       }
     }
     k if common_key_events::middle_event(k) => {
       if let Some(stats) = &app.stats_data {
-        app.view.stats_selected_track =
-          common_key_events::on_middle_press_handler(&stats.top_tracks);
+        match app.view.stats_column {
+          StatsColumn::Tracks => {
+            app.view.stats_selected_track =
+              common_key_events::on_middle_press_handler(&stats.top_tracks);
+          }
+          StatsColumn::Artists => {
+            app.view.stats_selected_artist =
+              common_key_events::on_middle_press_handler(&stats.top_artists);
+          }
+          StatsColumn::Albums => {
+            app.view.stats_selected_album =
+              common_key_events::on_middle_press_handler(&stats.top_albums);
+          }
+        }
       }
     }
     k if common_key_events::low_event(k) => {
       if let Some(stats) = &app.stats_data {
-        app.view.stats_selected_track = common_key_events::on_low_press_handler(&stats.top_tracks);
+        match app.view.stats_column {
+          StatsColumn::Tracks => {
+            app.view.stats_selected_track =
+              common_key_events::on_low_press_handler(&stats.top_tracks);
+          }
+          StatsColumn::Artists => {
+            app.view.stats_selected_artist =
+              common_key_events::on_low_press_handler(&stats.top_artists);
+          }
+          StatsColumn::Albums => {
+            app.view.stats_selected_album =
+              common_key_events::on_low_press_handler(&stats.top_albums);
+          }
+        }
       }
     }
-    Key::Char('[') => cycle_period(app, false),
-    Key::Char(']') => cycle_period(app, true),
     Key::Enter => {
-      let uri = app.stats_data.as_ref().and_then(|stats| {
-        stats
-          .top_tracks
-          .get(app.view.stats_selected_track)
-          .and_then(|entry| entry.uri.clone())
-      });
+      let uri = match app.view.stats_column {
+        StatsColumn::Tracks => app.stats_data.as_ref().and_then(|stats| {
+          stats
+            .top_tracks
+            .get(app.view.stats_selected_track)
+            .and_then(|entry| entry.uri.clone())
+        }),
+        _ => None,
+      };
       match uri {
-        Some(uri) if uri.starts_with("spotify:track:") => {
+        Some(uri) => {
           app.apply(Action::PlayUris {
             uris: vec![uri],
             offset: Some(0),
           });
         }
-        Some(_) | None => {
+        None => {
           let has_tracks = app
             .stats_data
             .as_ref()
@@ -74,6 +154,8 @@ pub fn handler(key: Key, app: &mut App) {
 fn cycle_period(app: &mut App, forward: bool) {
   app.apply(Action::CycleStatsPeriod { forward });
   app.view.stats_selected_track = 0;
+  app.view.stats_selected_artist = 0;
+  app.view.stats_selected_album = 0;
 }
 
 #[cfg(test)]
@@ -98,8 +180,20 @@ mod tests {
         uri,
         parts: None,
       }],
-      top_artists: vec![],
-      top_albums: vec![],
+      top_artists: vec![RankedEntry {
+        display: "Artist Name".to_string(),
+        detail: "1 plays · 1m".to_string(),
+        value: 60_000,
+        uri: None,
+        parts: None,
+      }],
+      top_albums: vec![RankedEntry {
+        display: "Album Name".to_string(),
+        detail: "1 plays · 1m".to_string(),
+        value: 60_000,
+        uri: None,
+        parts: None,
+      }],
       days: vec![],
       period_plays: vec![],
       week_tracks: vec![],
@@ -137,7 +231,7 @@ mod tests {
   #[test]
   fn cycling_period_dispatches_stats_load() {
     let (mut app, rx) = app_with_track(None);
-    handler(Key::Char(']'), &mut app);
+    handler(Key::Tab, &mut app);
     assert_eq!(app.stats_period, RecapPeriod::Month);
     assert!(app.stats_loading());
     assert!(app.stats_data.is_none());
@@ -145,6 +239,22 @@ mod tests {
       rx.try_recv(),
       Ok(IoEvent::LoadListeningStats(RecapPeriod::Month))
     ));
+  }
+
+  #[test]
+  fn h_and_l_switch_columns_and_h_on_tracks_focuses_sidebar() {
+    let (mut app, _rx) = app_with_track(None);
+    assert_eq!(app.view.stats_column, StatsColumn::Tracks);
+    handler(Key::Char('l'), &mut app);
+    assert_eq!(app.view.stats_column, StatsColumn::Artists);
+    handler(Key::Char('l'), &mut app);
+    assert_eq!(app.view.stats_column, StatsColumn::Albums);
+    handler(Key::Char('h'), &mut app);
+    assert_eq!(app.view.stats_column, StatsColumn::Artists);
+    handler(Key::Char('h'), &mut app);
+    assert_eq!(app.view.stats_column, StatsColumn::Tracks);
+    handler(Key::Char('h'), &mut app);
+    assert_eq!(app.get_current_route().active_block, crate::core::app::ActiveBlock::Empty);
   }
 
   #[test]

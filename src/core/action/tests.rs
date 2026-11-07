@@ -2134,14 +2134,12 @@ fn open_library_stats_marks_loading_dispatches_and_pushes() {
 
 #[test]
 fn open_library_recently_played_pushes_before_the_data_arrives() {
-  let (mut app, rx) = app_with_channel();
+  let (mut app, _rx) = app_with_channel();
 
   app.apply(Action::OpenLibrary(LibraryTarget::RecentlyPlayed));
 
-  // The row pushes immediately; only the global navigate binding defers
-  // the push to the network result.
   assert_eq!(app.get_current_route().id, RouteId::RecentlyPlayed);
-  assert!(matches!(rx.try_recv(), Ok(IoEvent::GetRecentlyPlayed)));
+  assert!(app.recently_played.is_some());
 }
 
 #[test]
@@ -2251,11 +2249,14 @@ fn every_library_target_has_one_sidebar_row_with_a_distinct_label() {
     let expected = match target {
       LibraryTarget::LocalFiles => cfg!(feature = "local-files"),
       LibraryTarget::AiDj => cfg!(feature = "ai-dj"),
-      LibraryTarget::Podcasts | LibraryTarget::Friends | LibraryTarget::Albums | LibraryTarget::Artists => false,
+      LibraryTarget::Podcasts
+      | LibraryTarget::Friends
+      | LibraryTarget::Albums
+      | LibraryTarget::Artists
+      | LibraryTarget::PlaylistSync => false,
       LibraryTarget::Discover
       | LibraryTarget::RecentlyPlayed
       | LibraryTarget::Stats
-      | LibraryTarget::PlaylistSync
       | LibraryTarget::LikedSongs
       | LibraryTarget::SearchResults
       | LibraryTarget::Playlists

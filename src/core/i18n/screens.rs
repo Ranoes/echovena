@@ -292,7 +292,7 @@ pub const EN: ScreenStrings = ScreenStrings {
   recommendations: "Recommendations",
   saved_albums: "Saved Albums",
   episodes: "Episodes",
-  recent_tracks: "Recently Played Tracks",
+  recent_tracks: "History",
   no_top_tracks: "No top tracks",
   related_artists: "Related artists",
   playing: "Playing",

@@ -22,6 +22,32 @@ pub enum SyncAuthModalType {
   YouTubeCookies,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum StatsColumn {
+  #[default]
+  Tracks,
+  Artists,
+  Albums,
+}
+
+impl StatsColumn {
+  pub fn next(self) -> Self {
+    match self {
+      Self::Tracks => Self::Artists,
+      Self::Artists => Self::Albums,
+      Self::Albums => Self::Tracks,
+    }
+  }
+
+  pub fn prev(self) -> Self {
+    match self {
+      Self::Tracks => Self::Albums,
+      Self::Artists => Self::Tracks,
+      Self::Albums => Self::Artists,
+    }
+  }
+}
+
 #[derive(Default)]
 pub struct ViewState {
   /// Terminal geometry as of the last frame. The small/large search limits
@@ -137,8 +163,14 @@ pub struct ViewState {
   // Discover and Stats screens
   /// Selected index in the Discover view
   pub discover_selected_index: usize,
+  /// Active column in the Stats screen (Tracks, Artists, Albums)
+  pub stats_column: StatsColumn,
   /// Selected index in the Stats screen's Top Tracks list
   pub stats_selected_track: usize,
+  /// Selected index in the Stats screen's Top Artists list
+  pub stats_selected_artist: usize,
+  /// Selected index in the Stats screen's Top Albums list
+  pub stats_selected_album: usize,
 
   // Playlist sync screen and its picker
   /// Cursor in the link list.

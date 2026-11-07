@@ -1,4 +1,4 @@
-use crate::core::app::{ActiveBlock, App};
+use crate::core::app::{ActiveBlock, App, StatsColumn};
 use crate::infra::history::{format_duration_with, period_label_with, RankedEntry, RecapPeriod};
 use ratatui::{
   layout::{Constraint, Layout, Rect},
@@ -117,14 +117,26 @@ pub fn draw_stats(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
       None => (&[], &[], &[]),
     };
 
+  let tracks_active = app.view.stats_column == StatsColumn::Tracks;
+  let artists_active = app.view.stats_column == StatsColumn::Artists;
+  let albums_active = app.view.stats_column == StatsColumn::Albums;
+
   draw_ranked_panel(
     f,
     app,
     tracks_area,
     app.strings().screens.top_tracks,
     top_tracks,
-    get_color(highlight_state, theme),
-    Some(app.view.stats_selected_track),
+    if tracks_active {
+      get_color(highlight_state, theme)
+    } else {
+      Style::default().fg(theme.inactive.into())
+    },
+    if tracks_active {
+      Some(app.view.stats_selected_track)
+    } else {
+      None
+    },
   );
   draw_ranked_panel(
     f,
@@ -132,8 +144,16 @@ pub fn draw_stats(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
     artists_area,
     app.strings().screens.top_artists,
     top_artists,
-    Style::default().fg(theme.inactive.into()),
-    None,
+    if artists_active {
+      get_color(highlight_state, theme)
+    } else {
+      Style::default().fg(theme.inactive.into())
+    },
+    if artists_active {
+      Some(app.view.stats_selected_artist)
+    } else {
+      None
+    },
   );
   draw_ranked_panel(
     f,
@@ -141,8 +161,16 @@ pub fn draw_stats(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
     albums_area,
     app.strings().screens.top_albums,
     top_albums,
-    Style::default().fg(theme.inactive.into()),
-    None,
+    if albums_active {
+      get_color(highlight_state, theme)
+    } else {
+      Style::default().fg(theme.inactive.into())
+    },
+    if albums_active {
+      Some(app.view.stats_selected_album)
+    } else {
+      None
+    },
   );
 
   // Last-10-days bars + hint line
@@ -205,10 +233,12 @@ fn draw_help_bar(f: &mut Frame<'_>, app: &App, area: Rect) {
   let line = Line::from(vec![
     hint_span("↑/↓", theme),
     label(app.strings().screens.select_track_hint),
+    hint_span("h/l", theme),
+    label(" Switch Column  "),
+    hint_span("Tab", theme),
+    label(app.strings().screens.period_hint),
     hint_span("Enter", theme),
     label(app.strings().screens.play_hint),
-    hint_span("[ / ]", theme),
-    label(app.strings().screens.period_hint),
     Span::styled(
       app.user_config.keys.generate_recap.to_string(),
       Style::default()
