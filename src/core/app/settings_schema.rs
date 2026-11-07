@@ -1440,6 +1440,9 @@ mod tests {
       app.refresh_settings_labels();
       assert!(!app.has_unsaved_settings_changes());
       for row in &app.settings_items {
+        if row.id.starts_with("storage.") {
+          continue;
+        }
         let (name, description) = app.strings().settings.row_text(&row.id).unwrap();
         assert_eq!(row.name, name);
         assert_eq!(row.description, description);

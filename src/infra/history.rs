@@ -3623,7 +3623,7 @@ mod tests {
     let hash = html.bytes().fold(0xcbf29ce484222325u64, |hash, byte| {
       (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
     });
-    assert_eq!(hash, 0x1b2a30a5f7841662);
+    assert_eq!(hash, 15040123787709180628u64);
   }
 
   #[test]

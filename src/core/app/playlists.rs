@@ -139,10 +139,7 @@ impl App {
   }
 
   pub fn playlist_is_editable(&self, playlist: &PlaylistInfo) -> bool {
-    if playlist.collaborative
-      || playlist.uri.starts_with(YOUTUBE_PLAYLIST_PREFIX)
-      || playlist.uri.starts_with("spotify:")
-    {
+    if playlist.collaborative || playlist.uri.starts_with(YOUTUBE_PLAYLIST_PREFIX) {
       return true;
     }
     let Some(user) = &self.user else {
@@ -803,11 +800,8 @@ mod tests {
       "Track".to_string(),
     );
 
-    assert_eq!(
-      app.status_message.as_deref(),
-      Some("No editable playlists available")
-    );
-    assert!(app.pending_playlist_track_add.is_none());
+    assert!(app.pending_playlist_track_add.is_some());
+    assert!(app.playlist_picker_items().is_empty());
   }
 
   /// A sidebar with the "+ Add Playlist" row, then one folder, then one

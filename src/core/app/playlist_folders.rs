@@ -268,7 +268,8 @@ mod tests {
 
   #[test]
   fn community_pin_is_first_display_item_when_visible() {
-    let app = App::default();
+    let mut app = App::default();
+    app.active_source = Source::Spotify;
     // Default Spotify source + default-on toggle + root folder + not following.
     // The pin is the first *display* item (sidebar row 1, below "+ Add Playlist").
     assert!(app.community_pin_visible());
@@ -282,6 +283,7 @@ mod tests {
   #[test]
   fn community_pin_hidden_outside_root_folder() {
     let mut app = App::default();
+    app.active_source = Source::Spotify;
     assert!(app.community_pin_visible());
     app.current_playlist_folder_id = 3;
     assert!(!app.community_pin_visible());
@@ -290,6 +292,7 @@ mod tests {
   #[test]
   fn community_pin_hidden_when_toggle_off() {
     let mut app = App::default();
+    app.active_source = Source::Spotify;
     app.user_config.behavior.pin_community_playlist = false;
     assert!(!app.community_pin_visible());
   }
@@ -297,6 +300,7 @@ mod tests {
   #[test]
   fn community_pin_hidden_when_already_following() {
     let mut app = App::default();
+    app.active_source = Source::Spotify;
     assert!(app.community_pin_visible());
     app.all_playlists = vec![playlist_info(
       COMMUNITY_PLAYLIST_ID,
@@ -320,6 +324,7 @@ mod tests {
     // Folder-aware items not yet initialized, so the sidebar falls back to the
     // raw playlist pages. Rendered rows: [+ Add Playlist, pin, First, Second].
     let mut app = App::default();
+    app.active_source = Source::Spotify;
     assert!(app.community_pin_visible());
     assert!(app.playlist_folder_items.is_empty());
     app.playlists = Some(Paged {

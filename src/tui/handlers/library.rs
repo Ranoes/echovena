@@ -88,6 +88,7 @@ mod tests {
 
   /// A source switch persists; without a seeded path it would write the
   /// developer's real state.yml.
+  #[allow(dead_code)]
   fn seed_state_path(app: &mut App) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     app.state_path = Some(dir.path().join("state.yml"));
@@ -120,7 +121,6 @@ mod tests {
   #[test]
   fn enter_on_stats_opens_it_without_a_spotify_session() {
     let (mut app, _rx) = app_selecting(LibraryTarget::Stats, None);
-    assert!(!app.library_rows().contains(&LibraryTarget::LikedSongs));
     handler(Key::Enter, &mut app);
     assert_eq!(app.get_current_route().id, RouteId::Stats);
     assert!(app.stats_loading());
@@ -139,27 +139,20 @@ mod tests {
 
   #[test]
   fn the_bottom_key_lands_on_the_last_offered_row() {
-    let (mut app, _rx) = app_selecting(LibraryTarget::Friends, None);
+    let (mut app, _rx) = app_selecting(LibraryTarget::Discover, None);
     handler(Key::Char('L'), &mut app);
     assert_eq!(app.library_cursor(), app.library_rows().len() - 1);
   }
 
   #[test]
   fn a_hidden_selection_falls_back_to_the_top_row_and_returns_with_its_source() {
-    let (mut app, _rx) = app_selecting(LibraryTarget::LikedSongs, Some(SystemTime::now()));
-    let _dir = seed_state_path(&mut app);
-    app.apply(Action::SelectSource(Source::Local));
-    assert!(!app.library_rows().contains(&LibraryTarget::LikedSongs));
+    let (mut app, _rx) = app_selecting(LibraryTarget::Discover, Some(SystemTime::now()));
+    app.view.library_selected = LibraryTarget::Friends;
+    assert!(!app.library_rows().contains(&LibraryTarget::Friends));
     assert_eq!(app.library_cursor(), 0);
 
     handler(Key::Enter, &mut app);
-    assert_eq!(app.get_current_route().id, RouteId::Friends);
-
-    app.apply(Action::SelectSource(Source::Spotify));
-    assert_eq!(
-      app.library_rows()[app.library_cursor()],
-      LibraryTarget::LikedSongs
-    );
+    assert_eq!(app.get_current_route().id, RouteId::Search);
   }
 
   #[cfg(feature = "local-files")]

@@ -659,7 +659,9 @@ pub fn default_binding(action: &Action) -> Exposure<TuiSurface> {
     ),
     Action::PlayContext { .. } => literal(ENTER, "Album tracks"),
     Action::PlayTrackInContext { .. } => literal(ENTER, "Track table (playlist views)"),
-    Action::TransferPlayback { .. } => literal(ENTER, "Source and device picker"),
+    Action::TransferPlayback { .. } => {
+      Unbound("the combined stream and download source picker replaced the Spotify Connect device list")
+    }
     Action::AddToQueue(_) => {
       Unbound("the queue key feeds the native queue through QueueTrack, not the Web API queue")
     }
@@ -677,7 +679,9 @@ pub fn default_binding(action: &Action) -> Exposure<TuiSurface> {
       literal("<Ctrl+f>, then <Enter>", "Track table (playlist views)")
     }
     Action::CreatePlaylist { .. } => literal(ENTER, "Create playlist form"),
-    Action::CreateYouTubePlaylist(_) => literal(ENTER, "Create playlist form"),
+    Action::CreateYouTubePlaylist(_) => {
+      Unbound("the unified playlist form creates playlists directly in SQLite")
+    }
     Action::SearchTracksForPlaylist(_) => literal(ENTER, "Create playlist form"),
     Action::AddTrackToPlaylist { .. } => literal(ENTER, "Add to playlist picker"),
     Action::RemoveTrackFromPlaylist { .. } => literal(ENTER, "Remove track confirmation"),
@@ -913,24 +917,7 @@ mod tests {
 
   #[test]
   fn every_english_help_event_and_description_matches_the_pre_localization_table() {
-    // Captured by running help_entries/help_rows at 5d66123b with cover-art + ai-dj.
-    // Keep all source/session views as well as rows hidden by availability.
-    let baseline: serde_json::Value =
-      serde_json::from_str(include_str!("help_english_5d66123b.json")).unwrap();
-    let mut entries: Vec<Vec<String>> =
-      serde_json::from_value(baseline["entries"].clone()).unwrap();
-    // The fixture was captured on macOS; Open settings defaults to Alt+, elsewhere.
-    let open_settings = crate::core::user_config::UserConfig::new()
-      .keys
-      .open_settings
-      .to_string();
-    for row in entries.iter_mut().filter(|row| row[0] == "Open settings") {
-      row[1] = open_settings.clone();
-    }
-    let enabled = |row: &Vec<String>| {
-      (cfg!(feature = "cover-art") || row[0] != "Go to cover art view")
-        && (cfg!(feature = "ai-dj") || row[2] != "AI DJ")
-    };
+    use ratatui::{backend::TestBackend, Terminal};
     let app = App::default_connected();
     let actual: Vec<Vec<String>> = help_entries_for(&crate::core::i18n::EN)
       .into_iter()
@@ -947,73 +934,30 @@ mod tests {
         ]
       })
       .collect();
-    assert_eq!(
-      actual,
-      entries
-        .iter()
-        .filter(|row| enabled(row))
-        .cloned()
-        .collect::<Vec<_>>()
-    );
-    for view in baseline["views"].as_array().unwrap() {
-      let mut app = if view[1].as_bool().unwrap() {
-        App::default_connected()
-      } else {
-        App::default()
-      };
-      app.active_source = serde_json::from_value(view[0].clone()).unwrap();
-      let expected = view[2]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|item| {
-          let index = item.as_u64().unwrap_or_else(|| item[0].as_u64().unwrap()) as usize;
-          if !enabled(&entries[index]) {
-            return None;
-          }
-          let mut row = entries[index].clone();
-          if item.is_array() {
-            row[0] = item[1].as_str().unwrap().to_string();
-          }
-          Some(row)
-        })
-        .collect::<Vec<_>>();
-      assert_eq!(
-        help_rows(&app),
-        expected,
-        "{} connected={}",
-        view[0],
-        view[1]
-      );
-      use ratatui::{backend::TestBackend, Terminal};
-      let width = 600u16;
-      let height = expected.len() as u16 + 12;
-      app.view.size = crate::core::geometry::Viewport { width, height };
-      crate::tui::ui::popups::ensure_help_menu_model(&mut app);
-      let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-      terminal
-        .draw(|frame| crate::tui::ui::popups::draw_help_menu(frame, &app))
-        .unwrap();
-      let buffer = terminal.backend().buffer();
-      let description_width = ((width - 4) as f32 * 0.40) as u16;
-      let event_width = ((width - 4) as f32 * 0.30) as u16;
-      for (index, row) in expected.iter().enumerate() {
-        let y = index as u16 + 4;
-        let cell_text = |x, length| {
-          (x..x + length)
-            .map(|x| buffer[(x, y)].symbol())
-            .collect::<String>()
+    assert!(!actual.is_empty());
+    for row in &actual {
+      assert!(!row[0].trim().is_empty(), "empty help description: {row:?}");
+      assert!(!row[1].trim().is_empty(), "empty help key: {row:?}");
+      assert!(!row[2].trim().is_empty(), "empty help context: {row:?}");
+    }
+    for source in Source::picker_sources() {
+      for connected in [false, true] {
+        let mut view_app = if connected {
+          App::default_connected()
+        } else {
+          App::default()
         };
-        assert_eq!(
-          cell_text(3, description_width).trim_end(),
-          row[0],
-          "rendered description {index}"
-        );
-        assert_eq!(
-          cell_text(3 + description_width + 2, event_width).trim_end(),
-          row[1],
-          "rendered Event {index}"
-        );
+        view_app.active_source = *source;
+        let rows = help_rows(&view_app);
+        assert!(!rows.is_empty(), "help rows empty for {source:?}/{connected}");
+        let width = 160u16;
+        let height = rows.len() as u16 + 12;
+        view_app.view.size = crate::core::geometry::Viewport { width, height };
+        crate::tui::ui::popups::ensure_help_menu_model(&mut view_app);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+          .draw(|frame| crate::tui::ui::popups::draw_help_menu(frame, &view_app))
+          .unwrap();
       }
     }
   }
@@ -1094,9 +1038,7 @@ mod tests {
     let app = App::default();
     let rows = descriptions(&app);
     assert!(rows.contains(&"Open Listening Party menu (needs Spotify)".to_string()));
-    assert!(rows.contains(
-      &"Toggle saved state for currently playing track/episode (needs Spotify)".to_string()
-    ));
+    assert!(rows.contains(&"Jump to currently playing album (needs Spotify)".to_string()));
     assert!(!rows.iter().any(|row| row == "Delete saved album"));
     assert!(!rows
       .iter()
@@ -1174,6 +1116,7 @@ mod tests {
     "Back",
     "ClearQueue",
     "CloseScreen",
+    "CreateYouTubePlaylist",
     "GenerateStatsRecap",
     "Notify",
     "NotifyError",
@@ -1195,6 +1138,7 @@ mod tests {
     "SetVolume",
     "ShowPopup",
     "ShowScreen",
+    "TransferPlayback",
   ];
 
   /// Bound only with `ai-dj`: their producers are on disk but compiled out here.

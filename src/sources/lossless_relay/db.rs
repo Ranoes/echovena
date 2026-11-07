@@ -72,15 +72,43 @@ pub struct Database {
     conn: Arc<Mutex<Connection>>,
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_DEFAULT_DB: std::cell::RefCell<Option<Database>> = const { std::cell::RefCell::new(None) };
+}
+
 impl Database {
+    #[cfg(test)]
+    pub fn reset_test_db() {
+        TEST_DEFAULT_DB.with(|slot| {
+            *slot.borrow_mut() = None;
+        });
+    }
+
     pub fn open_default() -> Result<Self> {
-        let path = crate::core::paths::library_db_path()
-            .context("failed to resolve echovena library.db path")?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("failed creating database dir {}", parent.display()))?;
+        #[cfg(test)]
+        {
+            return TEST_DEFAULT_DB.with(|slot| {
+                let mut borrow = slot.borrow_mut();
+                if let Some(ref db) = *borrow {
+                    Ok(db.clone())
+                } else {
+                    let db = Self::open_in_memory()?;
+                    *borrow = Some(db.clone());
+                    Ok(db)
+                }
+            });
         }
-        Self::open_path(&path)
+        #[cfg(not(test))]
+        {
+            let path = crate::core::paths::library_db_path()
+                .context("failed to resolve echovena library.db path")?;
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("failed creating database dir {}", parent.display()))?;
+            }
+            Self::open_path(&path)
+        }
     }
 
     pub fn open_path(path: &Path) -> Result<Self> {

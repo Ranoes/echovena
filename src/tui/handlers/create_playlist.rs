@@ -287,14 +287,8 @@ mod tests {
 
     handler(Key::Enter, &mut app);
 
-    assert_eq!(
-      app.view.create_playlist_stage,
-      CreatePlaylistStage::AddTracks
-    );
-    assert_eq!(
-      app.view.create_playlist_focus,
-      CreatePlaylistFocus::SearchInput
-    );
+    assert_eq!(app.status_message(), Some("Created local playlist 'M'"));
+    assert_ne!(app.get_current_route().id, RouteId::CreatePlaylist);
     assert!(rx.try_recv().is_err(), "expected nothing dispatched");
   }
 }

@@ -36,7 +36,7 @@ fn start_playback_has_taker(event: &IoEvent, spotify_session: bool) -> bool {
       Some(uri) if uri.starts_with("radio:") => cfg!(feature = "internet-radio"),
       Some(uri) => match queue_item_source(uri) {
         QueueItemSource::Spotify => spotify_session || cfg!(feature = "youtube"),
-        source => source_available(source) || cfg!(feature = "youtube"),
+        source => source_available(source),
       },
       None => spotify_session || cfg!(feature = "youtube"),
     },

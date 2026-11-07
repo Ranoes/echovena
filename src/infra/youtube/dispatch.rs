@@ -48,6 +48,15 @@ enum Direction {
   Prev,
 }
 
+fn is_foreign_uri(u: &str) -> bool {
+  u.starts_with("radio:")
+    || u.starts_with("local:")
+    || u.starts_with("file:")
+    || u.starts_with("subsonic:")
+    || u.starts_with("qobuz:")
+    || u.starts_with("applemusic:")
+}
+
 /// Intercept events that target the YouTube source.
 ///
 /// Returns `true` if the event was handled (and must **not** be forwarded to
@@ -92,11 +101,20 @@ pub async fn route_youtube_event(app: &Arc<Mutex<App>>, event: &IoEvent) -> bool
     }
     // Start a queue of videos: handle if YouTube URI or if Spotify is not active & connected
     IoEvent::StartPlayback(None, Some(uris), offset) => {
-      let is_yt = uris.first().is_some_and(|u| is_youtube_uri(u)) || matches!(app.lock().await.track_table.context, Some(crate::core::app::TrackTableContext::YouTubePlaylist));
-      let is_foreign = uris.first().is_some_and(|u| u.starts_with("radio:") || u.starts_with("local:"));
+      let is_yt = uris.first().is_some_and(|u| is_youtube_uri(u))
+        || matches!(
+          app.lock().await.track_table.context,
+          Some(crate::core::app::TrackTableContext::YouTubePlaylist)
+        );
+      let is_foreign = uris.first().is_some_and(|u| is_foreign_uri(u));
       let spotify_active = {
         let guard = app.lock().await;
-        guard.active_source == Source::Spotify && guard.spotify_connected
+        guard.spotify_connected
+          && guard.active_source != Source::LosslessRelay
+          && !matches!(
+            guard.track_table.context,
+            Some(crate::core::app::TrackTableContext::YouTubePlaylist)
+          )
       };
       let is_spotify = uris.first().is_some_and(|u| u.starts_with("spotify:"));
       if is_yt || (!is_foreign && (!is_spotify || !spotify_active)) {
@@ -109,11 +127,20 @@ pub async fn route_youtube_event(app: &Arc<Mutex<App>>, event: &IoEvent) -> bool
     }
     // Context with specific track(s) in queue
     IoEvent::StartPlayback(Some(_ctx), Some(uris), offset) => {
-      let is_yt = uris.first().is_some_and(|u| is_youtube_uri(u)) || matches!(app.lock().await.track_table.context, Some(crate::core::app::TrackTableContext::YouTubePlaylist));
-      let is_foreign = uris.first().is_some_and(|u| u.starts_with("radio:") || u.starts_with("local:"));
+      let is_yt = uris.first().is_some_and(|u| is_youtube_uri(u))
+        || matches!(
+          app.lock().await.track_table.context,
+          Some(crate::core::app::TrackTableContext::YouTubePlaylist)
+        );
+      let is_foreign = uris.first().is_some_and(|u| is_foreign_uri(u));
       let spotify_active = {
         let guard = app.lock().await;
-        guard.active_source == Source::Spotify && guard.spotify_connected
+        guard.spotify_connected
+          && guard.active_source != Source::LosslessRelay
+          && !matches!(
+            guard.track_table.context,
+            Some(crate::core::app::TrackTableContext::YouTubePlaylist)
+          )
       };
       let is_spotify = uris.first().is_some_and(|u| u.starts_with("spotify:"));
       if is_yt || (!is_foreign && (!is_spotify || !spotify_active)) {
@@ -126,11 +153,20 @@ pub async fn route_youtube_event(app: &Arc<Mutex<App>>, event: &IoEvent) -> bool
     }
     // Context URI or single video with no surrounding list
     IoEvent::StartPlayback(Some(uri), None, offset) => {
-      let is_yt = is_youtube_uri(uri) || matches!(app.lock().await.track_table.context, Some(crate::core::app::TrackTableContext::YouTubePlaylist));
-      let is_foreign = uri.starts_with("radio:") || uri.starts_with("local:");
+      let is_yt = is_youtube_uri(uri)
+        || matches!(
+          app.lock().await.track_table.context,
+          Some(crate::core::app::TrackTableContext::YouTubePlaylist)
+        );
+      let is_foreign = is_foreign_uri(uri);
       let spotify_active = {
         let guard = app.lock().await;
-        guard.active_source == Source::Spotify && guard.spotify_connected
+        guard.spotify_connected
+          && guard.active_source != Source::LosslessRelay
+          && !matches!(
+            guard.track_table.context,
+            Some(crate::core::app::TrackTableContext::YouTubePlaylist)
+          )
       };
       let is_spotify = uri.starts_with("spotify:");
       if is_yt || (!is_foreign && (!is_spotify || !spotify_active)) {
@@ -1053,7 +1089,7 @@ fn is_livestream(track: &TrackInfo) -> bool {
 async fn start_youtube_queue(app: &Arc<Mutex<App>>, uris: &[String], start_idx: usize) {
   // Snapshot the track metadata under one short lock, from whichever browse
   // view the request came from.
-  let mut tracks = {
+  let (mut tracks, search_livestream_uris) = {
     let guard = app.lock().await;
     let live_tracks: Vec<TrackInfo> = guard
       .live_search_items
@@ -1065,6 +1101,12 @@ async fn start_youtube_queue(app: &Arc<Mutex<App>>, uris: &[String], start_idx: 
       .tracks
       .as_ref()
       .map(|p| p.items.as_slice());
+    let livestreams: std::collections::HashSet<String> = search
+      .unwrap_or(&[])
+      .iter()
+      .filter(|t| t.duration_ms == 0 && !crate::infra::queue::is_placeholder(t))
+      .filter_map(|t| t.uri.clone())
+      .collect();
     let mut all_pool = guard.track_table.tracks.clone();
     all_pool.extend(live_tracks);
     if let crate::core::app::SearchDrilldown::AlbumDetail { ref tracks, .. } = guard.view.search_drilldown {
@@ -1073,7 +1115,7 @@ async fn start_youtube_queue(app: &Arc<Mutex<App>>, uris: &[String], start_idx: 
     if let crate::core::app::SearchDrilldown::ArtistDetail { ref top_songs, .. } = guard.view.search_drilldown {
       all_pool.extend(top_songs.clone());
     }
-    snapshot_tracks(&all_pool, search, uris)
+    (snapshot_tracks(&all_pool, search, uris), livestreams)
   };
 
   if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
@@ -1121,7 +1163,12 @@ async fn start_youtube_queue(app: &Arc<Mutex<App>>, uris: &[String], start_idx: 
   let index = start_idx.min(tracks.len() - 1);
 
   // A livestream never finishes downloading — refuse up front.
-  if is_livestream(&tracks[index]) {
+  if is_livestream(&tracks[index])
+    || tracks[index]
+      .uri
+      .as_deref()
+      .is_some_and(|u| search_livestream_uris.contains(u))
+  {
     set_error(
       app,
       crate::infra::app_strings(app)

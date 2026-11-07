@@ -745,6 +745,7 @@ mod tests {
 
     // Already on the Search route with focus in the input box. This is the case
     // that previously left focus trapped in the search box on submit (#191).
+    app.set_active_source(crate::core::source::Source::Spotify);
     app.push_navigation_stack(RouteId::Search, ActiveBlock::Input);
     app.view.input = str_to_vec_char("daft punk");
     app.view.input_idx = app.view.input.len();

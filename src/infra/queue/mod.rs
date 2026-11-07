@@ -40,7 +40,9 @@ pub fn snapshot_tracks(
         t.uri.as_deref() == Some(uri.as_str())
           || t.id.as_deref() == Some(uri.as_str())
           || t.id.as_deref().is_some_and(|id| uri == &format!("spotify:track:{id}"))
-          || uri.strip_prefix("spotify:track:") == t.id.as_deref()
+          || uri
+            .strip_prefix("spotify:track:")
+            .is_some_and(|id| Some(id) == t.id.as_deref())
       };
       table
         .iter()
@@ -60,7 +62,7 @@ pub fn is_placeholder(track: &TrackInfo) -> bool {
   (track.artists.is_empty() && track.uri.as_deref() == Some(track.name.as_str()))
     || track.name.starts_with("yt:video:")
     || track.name.starts_with("youtube:")
-    || (track.artists.is_empty() && track.duration_ms == 0)
+    || track.name.starts_with("spotify:track:")
 }
 
 /// The URI of `tracks[index]` when that row is a placeholder, so the source
@@ -93,7 +95,11 @@ pub fn apply_resolved(
   let vid_match = row.uri.as_deref() == Some(uri)
     || row.id.as_deref() == Some(uri)
     || row.name == uri
-    || (row.uri.as_deref().and_then(crate::infra::youtube::extract_youtube_video_id) == crate::infra::youtube::extract_youtube_video_id(uri));
+    || row
+      .uri
+      .as_deref()
+      .and_then(crate::infra::youtube::extract_youtube_video_id)
+      .is_some_and(|vid| Some(vid) == crate::infra::youtube::extract_youtube_video_id(uri));
   if !is_placeholder(row) || !vid_match {
     return false;
   }

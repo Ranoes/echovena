@@ -931,6 +931,9 @@ pub fn handler(key: Key, app: &mut App) {
         }
       }
     }
+    Key::Char('m') => {
+      app.apply(Action::OpenPlaylistSyncPicker);
+    }
     Key::Char('a') | Key::Char('A') => {
       app.push_navigation_stack(RouteId::CreatePlaylist, ActiveBlock::CreatePlaylistForm);
     }
@@ -1434,7 +1437,7 @@ mod tests {
   #[test]
   fn shift_d_on_community_pin_is_a_no_op() {
     let (tx, rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now())).under_source(Source::Spotify);
     assert!(app.community_pin_visible());
     // Sidebar row 1 is the pin (row 0 is "+ Add Playlist").
     app.view.selected_playlist_index = Some(1);

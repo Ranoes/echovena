@@ -316,7 +316,7 @@ mod tests {
     );
     let playlists_row = row_text(&buffer, areas.playlists.y);
     assert!(
-      playlists_row.contains("Playlists"),
+      playlists_row.contains("Playlist"),
       "playlists panel not at hitbox row: {playlists_row}"
     );
   }

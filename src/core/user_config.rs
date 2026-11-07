@@ -3201,6 +3201,7 @@ mod tests {
   fn dithering_does_not_bypass_terminal_cover_art_requirement() {
     use super::UserConfig;
     let mut config = UserConfig::new();
+    config.behavior.draw_cover_art_forced = false;
     config.behavior.cover_art_dither = true;
     assert!(!config.do_draw_cover_art(false));
     config.behavior.draw_cover_art_forced = true;
@@ -3889,10 +3890,10 @@ radio_stations:
   fn active_source_unknown_string_falls_back_to_spotify() {
     use crate::core::source::Source;
 
-    // Unknown/garbage strings must not panic and fall back to Spotify
-    assert_eq!(Source::from_config_str("Tidal"), Source::Spotify);
-    assert_eq!(Source::from_config_str(""), Source::Spotify);
-    assert_eq!(Source::from_config_str("local"), Source::Spotify); // case-sensitive
+    // Unknown/garbage strings must not panic and fall back to YouTube
+    assert_eq!(Source::from_config_str("Tidal"), Source::YouTube);
+    assert_eq!(Source::from_config_str(""), Source::YouTube);
+    assert_eq!(Source::from_config_str("local"), Source::YouTube); // case-sensitive
   }
 
   #[test]

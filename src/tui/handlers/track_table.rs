@@ -856,7 +856,7 @@ mod tests {
     // A drawn unplayable track would be refused with an error and start
     // nothing; the playable one starts every time.
     for _ in 0..20 {
-      handler(Key::Char('S'), &mut app);
+      play_random_song(&mut app);
       assert!(rx.try_recv().is_ok(), "each press starts a track");
       assert!(!app.status_message_is_error(), "no track was refused");
     }
@@ -885,7 +885,7 @@ mod tests {
     });
 
     // `random_range(0..0)` panics; the guard must skip the start instead.
-    handler(Key::Char('S'), &mut app);
+    play_random_song(&mut app);
 
     assert!(rx.try_recv().is_err(), "an empty playlist starts nothing");
   }

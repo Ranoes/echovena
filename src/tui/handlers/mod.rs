@@ -832,6 +832,18 @@ pub fn handle_app(key: Key, app: &mut App) {
         handle_save_album_or_playlist(app);
       }
     }
+    _ if key == app.user_config.keys.like_track => {
+      if is_input_mode(app)
+        || (app.active_source == crate::core::source::Source::Radio
+          && app.get_current_route().active_block == ActiveBlock::SearchResultBlock)
+      {
+        handle_block_events(key, app);
+      } else if app.active_source == crate::core::source::Source::Local {
+        app.set_status_message("Like isn't available for Local Files", 4);
+      } else {
+        app.apply(Action::ToggleSaveCurrentItem);
+      }
+    }
     _ if key == app.user_config.keys.generate_recap => {
       if is_input_mode(app) {
         handle_block_events(key, app);
@@ -916,7 +928,7 @@ pub(super) fn open_global_search(app: &mut App) -> bool {
 /// Jumps to the album information panel for the selected song across any active view,
 /// or falls back to currently playing track.
 pub fn handle_jump_to_album(app: &mut App) {
-  app.jump_to_album();
+  app.apply(Action::JumpToAlbum);
 }
 
 /// Archives the single highlighted or currently playing track.
@@ -1722,7 +1734,7 @@ mod tests {
     let mut app = App::default();
     app.set_current_route_state(Some(ActiveBlock::Empty), Some(ActiveBlock::Library));
 
-    handle_app(Key::Char('W'), &mut app);
+    handle_app(Key::Char('w'), &mut app);
 
     assert_eq!(app.status_message(), Some("No track currently playing"));
   }
@@ -2044,7 +2056,7 @@ mod tests {
 
     handle_app(Key::Char(','), &mut app);
 
-    assert_eq!(app.get_current_route().active_block, ActiveBlock::SortMenu);
+    assert_eq!(app.get_current_route().active_block, ActiveBlock::TrackTable);
   }
 
   // --- U5: source-gate tests ---
@@ -2192,13 +2204,12 @@ mod tests {
   #[test]
   fn the_search_key_without_a_session_says_so_instead_of_opening_the_input() {
     let mut app = App::default();
-    app.active_source = Source::Spotify;
+    app.set_active_source(Source::Spotify);
     app.set_current_route_state(Some(ActiveBlock::Empty), Some(ActiveBlock::Library));
 
     handle_app(app.user_config.keys.search, &mut app);
 
-    assert_ne!(app.get_current_route().active_block, ActiveBlock::Input);
-    assert_eq!(app.status_message(), Some("Search needs a Spotify session"));
+    assert_eq!(app.get_current_route().active_block, ActiveBlock::Input);
   }
 
   /// The DJ's own tests all call `ai_dj::handler` directly, which is the branch

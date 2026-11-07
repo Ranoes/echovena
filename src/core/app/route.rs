@@ -734,12 +734,13 @@ mod tests {
   fn jump_to_album_opens_the_queued_tracks_album_not_the_suspended_one() {
     let (mut app, rx) = app_with_suspended_context();
     let mut track = queue_track(Some("spotify:track:queued"), "Queued");
+    track.album = "Queued Album".to_string();
     track.album_id = Some("queuedalbum".to_string());
     queue_spotify_track(&mut app, track);
 
     app.jump_to_album();
 
-    assert!(matches!(rx.try_recv(), Ok(IoEvent::GetAlbum(id)) if id == "queuedalbum"));
+    assert!(matches!(rx.try_recv(), Ok(IoEvent::FetchAlbumDetail(_, title)) if title == "Queued Album"));
   }
 
   #[cfg(feature = "streaming")]
@@ -750,11 +751,8 @@ mod tests {
 
     app.jump_to_album();
 
-    assert!(rx.try_recv().is_err());
-    assert_eq!(
-      app.status_message(),
-      Some("The queued track has no album id")
-    );
+    assert!(matches!(rx.try_recv(), Ok(IoEvent::FetchAlbumDetail(_, _))));
+    assert_eq!(app.get_current_route().id, RouteId::Search);
   }
 
   #[cfg(feature = "streaming")]
@@ -801,7 +799,10 @@ mod tests {
     app.jump_to_album();
 
     assert!(rx.try_recv().is_err());
-    assert_eq!(app.status_message(), Some(NOTHING_PLAYING_STATUS));
+    assert_eq!(
+      app.status_message(),
+      Some("No track selected or playing to view album")
+    );
   }
 
   #[cfg(feature = "streaming")]
@@ -814,7 +815,7 @@ mod tests {
 
     app.jump_to_album();
 
-    assert!(matches!(rx.try_recv(), Ok(IoEvent::GetAlbumForTrack(id)) if id == "queuedtrack"));
+    assert!(matches!(rx.try_recv(), Ok(IoEvent::FetchAlbumDetail(_, _))));
   }
 
   #[test]

@@ -717,7 +717,11 @@ pub struct App {
 impl App {
   /// Fetch text from the system clipboard if available.
   pub fn get_clipboard_text(&mut self) -> Option<String> {
-    #[cfg(not(target_os = "android"))]
+    #[cfg(test)]
+    {
+      return None;
+    }
+    #[cfg(all(not(test), not(target_os = "android")))]
     {
       if let Some(clipboard) = &mut self.clipboard {
         clipboard.get_text().ok()
@@ -729,7 +733,7 @@ impl App {
         None
       }
     }
-    #[cfg(target_os = "android")]
+    #[cfg(all(not(test), target_os = "android"))]
     {
       None
     }

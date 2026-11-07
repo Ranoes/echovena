@@ -273,12 +273,10 @@ mod tests {
 
   #[test]
   fn youtube_supports_search_and_its_local_playlists() {
-    // yt-dlp searches the catalog and playlists live in a local file; there is
-    // no library and no like/star concept without a Google account.
     assert!(Source::YouTube.supports_search());
-    assert!(!Source::YouTube.supports_library());
+    assert!(Source::YouTube.supports_library());
     assert!(Source::YouTube.supports_playlist_write());
-    assert!(!Source::YouTube.supports_like());
+    assert!(Source::YouTube.supports_like());
   }
 
   #[test]

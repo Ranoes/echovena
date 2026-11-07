@@ -151,10 +151,12 @@ impl App {
     }
 
     if !self.spotify_connected
-      || self.active_source != crate::core::source::Source::Spotify
       || id_str.starts_with("yt:")
       || id_str.starts_with("youtube:")
       || id_str.starts_with("PL")
+      || id_str.starts_with("RD")
+      || id_str.starts_with("OLAK")
+      || id_str.starts_with("VL")
     {
       self.open_source_playlist_tracks(id_str);
       return;

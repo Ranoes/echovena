@@ -214,6 +214,9 @@ impl Artist {
 impl App {
   /// Populates the Recently Played / History list from the persistent local `listens.jsonl` log (up to 50 items).
   pub fn populate_recently_played_from_history(&mut self) {
+    #[cfg(test)]
+    let listens: Vec<crate::infra::history::ListenRecord> = Vec::new();
+    #[cfg(not(test))]
     let listens = match crate::infra::history::load_listens() {
       Ok(listens) => listens,
       Err(err) => {
@@ -486,6 +489,7 @@ impl App {
     if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
       // 1. Purge any orphan cache rows whose files were deleted, then scan disk
       let _ = db.purge_missing_files();
+      #[cfg(not(test))]
       if let Some(root) = crate::core::paths::music_archive_dir() {
         crate::sources::lossless_relay::archiver::scan_and_sync_local_downloads(&db, &root);
       }
@@ -707,6 +711,7 @@ impl App {
     }
 
     if self.library.saved_tracks.pages.is_empty() {
+      self.track_table.tracks.clear();
       self.populate_saved_tracks_from_local_and_db();
       self.view.track_table_index = 0;
       return;
@@ -1800,6 +1805,7 @@ mod tests {
   fn reopening_liked_songs_drops_an_active_filter() {
     let (tx, rx) = channel();
     let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
+    app.active_source = crate::core::source::Source::Spotify;
     app.track_table.context = Some(TrackTableContext::SavedTracks);
     app.active_saved_track_filter = Some("track 0-1".to_string());
     app.track_table.tracks = vec![TrackInfo::from(&full_track(

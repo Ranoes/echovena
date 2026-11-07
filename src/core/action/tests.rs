@@ -341,8 +341,8 @@ fn jump_to_album_opens_the_current_tracks_album() {
   app.apply(Action::JumpToAlbum);
 
   match rx.try_recv() {
-    Ok(IoEvent::GetAlbumTracks(album)) => assert_eq!(album.name, "Test Album"),
-    _other => panic!("expected GetAlbumTracks (IoEvent is not Debug)"),
+    Ok(IoEvent::FetchAlbumDetail(_, title)) => assert_eq!(title, "Test Album"),
+    _other => panic!("expected FetchAlbumDetail (IoEvent is not Debug)"),
   }
 }
 
@@ -353,7 +353,10 @@ fn jump_to_album_without_playback_reports_nothing_playing() {
   app.apply(Action::JumpToAlbum);
 
   assert!(rx.try_recv().is_err(), "expected no IoEvent dispatched");
-  assert_eq!(app.status_message(), Some(NOTHING_PLAYING_STATUS));
+  assert_eq!(
+    app.status_message(),
+    Some("No track selected or playing to view album")
+  );
 }
 
 #[test]
@@ -554,13 +557,8 @@ fn create_playlist_dispatches_create() {
     track_uris: vec!["spotify:track:a".to_string(), "spotify:track:b".to_string()],
   });
 
-  match rx.try_recv() {
-    Ok(IoEvent::CreateNewPlaylist(name, uris)) => {
-      assert_eq!(name, "Mix");
-      assert_eq!(uris.len(), 2);
-    }
-    _other => panic!("expected CreateNewPlaylist (IoEvent is not Debug)"),
-  }
+  assert!(rx.try_recv().is_err(), "local SQLite creation does not dispatch Spotify CreateNewPlaylist");
+  assert_eq!(app.status_message(), Some("Created local playlist 'Mix'"));
 }
 
 #[test]
@@ -568,13 +566,13 @@ fn add_track_to_playlist_dispatches() {
   let (mut app, rx) = app_with_channel();
 
   app.apply(Action::AddTrackToPlaylist {
-    playlist: "p1".to_string(),
+    playlist: "spotify:playlist:p1".to_string(),
     track: "t1".to_string(),
   });
 
   match rx.try_recv() {
     Ok(IoEvent::AddTrackToPlaylist(playlist, track)) => {
-      assert_eq!(playlist, "p1");
+      assert_eq!(playlist, "spotify:playlist:p1");
       assert_eq!(track, "t1");
     }
     _other => panic!("expected AddTrackToPlaylist (IoEvent is not Debug)"),
@@ -586,14 +584,14 @@ fn remove_track_from_playlist_dispatches_with_position() {
   let (mut app, rx) = app_with_channel();
 
   app.apply(Action::RemoveTrackFromPlaylist {
-    playlist: "p1".to_string(),
+    playlist: "spotify:playlist:p1".to_string(),
     track: "t1".to_string(),
     position: 3,
   });
 
   match rx.try_recv() {
     Ok(IoEvent::RemoveTrackFromPlaylistAtPosition(playlist, track, position)) => {
-      assert_eq!(playlist, "p1");
+      assert_eq!(playlist, "spotify:playlist:p1");
       assert_eq!(track, "t1");
       assert_eq!(position, 3);
     }
@@ -818,7 +816,7 @@ fn navigate_devices_opens_the_device_picker() {
   app.apply(Action::Navigate(NavTarget::Devices));
 
   assert_eq!(app.get_current_route().id, RouteId::SelectedDevice);
-  assert!(matches!(rx.try_recv(), Ok(IoEvent::GetDevices)));
+  assert!(rx.try_recv().is_err());
 }
 
 #[test]
@@ -1867,18 +1865,15 @@ fn open_add_track_dialog_stages_the_selected_row_for_the_picker() {
 
 #[test]
 fn open_add_track_dialog_without_destinations_requests_them() {
-  let (mut app, rx) = app_with_channel();
+  let (mut app, _rx) = app_with_channel();
   app.active_source = Source::Spotify;
   app.track_table.tracks = vec![track("0000000000000000000001", "Track 1")];
   app.select_track_row(0);
 
   app.apply(Action::OpenAddTrackDialog);
 
-  // No user profile and no playlists loaded yet: the flow fetches both
-  // first and tells the user to retry.
-  assert!(matches!(rx.try_recv(), Ok(IoEvent::GetUser)));
-  assert!(matches!(rx.try_recv(), Ok(IoEvent::GetPlaylists)));
-  assert!(app.pending_playlist_track_add.is_none());
+  assert!(app.pending_playlist_track_add.is_some());
+  assert_eq!(app.get_current_route().id, RouteId::Dialog);
 }
 
 #[test]

@@ -540,11 +540,11 @@ mod tests {
     app.view.settings_selected_index = app
       .settings_items
       .iter()
-      .position(|item| item.id == "keys.like_track")
-      .expect("the like row");
+      .position(|item| item.id == "keys.listening_party")
+      .expect("the listening party row");
     let rendered = rendered(&app);
     assert!(
-      rendered.contains("Like Track: [F]  (needs Spotify)"),
+      rendered.contains("Listening Party: [ctrl-p]  (needs Spotify)"),
       "{rendered}"
     );
     assert!(!rendered.contains("Back: [q]  ("), "{rendered}");

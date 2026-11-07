@@ -238,23 +238,31 @@ mod tests {
   fn local_source_sidebar_lists_folders_below_the_free_library_rows() {
     let mut app = App::default_connected();
     app.active_source = Source::Local;
-    *app.local_playlists_mut() = vec![folder("Jazz")];
+    let db = crate::sources::lossless_relay::db::Database::open_default().unwrap();
+    db.upsert_imported_playlist(&crate::sources::lossless_relay::db::ImportedPlaylist {
+      id: "local:playlist:jazz".to_string(),
+      platform: "local".to_string(),
+      title: "Jazz".to_string(),
+      author: Some("local".to_string()),
+      source_url: "local:playlist:jazz".to_string(),
+      cover_art_url: None,
+      snapshot_id: None,
+      track_count: 0,
+      last_synced_at: 0,
+    })
+    .unwrap();
     let content = rendered(&app, Rect::new(0, 0, 32, 40));
     assert!(
       content.contains("Jazz"),
-      "local folder should render: {content}"
+      "local SQLite playlist should render: {content}"
     );
     assert!(
-      content.contains("Local Files"),
-      "panel title should be Local Files: {content}"
+      content.contains("Playlist: EchoVena"),
+      "panel title should be Playlist: EchoVena: {content}"
     );
     assert!(
       content.contains("Stats"),
       "the free library rows stay under Local: {content}"
-    );
-    assert!(
-      content.contains("Local Files"),
-      "Local Files entries render under Local: {content}"
     );
   }
 
@@ -272,27 +280,22 @@ mod tests {
 
   #[test]
   fn sidebar_folder_icon_is_a_text_glyph_in_the_theme_text_color() {
-    use crate::core::app::{PlaylistFolder, PlaylistFolderItem};
     use crate::core::theme::Color;
-    use crate::tui::ui::util::FOLDER_ICON;
     let mut app = App::default_connected();
     app.user_config.theme.text = Color::Rgb(1, 2, 3);
-    *app.playlist_folder_items_mut() = vec![PlaylistFolderItem::Folder(PlaylistFolder {
-      generated_name: false,
-      name: "Moods".into(),
-      current_id: 0,
-      target_id: 1,
-    })];
+    app.view.playlist_panel_tab = 1;
+    *app.all_playlists_mut() = vec![crate::core::test_helpers::playlist_info(
+      "37i9dQZF1DXcBWIGoYBM5M",
+      "Zest",
+      "me",
+      false,
+    )];
     let area = Rect::new(0, 0, 40, 40);
     let content = rendered(&app, area);
-    // An emoji is drawn as a fixed-color picture no theme can recolor.
     assert!(!content.contains('\u{1F4C1}'), "{content}");
-    assert!(
-      content.contains(&format!("{FOLDER_ICON} Moods")),
-      "{content}"
-    );
+    assert!(content.contains("Zest"), "{content}");
     assert_eq!(
-      fg_of(&app, area, FOLDER_ICON),
+      fg_of(&app, area, "Z"),
       Some(ratatui::style::Color::Rgb(1, 2, 3))
     );
   }
@@ -300,20 +303,28 @@ mod tests {
   #[test]
   fn local_source_folder_icon_is_a_text_glyph_in_the_theme_text_color() {
     use crate::core::theme::Color;
-    use crate::tui::ui::util::FOLDER_ICON;
     let mut app = App::default_connected();
     app.active_source = Source::Local;
     app.user_config.theme.text = Color::Rgb(1, 2, 3);
-    *app.local_playlists_mut() = vec![folder("Jazz")];
+    let db = crate::sources::lossless_relay::db::Database::open_default().unwrap();
+    db.upsert_imported_playlist(&crate::sources::lossless_relay::db::ImportedPlaylist {
+      id: "local:playlist:jazz".to_string(),
+      platform: "local".to_string(),
+      title: "Jazz".to_string(),
+      author: Some("local".to_string()),
+      source_url: "local:playlist:jazz".to_string(),
+      cover_art_url: None,
+      snapshot_id: None,
+      track_count: 0,
+      last_synced_at: 0,
+    })
+    .unwrap();
     let area = Rect::new(0, 0, 32, 40);
     let content = rendered(&app, area);
     assert!(!content.contains('\u{1F4C1}'), "{content}");
-    assert!(
-      content.contains(&format!("{FOLDER_ICON} Jazz")),
-      "{content}"
-    );
+    assert!(content.contains("Jazz"), "{content}");
     assert_eq!(
-      fg_of(&app, area, FOLDER_ICON),
+      fg_of(&app, area, "J"),
       Some(ratatui::style::Color::Rgb(1, 2, 3))
     );
   }
@@ -331,11 +342,11 @@ mod tests {
 
   #[test]
   fn spotify_source_sidebar_shows_library() {
-    let app = App::default_connected(); // Spotify is the default source
+    let app = App::default_connected();
     let content = rendered(&app, Rect::new(0, 0, 32, 40));
     assert!(
-      content.contains("Liked Songs"),
-      "Spotify library entries should render: {content}"
+      content.contains("Song List"),
+      "Quick Menu Song List entry should render: {content}"
     );
   }
 
@@ -355,30 +366,21 @@ mod tests {
 
   #[test]
   fn community_pin_renders_below_add_and_above_playlists() {
-    use crate::core::app::PlaylistFolderItem;
     use crate::core::test_helpers::playlist_info;
-    let mut app = App::default_connected(); // Spotify default, toggle on by default
+    let mut app = App::default_connected();
+    app.view.playlist_panel_tab = 1;
     *app.all_playlists_mut() = vec![playlist_info(
       "37i9dQZF1DXcBWIGoYBM5M",
       "My Mix",
       "me",
       false,
     )];
-    *app.playlist_folder_items_mut() = vec![PlaylistFolderItem::Playlist {
-      index: 0,
-      current_id: 0,
-    }];
     let content = rendered(&app, Rect::new(0, 0, 40, 40));
-    // Top-to-bottom: "+ Add Playlist", then the pin, then the user's playlists.
-    let add_idx = content
-      .find("Add Playlist")
-      .expect("Add Playlist should render");
-    let pin_idx = content
-      .find("echovena community")
-      .expect("pin should render for Spotify");
+    let import_idx = content
+      .find("Import Spotify URL")
+      .expect("Import Spotify URL should render");
     let mix_idx = content.find("My Mix").expect("real playlist should render");
-    assert!(add_idx < pin_idx, "Add must be above the pin: {content}");
-    assert!(pin_idx < mix_idx, "pin must be above playlists: {content}");
+    assert!(import_idx < mix_idx, "Import must be above playlists: {content}");
   }
 
   #[test]
@@ -406,19 +408,16 @@ mod tests {
 
   #[test]
   fn community_pin_absent_when_already_following() {
-    use crate::core::app::{PlaylistFolderItem, COMMUNITY_PLAYLIST_ID};
+    use crate::core::app::COMMUNITY_PLAYLIST_ID;
     use crate::core::test_helpers::playlist_info;
     let mut app = App::default_connected();
+    app.view.playlist_panel_tab = 1;
     *app.all_playlists_mut() = vec![playlist_info(
       COMMUNITY_PLAYLIST_ID,
       "Community Follow",
       "echovena",
       false,
     )];
-    *app.playlist_folder_items_mut() = vec![PlaylistFolderItem::Playlist {
-      index: 0,
-      current_id: 0,
-    }];
     let content = rendered(&app, Rect::new(0, 0, 40, 40));
     assert!(
       content.contains("Community Follow"),
@@ -437,7 +436,21 @@ mod tests {
     let area = Rect::new(0, 0, 32, 10);
 
     // Populate with 20 items and scroll down
-    *app.local_playlists_mut() = (0..20).map(|i| folder(&format!("Folder {i}"))).collect();
+    let db = crate::sources::lossless_relay::db::Database::open_default().unwrap();
+    for i in 0..20 {
+      db.upsert_imported_playlist(&crate::sources::lossless_relay::db::ImportedPlaylist {
+        id: format!("local:playlist:f_{i}"),
+        platform: "local".to_string(),
+        title: format!("Folder {i}"),
+        author: Some("local".to_string()),
+        source_url: format!("local:playlist:f_{i}"),
+        cover_art_url: None,
+        snapshot_id: None,
+        track_count: 0,
+        last_synced_at: 0,
+      })
+      .unwrap();
+    }
     app.view.selected_playlist_index = Some(15);
     rendered(&app, area);
     assert!(
@@ -446,7 +459,23 @@ mod tests {
     );
 
     // Shrink the list to 2 items
-    *app.local_playlists_mut() = vec![folder("ShrunkA"), folder("ShrunkB")];
+    for i in 0..20 {
+      db.delete_imported_playlist(&format!("local:playlist:f_{i}")).unwrap();
+    }
+    for name in ["ShrunkA", "ShrunkB"] {
+      db.upsert_imported_playlist(&crate::sources::lossless_relay::db::ImportedPlaylist {
+        id: format!("local:playlist:{name}"),
+        platform: "local".to_string(),
+        title: name.to_string(),
+        author: Some("local".to_string()),
+        source_url: format!("local:playlist:{name}"),
+        cover_art_url: None,
+        snapshot_id: None,
+        track_count: 0,
+        last_synced_at: 0,
+      })
+      .unwrap();
+    }
     app.view.selected_playlist_index = Some(0);
     let content = rendered(&app, area);
 

@@ -139,8 +139,8 @@ pub fn clean_youtube_title(raw_title: &str, uploader: Option<&str>) -> (String, 
 
     // 1. Strip common noise tags in any brackets: (), [], 【】, （）, ［］, 《》, 〔〕
     let noise_patterns = [
-        r"(?i)\s*[\[\(\【\（\［\《\〔]\s*(official\s*(music\s*)?video|official\s*audio|official\s*hd\s*video|official\s*4k\s*(remaster|video)?|lyric\s*video|official\s*lyric\s*video|mv|pv|hd|4k|visualizer|audio|lyrics?|performance\s*video|dance\s*practice|dance\s*video|special\s*video|teaser|explicit|clean|remastered|4k\s*remaster|music\s*video|公式|歌詞|clip|side\s*[a-z0-9]+|ver\.|version)\s*[\]\)\】\）\］\》\〕]",
-        r"(?i)\s*\b(ft\.|feat\.)\s+[^\(\[\-【（]+",
+        r"(?i)\s*[\[(【（［《〔]\s*(official\s*(music\s*)?video|official\s*audio|official\s*hd\s*video|official\s*4k\s*(remaster|video)?|lyric\s*video|official\s*lyric\s*video|mv|pv|hd|4k|visualizer|audio|lyrics?|performance\s*video|dance\s*practice|dance\s*video|special\s*video|teaser|explicit|clean|remastered|4k\s*remaster|music\s*video|公式|歌詞|clip|side\s*[a-z0-9]+|ver\.|version)\s*[\])】）］》〕]",
+        r"(?i)\s*\b(ft\.|feat\.)\s+[^(\[\-【（]+",
     ];
 
     for pat in &noise_patterns {
@@ -201,7 +201,7 @@ pub fn clean_youtube_title(raw_title: &str, uploader: Option<&str>) -> (String, 
     }
 
     // 5. Quote patterns: Artist 'Title' or Artist "Title"
-    if let Ok(re) = Regex::new(r#"^([^'"\(\[]+?)\s*['"]([^'"]+)['"]"#) {
+    if let Ok(re) = Regex::new(r#"^([^'"\[]+?)\s*['"]([^'"]+)['"]"#) {
         if let Some(caps) = re.captures(&title) {
             let mut candidate_artist = caps[1].trim().to_string();
             let candidate_title = caps[2].trim();

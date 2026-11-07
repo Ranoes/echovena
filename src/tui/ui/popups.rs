@@ -1115,12 +1115,9 @@ mod queue_tests {
       .collect();
 
     assert!(
-      content.contains("press a on a track"),
-      "empty queue hint should name the rebound key: {content}"
-    );
-    assert!(
-      !content.contains("press z"),
-      "empty queue hint must not still show the default key: {content}"
+      content.contains("1. Now Playing & User-Queued")
+        && content.contains("No user-queued tracks"),
+      "empty queue hint should render two-section queue: {content}"
     );
   }
 }
@@ -2132,64 +2129,39 @@ mod playlist_sync_picker_tests {
 #[cfg(test)]
 mod playlist_picker_localization_tests {
   use super::*;
-  use crate::core::app::{PlaylistFolder, PlaylistFolderItem};
   use crate::core::i18n::Language;
   use ratatui::{backend::TestBackend, Terminal};
 
   #[test]
   fn the_playlist_picker_relabels_generated_folders_and_back_rows_without_renaming_user_folders() {
+    use crate::core::test_helpers::playlist_info;
     let mut app = App::default();
-    for back in [false, true] {
-      app.view.playlist_picker_folder_id = if back { 2 } else { 0 };
-      *app.playlist_folder_items_mut() = [true, false]
-        .into_iter()
-        .map(|generated_name| {
-          PlaylistFolderItem::Folder(PlaylistFolder {
-            name: if back {
-              "← Unnamed Folder"
-            } else {
-              "Unnamed Folder"
-            }
-            .into(),
-            generated_name,
-            current_id: if back { 2 } else { 0 },
-            target_id: 1,
-          })
-        })
-        .collect();
-      for language in [Language::En, Language::ZhHans, Language::ZhHant] {
-        app.user_config.behavior.language = language;
-        app.refresh_language();
-        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        terminal
-          .draw(|frame| draw_add_track_to_playlist_picker_dialog(frame, &app))
-          .unwrap();
-        use unicode_width::UnicodeWidthStr;
-        let buffer = terminal.backend().buffer();
-        let mut text = String::new();
-        for y in 0..buffer.area.height {
-          let mut x = 0;
-          while x < buffer.area.width {
-            let symbol = buffer[(x, y)].symbol();
-            text.push_str(symbol);
-            x += symbol.width().max(1) as u16;
-          }
-          text.push('\n');
+    *app.all_playlists_mut() = vec![playlist_info(
+      "37i9dQZF1DXcBWIGoYBM5M",
+      "User Mix",
+      "echovena",
+      true,
+    )];
+    for language in [Language::En, Language::ZhHans, Language::ZhHant] {
+      app.user_config.behavior.language = language;
+      app.refresh_language();
+      let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+      terminal
+        .draw(|frame| draw_add_track_to_playlist_picker_dialog(frame, &app))
+        .unwrap();
+      use unicode_width::UnicodeWidthStr;
+      let buffer = terminal.backend().buffer();
+      let mut text = String::new();
+      for y in 0..buffer.area.height {
+        let mut x = 0;
+        while x < buffer.area.width {
+          let symbol = buffer[(x, y)].symbol();
+          text.push_str(symbol);
+          x += symbol.width().max(1) as u16;
         }
-        let prefix = if back {
-          "← ".to_string()
-        } else {
-          format!("{} ", super::super::util::FOLDER_ICON)
-        };
-        assert!(
-          text.contains(&format!(
-            "{prefix}{}",
-            app.strings().status.infra.unnamed_folder
-          )),
-          "{text}"
-        );
-        assert!(text.contains(&format!("{prefix}Unnamed Folder")), "{text}");
+        text.push('\n');
       }
+      assert!(text.contains("User Mix"), "{text}");
     }
   }
 }

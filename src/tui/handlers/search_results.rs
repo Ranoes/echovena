@@ -1127,8 +1127,8 @@ mod tests {
     // Enter plays the highlighted station via the shared StartPlayback path.
     handler(Key::Enter, &mut app);
     match rx.try_recv().unwrap() {
-      IoEvent::StartPlayback(None, Some(uris), Some(1)) => {
-        assert_eq!(uris[1], "radio:https://b.example/two");
+      IoEvent::StartPlayback(None, Some(uris), Some(0)) => {
+        assert_eq!(uris, vec!["radio:https://b.example/two".to_string()]);
       }
       _ => panic!("expected a StartPlayback of the station uris"),
     }

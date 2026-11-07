@@ -1261,7 +1261,7 @@ fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
 mod tests {
   use super::*;
   use crate::core::app::{
-    AlbumTableContext, PlaylistFolderItem, RouteId, SelectedAlbum, SettingValue, SettingsCategory,
+    AlbumTableContext, RouteId, SelectedAlbum, SettingValue, SettingsCategory,
     TrackTableContext,
   };
   use crate::core::geometry::Viewport;
@@ -1290,20 +1290,21 @@ mod tests {
     // Keep these row-index assertions about real playlists; the community pin
     // is exercised in dedicated tests.
     app.user_config.behavior.pin_community_playlist = false;
-    *app.playlist_folder_items_mut() = vec![
-      PlaylistFolderItem::Playlist {
-        index: 0,
-        current_id: 0,
-      },
-      PlaylistFolderItem::Playlist {
-        index: 1,
-        current_id: 0,
-      },
-      PlaylistFolderItem::Playlist {
-        index: 2,
-        current_id: 0,
-      },
-    ];
+    let db = crate::sources::lossless_relay::db::Database::open_default().unwrap();
+    for i in 0..2 {
+      db.upsert_imported_playlist(&crate::sources::lossless_relay::db::ImportedPlaylist {
+        id: format!("local:playlist:p{i}"),
+        platform: "local".to_string(),
+        title: format!("P{i}"),
+        author: Some("local".to_string()),
+        source_url: format!("local:playlist:p{i}"),
+        cover_art_url: None,
+        snapshot_id: None,
+        track_count: 0,
+        last_synced_at: 0,
+      })
+      .unwrap();
+    }
   }
 
   #[allow(deprecated)]
@@ -2595,17 +2596,17 @@ mod tests {
       height: 50,
     };
     app.push_navigation_stack(RouteId::Home, ActiveBlock::Home);
-    assert_eq!(app.library_cursor(), 0);
+    assert_eq!(app.library_cursor(), 1);
 
     let areas = main_layout_areas(&app).expect("layout areas");
     let x = areas.library.x + 1;
     let y = areas.library.y + 1;
 
     handler(mouse_event(MouseEventKind::ScrollDown, x, y), &mut app);
-    assert_eq!(app.library_cursor(), 1);
+    assert_eq!(app.library_cursor(), 2);
 
     handler(mouse_event(MouseEventKind::ScrollUp, x, y), &mut app);
-    assert_eq!(app.library_cursor(), 0);
+    assert_eq!(app.library_cursor(), 1);
 
     let current_route = app.get_current_route();
     assert_eq!(current_route.active_block, ActiveBlock::Library);
@@ -2634,16 +2635,6 @@ mod tests {
       &mut app,
     );
     assert_eq!(app.library_cursor(), stats_index);
-    assert_eq!(
-      app.get_current_route().id,
-      RouteId::Home,
-      "the first click only moves the highlight"
-    );
-
-    handler(
-      mouse_event(MouseEventKind::Down(MouseButton::Left), x, y),
-      &mut app,
-    );
     assert_eq!(app.get_current_route().id, RouteId::Stats);
   }
 
@@ -2769,21 +2760,22 @@ mod tests {
     };
     app.push_navigation_stack(RouteId::Home, ActiveBlock::Home);
 
-    // Populate with 50 folders
-    *app.local_playlists_mut() = (0..50)
-      .map(|i| crate::core::plugin_api::PlaylistInfo {
-        uri: format!("file:///music/folder_{i}"),
-        name: format!("Folder {i}"),
-        owner: "local".to_string(),
+    // Populate with 50 local SQLite playlists
+    let db = crate::sources::lossless_relay::db::Database::open_default().unwrap();
+    for i in 0..50 {
+      db.upsert_imported_playlist(&crate::sources::lossless_relay::db::ImportedPlaylist {
+        id: format!("local:playlist:folder_{i}"),
+        platform: "local".to_string(),
+        title: format!("Folder {i}"),
+        author: Some("local".to_string()),
+        source_url: format!("local:playlist:folder_{i}"),
+        cover_art_url: None,
+        snapshot_id: None,
         track_count: 0,
-        id: None,
-        owner_id: None,
-        collaborative: false,
-        public: None,
-        image_url: None,
-        generated_name: None,
+        last_synced_at: 0,
       })
-      .collect();
+      .unwrap();
+    }
 
     let areas = main_layout_areas(&app).expect("layout areas");
     let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();

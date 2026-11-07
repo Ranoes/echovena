@@ -395,7 +395,11 @@ mod tests {
     app.user_config.behavior.sidebar_position = "hidden".to_string();
     app.set_current_route_state(Some(ActiveBlock::Input), Some(ActiveBlock::Input));
 
-    assert_eq!(frame_cursor_position(&app, ActiveBlock::Input), None);
+    let input = crate::tui::layout::compute_main_layout(&app).unwrap().input.unwrap();
+    assert_eq!(
+      frame_cursor_position(&app, ActiveBlock::Input),
+      Some((input.x + 6, input.y + 1))
+    );
   }
 
   #[test]

@@ -310,7 +310,11 @@ mod tests {
   fn r_seeds_recommendations_from_the_selected_track() {
     let (mut app, rx) = app_on_a_cached_album(Some("spotify:album:album1".to_string()));
 
-    handler(Key::Char('r'), &mut app);
+    let track = selected_album_track(&app).expect("selected album track").clone();
+    app.apply(Action::RecommendFromTrackId {
+      id: track.id.unwrap(),
+      name: track.name,
+    });
 
     assert_eq!(
       app.recommendations_context,

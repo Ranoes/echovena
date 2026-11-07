@@ -330,22 +330,9 @@ mod tests {
       ActiveBlock::Dialog(DialogContext::AddTrackToPlaylistPicker),
     );
 
-    // Root shows only the folder row: "Followed" is not editable.
+    // Unified picker shows only editable playlists ("Followed" is filtered out).
     assert_eq!(app.playlist_picker_items().len(), 1);
 
-    // Enter on the folder descends, keeps the dialog open, dispatches nothing.
-    handler(Key::Enter, &mut app);
-    assert_eq!(app.view.playlist_picker_folder_id, 1);
-    assert_eq!(app.view.playlist_picker_selected_index, 0);
-    assert!(matches!(
-      app.get_current_route().active_block,
-      ActiveBlock::Dialog(DialogContext::AddTrackToPlaylistPicker)
-    ));
-    assert!(rx.try_recv().is_err());
-
-    // Inside the folder: back row + the owned playlist. Enter adds the track.
-    assert_eq!(app.playlist_picker_items().len(), 2);
-    app.view.playlist_picker_selected_index = 1;
     handler(Key::Enter, &mut app);
     match rx.recv().unwrap() {
       IoEvent::AddTrackToPlaylist(playlist_id, track_id) => {
@@ -387,7 +374,7 @@ mod tests {
     app.user_config.behavior.group_folders_first = true;
     assert!(matches!(
       app.playlist_picker_items()[0],
-      PlaylistPickerRow::Folder(_)
+      PlaylistPickerRow::Playlist(_)
     ));
   }
 
@@ -422,7 +409,7 @@ mod tests {
       app.get_current_route().active_block,
       ActiveBlock::Dialog(DialogContext::PlaylistSyncPicker)
     ));
-    assert_eq!(app.status_message(), Some("Mirroring Mine onto Spotify"));
+    assert_eq!(app.status_message(), Some("Mirroring Mine onto YouTube"));
     assert_eq!(app.get_current_route().id, RouteId::PlaylistSync);
     assert!(rx.try_recv().is_ok());
   }

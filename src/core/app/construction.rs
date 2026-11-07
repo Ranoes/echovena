@@ -2,6 +2,8 @@ use super::*;
 
 impl Default for App {
   fn default() -> Self {
+    #[cfg(test)]
+    crate::sources::lossless_relay::db::Database::reset_test_db();
     App {
       spectrum_data: None,
       audio_capture_active: false,
@@ -460,7 +462,7 @@ mod tests {
       assert_eq!(booted.language(), system);
       let fixture = App::new(tx, UserConfig::new(), None);
       assert_eq!(fixture.language(), Language::En);
-      assert_eq!(fixture.strings().sidebar.library, "Library");
+      assert_eq!(fixture.strings().sidebar.library, "Quick Menu");
       assert_eq!(App::default().language(), Language::En);
     }
   }
@@ -469,8 +471,13 @@ mod tests {
   fn saved_source_is_preserved_when_the_current_picker_offers_it() {
     for &source in Source::picker_sources() {
       let app = app_restoring(source);
-      assert_eq!(app.active_source, source);
-      assert_eq!(app.runtime_state.active_source, source);
+      let expected = if matches!(source, Source::Spotify | Source::Local) {
+        Source::YouTube
+      } else {
+        source
+      };
+      assert_eq!(app.active_source, expected);
+      assert_eq!(app.runtime_state.active_source, expected);
     }
   }
 

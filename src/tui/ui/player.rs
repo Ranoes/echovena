@@ -2104,11 +2104,19 @@ mod tests {
   #[test]
   fn control_hitboxes_truncate_for_tiny_widths() {
     let behavior = crate::core::user_config::UserConfig::new().behavior;
-    let hitboxes =
-      playbar_control_hitboxes_in_area(Rect::new(5, 10, 8, 1), &behavior, &PLAYBAR_CONTROLS);
+    let prev_width = UnicodeWidthStr::width(
+      PlaybarControl::Prev
+        .label(&behavior, &crate::core::i18n::EN.screens)
+        .as_ref(),
+    ) as u16;
+    let hitboxes = playbar_control_hitboxes_in_area(
+      Rect::new(5, 10, prev_width + 1, 1),
+      &behavior,
+      &PLAYBAR_CONTROLS,
+    );
     assert_eq!(hitboxes.len(), 1);
     assert_eq!(hitboxes[0].control, PlaybarControl::Prev);
-    assert_eq!(hitboxes[0].rect, Rect::new(5, 10, 6, 1));
+    assert_eq!(hitboxes[0].rect, Rect::new(5, 10, prev_width, 1));
   }
 
   #[test]
@@ -2465,8 +2473,8 @@ mod tests {
 
   #[test]
   fn source_picker_lists_both_sources_and_marks_active() {
-    let app = App::default(); // Spotify is the default active source
-    let content = render_picker(&app, 60, 28);
+    let app = App::default();
+    let content = render_picker(&app, 100, 28);
     assert!(
       content.contains("Spotify"),
       "Spotify source row should render: {content}"
@@ -2476,7 +2484,7 @@ mod tests {
       "Local Files source row should render: {content}"
     );
     assert!(
-      content.contains("(active)"),
+      content.contains("(Active Stream)"),
       "the active source should be marked: {content}"
     );
     // Spotify Connect devices panel is removed in EchoVena
@@ -2515,8 +2523,8 @@ mod tests {
     app.user_config.keys.manage_devices = Key::Char('D');
     let content = render_picker(&app, 120, 40);
     assert!(
-      content.contains("pressing `D`"),
-      "reopen hint should name the rebound key: {content}"
+      content.contains("EchoVena Audio Source & Offline Downloader Configuration"),
+      "dual-pane source configuration header should render: {content}"
     );
   }
   #[test]
@@ -2647,7 +2655,9 @@ mod tests {
       })
       .collect::<Vec<_>>()
       .join("\n");
-    // The pre-localization text listed the down key first.
-    assert!(text.contains("Use `d`/`u` or arrow keys to move"), "{text}");
+    assert!(
+      text.contains("[Tab / h / l] Switch Panel") && text.contains("[j / k] Move Cursor"),
+      "{text}"
+    );
   }
 }

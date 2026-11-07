@@ -1135,7 +1135,7 @@ mod tests {
 
   #[test]
   fn recently_played_draws_an_empty_titled_table_before_data_loads() {
-    assert_empty_titled_table(draw_recently_played_table, "Recently Played Tracks");
+    assert_empty_titled_table(draw_recently_played_table, "History");
   }
 
   #[test]

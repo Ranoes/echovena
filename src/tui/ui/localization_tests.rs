@@ -59,22 +59,21 @@ fn buffer_text(buffer: &Buffer) -> String {
 
 #[test]
 fn chinese_sidebar_labels_fit_practical_narrow_widths_and_keep_source_gates() {
-  for (language, title, liked, sync) in [
-    (Language::ZhHans, "音乐库", "喜欢的歌曲", "播放列表同步"),
-    (Language::ZhHant, "音樂庫", "喜歡的歌曲", "播放清單同步"),
+  for (language, title, discover, stats) in [
+    (Language::ZhHans, "音乐库", "发现", "统计"),
+    (Language::ZhHant, "音樂庫", "探索", "統計"),
   ] {
     for width in [24, 40] {
       let mut app = localized_app(language, true);
       let text = buffer_text(&render_area(&app, width, 15, library::draw_library_block));
-      for expected in [title, liked, sync] {
+      for expected in [title, discover, stats] {
         assert!(text.contains(expected), "{language:?}/{width}: {text}");
       }
       assert!(!text.contains("Liked Songs"), "{text}");
       app.active_source = Source::Local;
       let text = buffer_text(&render_area(&app, width, 15, library::draw_library_block));
       assert!(text.contains(title), "{text}");
-      assert!(text.contains(sync), "{text}");
-      assert!(!text.contains(liked), "Spotify-only row leaked: {text}");
+      assert!(text.contains(stats), "{text}");
     }
   }
 }
@@ -84,12 +83,7 @@ fn chinese_sidebar_empty_sources_name_the_rebound_key_and_keep_products() {
   for language in [Language::ZhHans, Language::ZhHant] {
     let mut app = localized_app(language, false);
     app.user_config.keys.manage_devices = Key::Char('Z');
-    for source in [
-      Source::Local,
-      Source::AppleMusic,
-      Source::Subsonic,
-      Source::Qobuz,
-    ] {
+    for source in [Source::AppleMusic, Source::Subsonic, Source::Qobuz] {
       app.active_source = source;
       let text = buffer_text(&render_area(&app, 80, 6, library::draw_playlist_block));
       assert!(text.contains("`Z`"), "{language:?}/{source:?}: {text}");
@@ -107,11 +101,8 @@ fn chinese_sidebar_empty_sources_name_the_rebound_key_and_keep_products() {
     assert!(text.contains(app.strings().sidebar.empty_radio), "{text}");
     app.active_source = Source::YouTube;
     let text = buffer_text(&render_area(&app, 40, 6, library::draw_playlist_block));
-    assert!(
-      text.contains(app.strings().sidebar.youtube_playlists),
-      "{text}"
-    );
-    assert!(text.contains(app.strings().sidebar.new_playlist), "{text}");
+    assert!(text.contains("Playlist: EchoVena"), "{text}");
+    assert!(text.contains("+ Add Playlist"), "{text}");
   }
 }
 
@@ -119,8 +110,8 @@ fn chinese_sidebar_empty_sources_name_the_rebound_key_and_keep_products() {
 fn sidebar_preserves_user_names_that_look_like_template_placeholders() {
   for language in [Language::ZhHans, Language::ZhHant] {
     let mut app = localized_app(language, false);
-    app.active_source = Source::Local;
-    *app.local_playlists_mut() = vec![playlist_info("folder", "夜航{key}Mix", "User", false)];
+    app.active_source = Source::Subsonic;
+    *app.subsonic_playlists_mut() = vec![playlist_info("folder", "夜航{key}Mix", "User", false)];
     for width in [24, 40] {
       let text = buffer_text(&render_area(&app, width, 6, library::draw_playlist_block));
       assert!(
@@ -395,7 +386,6 @@ fn chinese_empty_main_tables_show_translated_titles_at_narrow_widths() {
 
 #[test]
 fn cached_generated_names_change_in_both_terminal_library_views() {
-  use crate::core::app::{PlaylistFolder, PlaylistFolderItem};
   use crate::core::plugin_api::GeneratedPlaylistName;
   let mut app = localized_app(Language::En, false);
   app.active_source = Source::Local;
@@ -405,41 +395,11 @@ fn cached_generated_names_change_in_both_terminal_library_views() {
   for language in [Language::En, Language::ZhHans, Language::ZhHant] {
     app.user_config.behavior.language = language;
     app.refresh_language();
-    for draw in [
-      library::draw_playlist_block as AreaRenderer,
-      super::tables::draw_local_browser,
-    ] {
-      let text = buffer_text(&render_area(&app, 60, 15, draw));
-      assert!(
-        text.contains(app.strings().status.infra.local_root_folder),
-        "{text}"
-      );
-      assert!(text.contains("(root)"), "{text}");
-    }
-  }
-  app.active_source = Source::Spotify;
-  *app.playlist_folder_items_mut() = vec![
-    PlaylistFolderItem::Folder(PlaylistFolder {
-      name: "Unnamed Folder".into(),
-      generated_name: true,
-      current_id: 0,
-      target_id: 1,
-    }),
-    PlaylistFolderItem::Folder(PlaylistFolder {
-      name: "Unnamed Folder".into(),
-      generated_name: false,
-      current_id: 0,
-      target_id: 2,
-    }),
-  ];
-  for language in [Language::En, Language::ZhHans, Language::ZhHant] {
-    app.user_config.behavior.language = language;
-    app.refresh_language();
-    let text = buffer_text(&render_area(&app, 60, 15, library::draw_playlist_block));
+    let text = buffer_text(&render_area(&app, 60, 15, super::tables::draw_local_browser));
     assert!(
-      text.contains(app.strings().status.infra.unnamed_folder),
+      text.contains(app.strings().status.infra.local_root_folder),
       "{text}"
     );
-    assert!(text.contains("Unnamed Folder"), "{text}");
+    assert!(text.contains("(root)"), "{text}");
   }
 }
