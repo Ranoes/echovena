@@ -791,7 +791,7 @@ fn draw_table(
   highlight_state: (bool, bool),
 ) {
   let selected_style = get_color(highlight_state, app.user_config.theme)
-    .add_modifier(Modifier::BOLD | Modifier::REVERSED);
+    .add_modifier(app.user_config.behavior.emphasis(Modifier::BOLD));
 
   let track_playing_index = app.current_playback_context.as_ref().and_then(|ctx| {
     ctx.item.as_ref().and_then(|item| match item {

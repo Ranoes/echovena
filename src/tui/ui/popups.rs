@@ -147,8 +147,7 @@ pub fn draw_help_menu(f: &mut Frame<'_>, app: &App) {
         format!(" [{}] ", cat.label()),
         Style::default()
           .fg(theme.selected.into())
-          .add_modifier(Modifier::BOLD)
-          .add_modifier(Modifier::REVERSED),
+          .add_modifier(Modifier::BOLD),
       ));
     } else {
       tab_spans.push(Span::styled(
@@ -772,8 +771,7 @@ pub fn draw_queue(f: &mut Frame<'_>, app: &App) {
     .highlight_style(
       Style::default()
         .fg(theme.selected.into())
-        .add_modifier(Modifier::BOLD)
-        .add_modifier(Modifier::REVERSED),
+        .add_modifier(Modifier::BOLD),
     )
     .highlight_symbol("▶ ");
   f.render_stateful_widget(sec1_list, sec1_area, &mut sec1_state);
@@ -823,8 +821,7 @@ pub fn draw_queue(f: &mut Frame<'_>, app: &App) {
     .highlight_style(
       Style::default()
         .fg(theme.selected.into())
-        .add_modifier(Modifier::BOLD)
-        .add_modifier(Modifier::REVERSED),
+        .add_modifier(Modifier::BOLD),
     )
     .highlight_symbol("▶ ");
   f.render_stateful_widget(sec2_list, sec2_area, &mut sec2_state);
@@ -1380,7 +1377,11 @@ fn draw_add_track_to_playlist_picker_dialog(f: &mut Frame<'_>, app: &App) {
 
     let list = List::new(items)
       .style(app.user_config.theme.base_style())
-      .highlight_style(Style::default().fg(app.user_config.theme.hovered.into()))
+      .highlight_style(
+        Style::default()
+          .fg(app.user_config.theme.selected.into())
+          .add_modifier(app.user_config.behavior.emphasis(Modifier::BOLD)),
+      )
       .highlight_symbol("▶ ");
 
     f.render_stateful_widget(list, vchunks[1], &mut list_state);
@@ -1450,7 +1451,11 @@ fn draw_playlist_sync_picker_dialog(f: &mut Frame<'_>, app: &App) {
 
     let list = List::new(items)
       .style(app.user_config.theme.base_style())
-      .highlight_style(Style::default().fg(app.user_config.theme.hovered.into()))
+      .highlight_style(
+        Style::default()
+          .fg(app.user_config.theme.selected.into())
+          .add_modifier(app.user_config.behavior.emphasis(Modifier::BOLD)),
+      )
       .highlight_symbol("▶ ");
 
     f.render_stateful_widget(list, vchunks[1], &mut list_state);
@@ -1743,11 +1748,11 @@ pub fn draw_sort_menu(f: &mut Frame<'_>, app: &App) {
     )
     .highlight_style(
       Style::default()
-        .fg(app.user_config.theme.active.into())
+        .fg(app.user_config.theme.selected.into())
         .add_modifier(app.user_config.behavior.emphasis(Modifier::BOLD)),
     )
     .highlight_symbol(
-      Line::from("▶ ").style(Style::default().fg(app.user_config.theme.active.into())),
+      Line::from("▶ ").style(Style::default().fg(app.user_config.theme.selected.into())),
     );
 
   let mut state = ListState::default();

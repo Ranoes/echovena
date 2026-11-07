@@ -207,7 +207,7 @@ fn draw_synced_playlists(f: &mut Frame<'_>, app: &App, area: Rect, highlight_sta
         }
 
         let item_style = if is_selected {
-          Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD).add_modifier(Modifier::REVERSED)
+          Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD)
         } else {
           Style::default()
         };

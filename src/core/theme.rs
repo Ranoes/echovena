@@ -641,42 +641,42 @@ impl ThemePreset {
       ThemePreset::Ayu => Theme {
         analysis_bar: Color::Rgb(115, 208, 255),      // Ayu Mirage Blue #73D0FF
         analysis_bar_text: Color::Rgb(204, 202, 194), // Ayu Mirage Text #CCCAC2
-        active: Color::Rgb(255, 204, 102),            // Ayu Mirage Gold #FFCC66
-        banner: Color::Rgb(255, 167, 89),             // Ayu Mirage Orange #FFA759
+        active: Color::Rgb(255, 167, 89),             // Ayu Orange #FFA759
+        banner: Color::Rgb(255, 167, 89),             // Ayu Orange #FFA759
         error_border: Color::Rgb(242, 135, 121),      // Ayu Mirage Red #F28779
         error_text: Color::Rgb(242, 135, 121),        // Ayu Mirage Red #F28779
-        hint: Color::Rgb(255, 167, 89),               // Ayu Mirage Orange #FFA759
-        hovered: Color::Rgb(255, 213, 128),           // Ayu Mirage Amber #FFD580
+        hint: Color::Rgb(255, 213, 128),              // Ayu Amber #FFD580
+        hovered: Color::Rgb(255, 213, 128),           // Ayu Amber #FFD580
         inactive: Color::Rgb(92, 103, 115),           // Ayu Mirage Comment #5C6773
-        playbar_background: Color::Rgb(36, 41, 54),   // Ayu Mirage Surface #242936
-        playbar_progress: Color::Rgb(186, 230, 126),  // Ayu Mirage Green #BAE67E
+        playbar_background: Color::Reset,             // Terminal native / transparent
+        playbar_progress: Color::Rgb(255, 167, 89),   // Ayu Orange #FFA759
         playbar_progress_text: Color::Rgb(255, 255, 255),
         playbar_text: Color::Rgb(204, 202, 194),      // Ayu Mirage Text #CCCAC2
-        selected: Color::Rgb(115, 208, 255),          // Ayu Mirage Blue #73D0FF
+        selected: Color::Rgb(255, 167, 89),           // Ayu Orange #FFA759
         text: Color::Rgb(204, 202, 194),              // Ayu Mirage Text #CCCAC2
-        background: Color::Rgb(31, 36, 48),           // Ayu Mirage Canvas #1F2430
-        header: Color::Rgb(255, 204, 102),            // Ayu Mirage Gold #FFCC66
-        highlighted_lyrics: Color::Rgb(255, 204, 102), // Ayu Mirage Gold #FFCC66
+        background: Color::Reset,                     // Terminal native / transparent
+        header: Color::Rgb(255, 167, 89),             // Ayu Orange #FFA759
+        highlighted_lyrics: Color::Rgb(255, 167, 89), // Ayu Orange #FFA759
       },
       ThemePreset::AyuDark => Theme {
         analysis_bar: Color::Rgb(89, 194, 255),       // Ayu Blue #59C2FF
         analysis_bar_text: Color::Rgb(191, 189, 182), // Ayu Text #BFBDB6
-        active: Color::Rgb(230, 180, 80),             // Ayu Gold #E6B450
-        banner: Color::Rgb(255, 143, 64),             // Ayu Orange #FF8F40
+        active: Color::Rgb(255, 143, 64),             // Ayu Dark Orange #FF8F40
+        banner: Color::Rgb(255, 143, 64),             // Ayu Dark Orange #FF8F40
         error_border: Color::Rgb(240, 113, 120),      // Ayu Red / Coral #F07178
         error_text: Color::Rgb(240, 113, 120),        // Ayu Red / Coral #F07178
-        hint: Color::Rgb(230, 180, 80),               // Ayu Gold #E6B450
+        hint: Color::Rgb(255, 180, 84),               // Ayu Amber #FFB454
         hovered: Color::Rgb(255, 180, 84),            // Ayu Amber #FFB454
         inactive: Color::Rgb(92, 103, 115),           // Ayu Comment / Slate #5C6773
-        playbar_background: Color::Rgb(19, 23, 33),   // Ayu Panel Surface #131721
-        playbar_progress: Color::Rgb(170, 217, 76),   // Ayu Green #AAD94C
+        playbar_background: Color::Reset,             // Terminal native / transparent
+        playbar_progress: Color::Rgb(255, 143, 64),   // Ayu Dark Orange #FF8F40
         playbar_progress_text: Color::Rgb(255, 255, 255),
         playbar_text: Color::Rgb(191, 189, 182),      // Ayu Text #BFBDB6
-        selected: Color::Rgb(89, 194, 255),           // Ayu Blue #59C2FF
+        selected: Color::Rgb(255, 143, 64),           // Ayu Dark Orange #FF8F40
         text: Color::Rgb(191, 189, 182),              // Ayu Text #BFBDB6
-        background: Color::Rgb(15, 20, 25),           // Ayu Dark Canvas #0F1419
-        header: Color::Rgb(230, 180, 80),             // Ayu Gold #E6B450
-        highlighted_lyrics: Color::Rgb(230, 180, 80), // Ayu Gold #E6B450
+        background: Color::Reset,                     // Terminal native / transparent
+        header: Color::Rgb(255, 143, 64),             // Ayu Dark Orange #FF8F40
+        highlighted_lyrics: Color::Rgb(255, 143, 64), // Ayu Dark Orange #FF8F40
       },
       ThemePreset::Custom => Theme::default(), // Won't be used directly
     }

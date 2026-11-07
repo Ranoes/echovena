@@ -166,6 +166,7 @@ fn draw_add_tracks_stage(f: &mut Frame<'_>, app: &App, area: Rect) {
         .fg(theme.selected.into())
         .add_modifier(app.user_config.behavior.emphasis(Modifier::BOLD)),
     )
+    .highlight_symbol("▶ ")
     .style(theme.base_style());
   f.render_stateful_widget(results_list, panels[0], &mut results_state);
 
@@ -215,6 +216,7 @@ fn draw_add_tracks_stage(f: &mut Frame<'_>, app: &App, area: Rect) {
         .fg(theme.selected.into())
         .add_modifier(app.user_config.behavior.emphasis(Modifier::BOLD)),
     )
+    .highlight_symbol("▶ ")
     .style(theme.base_style());
   f.render_stateful_widget(added_list, panels[1], &mut added_state);
 }

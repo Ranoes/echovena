@@ -1800,12 +1800,11 @@ pub fn draw_device_list(f: &mut Frame<'_>, app: &App) {
     .style(app.user_config.theme.base_style())
     .highlight_style(
       Style::default()
-        .fg(app.user_config.theme.active.into())
-        .bg(app.user_config.theme.inactive.into())
+        .fg(app.user_config.theme.selected.into())
         .add_modifier(app.user_config.behavior.emphasis(Modifier::BOLD)),
     )
     .highlight_symbol(
-      Line::from("▶ ").style(Style::default().fg(app.user_config.theme.active.into())),
+      Line::from("▶ ").style(Style::default().fg(app.user_config.theme.selected.into())),
     );
   f.render_stateful_widget(source_list, source_area, &mut source_state);
 
@@ -1855,12 +1854,11 @@ pub fn draw_device_list(f: &mut Frame<'_>, app: &App) {
     .style(app.user_config.theme.base_style())
     .highlight_style(
       Style::default()
-        .fg(app.user_config.theme.active.into())
-        .bg(app.user_config.theme.inactive.into())
+        .fg(app.user_config.theme.selected.into())
         .add_modifier(app.user_config.behavior.emphasis(Modifier::BOLD)),
     )
     .highlight_symbol(
-      Line::from("▶ ").style(Style::default().fg(app.user_config.theme.active.into())),
+      Line::from("▶ ").style(Style::default().fg(app.user_config.theme.selected.into())),
     );
   f.render_stateful_widget(download_list, download_area, &mut download_state);
 }
