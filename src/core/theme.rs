@@ -271,6 +271,8 @@ pub enum ThemePreset {
   GruvboxCove,
   CatppuccinMocha,
   TokyoNight,
+  Ayu,
+  AyuDark,
   Custom, // When user has manually customized colors
 }
 
@@ -291,6 +293,8 @@ impl ThemePreset {
       ThemePreset::GruvboxCove,
       ThemePreset::CatppuccinMocha,
       ThemePreset::TokyoNight,
+      ThemePreset::Ayu,
+      ThemePreset::AyuDark,
       ThemePreset::Custom,
     ]
   }
@@ -311,6 +315,8 @@ impl ThemePreset {
       ThemePreset::GruvboxCove => "Gruvbox Cove",
       ThemePreset::CatppuccinMocha => "Catppuccin Mocha",
       ThemePreset::TokyoNight => "Tokyo Night",
+      ThemePreset::Ayu => "Ayu",
+      ThemePreset::AyuDark => "Ayu Dark",
       ThemePreset::Custom => "Custom",
     }
   }
@@ -331,6 +337,8 @@ impl ThemePreset {
       "Gruvbox Cove" => ThemePreset::GruvboxCove,
       "Catppuccin Mocha" => ThemePreset::CatppuccinMocha,
       "Tokyo Night" => ThemePreset::TokyoNight,
+      "Ayu" | "ayu" | "Ayu Mirage" | "Ayu (Mirage)" => ThemePreset::Ayu,
+      "Ayu Dark" | "ayu dark" | "ayu_dark" | "Ayu (Dark)" => ThemePreset::AyuDark,
       _ => ThemePreset::Custom,
     }
   }
@@ -630,6 +638,46 @@ impl ThemePreset {
         header: Color::Rgb(122, 162, 247),       // Blue #7aa2f7,
         highlighted_lyrics: Color::Rgb(42, 195, 222), // Light blue #2ac3de
       },
+      ThemePreset::Ayu => Theme {
+        analysis_bar: Color::Rgb(115, 208, 255),      // Ayu Mirage Blue #73D0FF
+        analysis_bar_text: Color::Rgb(204, 202, 194), // Ayu Mirage Text #CCCAC2
+        active: Color::Rgb(255, 204, 102),            // Ayu Mirage Gold #FFCC66
+        banner: Color::Rgb(255, 167, 89),             // Ayu Mirage Orange #FFA759
+        error_border: Color::Rgb(242, 135, 121),      // Ayu Mirage Red #F28779
+        error_text: Color::Rgb(242, 135, 121),        // Ayu Mirage Red #F28779
+        hint: Color::Rgb(255, 167, 89),               // Ayu Mirage Orange #FFA759
+        hovered: Color::Rgb(255, 213, 128),           // Ayu Mirage Amber #FFD580
+        inactive: Color::Rgb(92, 103, 115),           // Ayu Mirage Comment #5C6773
+        playbar_background: Color::Rgb(36, 41, 54),   // Ayu Mirage Surface #242936
+        playbar_progress: Color::Rgb(186, 230, 126),  // Ayu Mirage Green #BAE67E
+        playbar_progress_text: Color::Rgb(255, 255, 255),
+        playbar_text: Color::Rgb(204, 202, 194),      // Ayu Mirage Text #CCCAC2
+        selected: Color::Rgb(115, 208, 255),          // Ayu Mirage Blue #73D0FF
+        text: Color::Rgb(204, 202, 194),              // Ayu Mirage Text #CCCAC2
+        background: Color::Rgb(31, 36, 48),           // Ayu Mirage Canvas #1F2430
+        header: Color::Rgb(255, 204, 102),            // Ayu Mirage Gold #FFCC66
+        highlighted_lyrics: Color::Rgb(255, 204, 102), // Ayu Mirage Gold #FFCC66
+      },
+      ThemePreset::AyuDark => Theme {
+        analysis_bar: Color::Rgb(89, 194, 255),       // Ayu Blue #59C2FF
+        analysis_bar_text: Color::Rgb(191, 189, 182), // Ayu Text #BFBDB6
+        active: Color::Rgb(230, 180, 80),             // Ayu Gold #E6B450
+        banner: Color::Rgb(255, 143, 64),             // Ayu Orange #FF8F40
+        error_border: Color::Rgb(240, 113, 120),      // Ayu Red / Coral #F07178
+        error_text: Color::Rgb(240, 113, 120),        // Ayu Red / Coral #F07178
+        hint: Color::Rgb(230, 180, 80),               // Ayu Gold #E6B450
+        hovered: Color::Rgb(255, 180, 84),            // Ayu Amber #FFB454
+        inactive: Color::Rgb(92, 103, 115),           // Ayu Comment / Slate #5C6773
+        playbar_background: Color::Rgb(19, 23, 33),   // Ayu Panel Surface #131721
+        playbar_progress: Color::Rgb(170, 217, 76),   // Ayu Green #AAD94C
+        playbar_progress_text: Color::Rgb(255, 255, 255),
+        playbar_text: Color::Rgb(191, 189, 182),      // Ayu Text #BFBDB6
+        selected: Color::Rgb(89, 194, 255),           // Ayu Blue #59C2FF
+        text: Color::Rgb(191, 189, 182),              // Ayu Text #BFBDB6
+        background: Color::Rgb(15, 20, 25),           // Ayu Dark Canvas #0F1419
+        header: Color::Rgb(230, 180, 80),             // Ayu Gold #E6B450
+        highlighted_lyrics: Color::Rgb(230, 180, 80), // Ayu Gold #E6B450
+      },
       ThemePreset::Custom => Theme::default(), // Won't be used directly
     }
   }
@@ -864,6 +912,39 @@ mod tests {
     ] {
       assert_eq!(parse_theme_item(&color_to_string(color)).unwrap(), color);
     }
+  }
+
+  #[test]
+  fn ayu_presets_round_trip_through_config() {
+    for preset in [ThemePreset::Ayu, ThemePreset::AyuDark] {
+      let theme = preset.to_theme();
+      for color in [
+        theme.analysis_bar,
+        theme.analysis_bar_text,
+        theme.active,
+        theme.banner,
+        theme.error_border,
+        theme.error_text,
+        theme.hint,
+        theme.hovered,
+        theme.inactive,
+        theme.playbar_background,
+        theme.playbar_progress,
+        theme.playbar_progress_text,
+        theme.playbar_text,
+        theme.selected,
+        theme.text,
+        theme.background,
+        theme.header,
+        theme.highlighted_lyrics,
+      ] {
+        assert_eq!(parse_theme_item(&color_to_string(color)).unwrap(), color);
+      }
+      assert_eq!(ThemePreset::from_name(preset.name()), preset);
+    }
+    assert_eq!(ThemePreset::from_name("ayu"), ThemePreset::Ayu);
+    assert_eq!(ThemePreset::from_name("ayu dark"), ThemePreset::AyuDark);
+    assert_eq!(ThemePreset::from_name("ayu_dark"), ThemePreset::AyuDark);
   }
 
   #[test]
