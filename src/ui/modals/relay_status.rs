@@ -1,8 +1,9 @@
 use crate::config::ProviderRegistry;
 use crate::core::app::App;
+use crate::tui::theme::ThemeExt;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Paragraph, Row, Table},
     Frame,
@@ -34,16 +35,18 @@ pub fn draw_relay_status_modal(f: &mut Frame<'_>, app: &App) {
         return;
     }
 
+    let theme = &app.user_config.theme;
     let area = centered_rect(80, 80, f.area());
     f.render_widget(Clear, area);
 
     let main_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Cyan))
+        .border_style(Style::default().fg(theme.selected.into()))
+        .style(theme.base_style())
         .title(Span::styled(
             " EchoVena — Provider & Lossless Relay Health (Press 'R' or 'Esc' to close) ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD),
         ));
     f.render_widget(main_block, area);
 
@@ -69,22 +72,22 @@ pub fn draw_relay_status_modal(f: &mut Frame<'_>, app: &App) {
     // 1. Telemetry Summary Banner
     let summary_lines = vec![
         Line::from(vec![
-            Span::styled(" [Lossless Engine: Active] ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(" [Lossless Engine: Active] ", Style::default().fg(theme.hovered.into()).add_modifier(Modifier::BOLD)),
             Span::raw(" "),
-            Span::styled(" [Concurrency: Semaphore(1)] ", Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD)),
+            Span::styled(" [Concurrency: Semaphore(1)] ", Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD)),
             Span::raw(" "),
-            Span::styled(format!(" [Timeout: {}ms] ", registry.waterfall_timeout_ms), Style::default().fg(Color::Yellow)),
+            Span::styled(format!(" [Timeout: {}ms] ", registry.waterfall_timeout_ms), Style::default().fg(theme.hint.into())),
             Span::raw(" "),
-            Span::styled(" [Queue: Idle / Position: #0] ", Style::default().fg(Color::Magenta)),
+            Span::styled(" [Queue: Idle / Position: #0] ", Style::default().fg(theme.header.into())),
         ]),
         Line::from(vec![
-            Span::styled(format!(" Quality: {} ", app.user_config.lossless_relay.prefer_quality), Style::default().fg(Color::Cyan)),
+            Span::styled(format!(" Quality: {} ", app.user_config.lossless_relay.prefer_quality), Style::default().fg(theme.selected.into())),
             Span::raw(" | "),
-            Span::styled(format!(" Atmos Excluded: {} ", app.user_config.lossless_relay.exclude_dolby_atmos), Style::default().fg(Color::DarkGray)),
+            Span::styled(format!(" Atmos Excluded: {} ", app.user_config.lossless_relay.exclude_dolby_atmos), Style::default().fg(theme.inactive.into())),
             Span::raw(" | "),
-            Span::styled(format!(" Pre-resolve: {}s ", app.user_config.lossless_relay.pre_resolve_next_track_seconds), Style::default().fg(Color::DarkGray)),
+            Span::styled(format!(" Pre-resolve: {}s ", app.user_config.lossless_relay.pre_resolve_next_track_seconds), Style::default().fg(theme.inactive.into())),
             Span::raw(" | "),
-            Span::styled(format!(" Auth Mode: {} ", app.user_config.lossless_relay.auth_mode), Style::default().fg(Color::DarkGray)),
+            Span::styled(format!(" Auth Mode: {} ", app.user_config.lossless_relay.auth_mode), Style::default().fg(theme.inactive.into())),
         ]),
     ];
     let summary_para = Paragraph::new(summary_lines).block(Block::default().borders(Borders::BOTTOM));
@@ -99,15 +102,15 @@ pub fn draw_relay_status_modal(f: &mut Frame<'_>, app: &App) {
         "Formats",
         "Target Endpoint",
     ])
-    .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+    .style(Style::default().fg(theme.header.into()).add_modifier(Modifier::BOLD))
     .bottom_margin(1);
 
     let mut audio_rows = Vec::new();
     for p in &registry.audio_providers {
         let status_span = if p.enabled {
-            Span::styled("Active", Style::default().fg(Color::Green))
+            Span::styled("Active", Style::default().fg(theme.hovered.into()))
         } else {
-            Span::styled("Disabled", Style::default().fg(Color::DarkGray))
+            Span::styled("Disabled", Style::default().fg(theme.inactive.into()))
         };
         let endpoint = p
             .base_url
@@ -126,7 +129,7 @@ pub fn draw_relay_status_modal(f: &mut Frame<'_>, app: &App) {
             Span::raw(&p.provider_type),
             status_span,
             Span::raw(formats),
-            Span::styled(endpoint, Style::default().fg(Color::LightCyan)),
+            Span::styled(endpoint, Style::default().fg(theme.selected.into())),
         ]));
     }
 
@@ -151,15 +154,15 @@ pub fn draw_relay_status_modal(f: &mut Frame<'_>, app: &App) {
 
     // 3. Lyric Providers Table
     let lyric_header = Row::new(vec!["Pri", "ID", "Provider Type", "Status", "Base URL"])
-        .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        .style(Style::default().fg(theme.header.into()).add_modifier(Modifier::BOLD))
         .bottom_margin(1);
 
     let mut lyric_rows = Vec::new();
     for p in &registry.lyric_providers {
         let status_span = if p.enabled {
-            Span::styled("Active", Style::default().fg(Color::Green))
+            Span::styled("Active", Style::default().fg(theme.hovered.into()))
         } else {
-            Span::styled("Disabled", Style::default().fg(Color::DarkGray))
+            Span::styled("Disabled", Style::default().fg(theme.inactive.into()))
         };
 
         lyric_rows.push(Row::new(vec![
@@ -167,7 +170,7 @@ pub fn draw_relay_status_modal(f: &mut Frame<'_>, app: &App) {
             Span::styled(&p.id, Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(&p.provider_type),
             status_span,
-            Span::styled(&p.base_url, Style::default().fg(Color::LightCyan)),
+            Span::styled(&p.base_url, Style::default().fg(theme.selected.into())),
         ]));
     }
 
@@ -190,11 +193,11 @@ pub fn draw_relay_status_modal(f: &mut Frame<'_>, app: &App) {
 
     // 4. Footer Hotkeys
     let footer_text = Line::from(vec![
-        Span::styled(" [R] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(" [R] ", Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD)),
         Span::raw("Toggle Health Modal  "),
-        Span::styled(" [Esc] / [q] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(" [Esc] / [q] ", Style::default().fg(theme.hint.into()).add_modifier(Modifier::BOLD)),
         Span::raw("Close Modal  "),
-        Span::styled(" [providers.json] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(" [providers.json] ", Style::default().fg(theme.header.into()).add_modifier(Modifier::BOLD)),
         Span::raw("Dynamic hot-swap enabled"),
     ]);
     let footer_para = Paragraph::new(footer_text).alignment(Alignment::Center);

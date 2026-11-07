@@ -4,7 +4,7 @@ use crate::tui::layout::COMPACT_TOP_ROW_THRESHOLD;
 use crate::tui::theme::ThemeExt;
 use ratatui::{
   layout::{Constraint, Layout, Rect},
-  style::{Color, Modifier, Style},
+  style::{Modifier, Style},
   text::{Line, Span, Text},
   widgets::{Block, BorderType, Borders, Paragraph, Wrap},
   Frame,
@@ -190,9 +190,11 @@ pub fn draw_live_youtube_search(f: &mut Frame<'_>, app: &App, area: Rect) {
     Constraint::Min(4),
   ]));
 
+  let theme = &app.user_config.theme;
+
   // 1. Scope Filter Bar
   let mut scope_spans = vec![
-    Span::styled(" [Tab: Scope]  ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+    Span::styled(" [Tab: Scope]  ", Style::default().fg(theme.hint.into()).add_modifier(Modifier::BOLD)),
   ];
 
   let scopes = [
@@ -206,12 +208,12 @@ pub fn draw_live_youtube_search(f: &mut Frame<'_>, app: &App, area: Rect) {
     if app.search_scope == scope {
       scope_spans.push(Span::styled(
         format!(" ● [ {} ] ", label),
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD),
       ));
     } else {
       scope_spans.push(Span::styled(
         format!(" ○ {}  ", label),
-        Style::default().fg(app.user_config.theme.inactive.into()),
+        Style::default().fg(theme.inactive.into()),
       ));
     }
   }
@@ -219,22 +221,24 @@ pub fn draw_live_youtube_search(f: &mut Frame<'_>, app: &App, area: Rect) {
   if app.live_search_loading {
     scope_spans.push(Span::styled(
       "  ⟳ [Searching InnerTube...]",
-      Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+      Style::default().fg(theme.hint.into()).add_modifier(Modifier::BOLD),
     ));
   } else {
     scope_spans.push(Span::styled(
       "  (Zero API Keys)",
-      Style::default().fg(app.user_config.theme.hint.into()),
+      Style::default().fg(theme.hint.into()),
     ));
   }
 
-  let scope_bar = Paragraph::new(Line::from(scope_spans)).block(
-    Block::default()
-      .borders(Borders::ALL)
-      .border_type(BorderType::Rounded)
-      .border_style(Style::default().fg(app.user_config.theme.inactive.into()))
-      .title(Span::styled(" Filter Scope ", Style::default().fg(app.user_config.theme.hint.into()))),
-  );
+  let scope_bar = Paragraph::new(Line::from(scope_spans))
+    .style(theme.base_style())
+    .block(
+      Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.inactive.into()))
+        .title(Span::styled(" Filter Scope ", Style::default().fg(theme.hint.into()))),
+    );
   f.render_widget(scope_bar, scope_area);
 
   // 2. Suggestions + Results split
@@ -254,24 +258,26 @@ pub fn draw_live_youtube_search(f: &mut Frame<'_>, app: &App, area: Rect) {
     for (idx, suggestion) in app.live_search_suggestions.iter().enumerate() {
       if idx == 0 {
         suggestion_lines.push(Line::from(vec![
-          Span::styled("→ ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-          Span::styled(suggestion, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+          Span::styled("→ ", Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD)),
+          Span::styled(suggestion, Style::default().fg(theme.text.into()).add_modifier(Modifier::BOLD)),
         ]));
       } else {
         suggestion_lines.push(Line::from(vec![
-          Span::styled("  ", Style::default().fg(app.user_config.theme.inactive.into())),
-          Span::styled(suggestion, Style::default().fg(app.user_config.theme.inactive.into())),
+          Span::styled("  ", Style::default().fg(theme.inactive.into())),
+          Span::styled(suggestion, Style::default().fg(theme.inactive.into())),
         ]));
       }
     }
 
-    let suggestions_widget = Paragraph::new(suggestion_lines).block(
-      Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(app.user_config.theme.inactive.into()))
-        .title(Span::styled(" Suggestions (→) ", Style::default().fg(Color::Cyan))),
-    );
+    let suggestions_widget = Paragraph::new(suggestion_lines)
+      .style(theme.base_style())
+      .block(
+        Block::default()
+          .borders(Borders::ALL)
+          .border_type(BorderType::Rounded)
+          .border_style(Style::default().fg(theme.inactive.into()))
+          .title(Span::styled(" Suggestions (→) ", Style::default().fg(theme.header.into()))),
+      );
     f.render_widget(suggestions_widget, s_area);
   }
 
@@ -299,12 +305,12 @@ pub fn draw_live_youtube_search(f: &mut Frame<'_>, app: &App, area: Rect) {
         Line::from(""),
         Line::from(Span::styled(
           "    ⟳ Querying YouTube InnerTube search endpoint...",
-          Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+          Style::default().fg(theme.hint.into()).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(
           "    Debouncing 250ms with zero Google API keys required.",
-          Style::default().fg(app.user_config.theme.hint.into()),
+          Style::default().fg(theme.hint.into()),
         )),
       ]
     } else {
@@ -314,40 +320,40 @@ pub fn draw_live_youtube_search(f: &mut Frame<'_>, app: &App, area: Rect) {
           Line::from(""),
           Line::from(Span::styled(
             "    EchoVena Live YouTube & YouTube Music Search",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.header.into()).add_modifier(Modifier::BOLD),
           )),
           Line::from(""),
           Line::from(Span::styled(
             "    • Type any song title, artist, album, or playlist to search in real-time",
-            Style::default().fg(Color::White),
+            Style::default().fg(theme.text.into()),
           )),
           Line::from(Span::styled(
             "    • [Tab] / [Shift+Tab]   : Cycle scopes (All | Songs | Albums | Playlists)",
-            Style::default().fg(app.user_config.theme.hint.into()),
+            Style::default().fg(theme.hint.into()),
           )),
           Line::from(Span::styled(
             "    • [↓] / [↑] or [j] / [k] : Highlight results live",
-            Style::default().fg(app.user_config.theme.hint.into()),
+            Style::default().fg(theme.hint.into()),
           )),
           Line::from(Span::styled(
             "    • [Enter]               : Select result / instant playback",
-            Style::default().fg(app.user_config.theme.hint.into()),
+            Style::default().fg(theme.hint.into()),
           )),
           Line::from(Span::styled(
             "    • [z]                   : Add track to queue",
-            Style::default().fg(app.user_config.theme.hint.into()),
+            Style::default().fg(theme.hint.into()),
           )),
           Line::from(Span::styled(
             "    • [Ctrl+v] / [p]        : Paste clipboard text into search bar",
-            Style::default().fg(app.user_config.theme.hint.into()),
+            Style::default().fg(theme.hint.into()),
           )),
           Line::from(Span::styled(
             "    • [Ctrl+i]              : Clear search query",
-            Style::default().fg(app.user_config.theme.hint.into()),
+            Style::default().fg(theme.hint.into()),
           )),
           Line::from(Span::styled(
             "    • [Esc]                 : Return Home (preserves query)",
-            Style::default().fg(app.user_config.theme.hint.into()),
+            Style::default().fg(theme.hint.into()),
           )),
         ]
       } else {
@@ -355,24 +361,26 @@ pub fn draw_live_youtube_search(f: &mut Frame<'_>, app: &App, area: Rect) {
           Line::from(""),
           Line::from(Span::styled(
             format!("    No YouTube results found for: \"{}\"", query_str.trim()),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(theme.hint.into()),
           )),
           Line::from(""),
           Line::from(Span::styled(
             "    Try pressing [Tab] to cycle scope (All / Songs / Albums / Playlists) or refine terms.",
-            Style::default().fg(app.user_config.theme.hint.into()),
+            Style::default().fg(theme.hint.into()),
           )),
         ]
       }
     };
 
-    let empty_widget = Paragraph::new(empty_text).block(
-      Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(results_border_color.into()))
-        .title(Span::styled(results_title, Style::default().fg(Color::Cyan))),
-    );
+    let empty_widget = Paragraph::new(empty_text)
+      .style(theme.base_style())
+      .block(
+        Block::default()
+          .borders(Borders::ALL)
+          .border_type(BorderType::Rounded)
+          .border_style(Style::default().fg(results_border_color.into()))
+          .title(Span::styled(results_title, Style::default().fg(theme.header.into()))),
+      );
     f.render_widget(empty_widget, results_area);
     return;
   }
@@ -404,7 +412,7 @@ pub fn draw_live_youtube_search(f: &mut Frame<'_>, app: &App, area: Rect) {
     if is_selected {
       row_spans.push(Span::styled(
         "▶ ",
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD),
       ));
     } else {
       row_spans.push(Span::styled("  ", Style::default()));
@@ -413,7 +421,7 @@ pub fn draw_live_youtube_search(f: &mut Frame<'_>, app: &App, area: Rect) {
     // Source Badge
     row_spans.push(Span::styled(
       "[YouTube] ",
-      Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+      Style::default().fg(theme.error_text.into()).add_modifier(Modifier::BOLD),
     ));
 
     // Badges
@@ -422,31 +430,31 @@ pub fn draw_live_youtube_search(f: &mut Frame<'_>, app: &App, area: Rect) {
         SearchBadge::Official => {
           row_spans.push(Span::styled(
             "[OFFICIAL] ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD),
           ));
         }
         SearchBadge::Explicit => {
           row_spans.push(Span::styled(
             "[EXPLICIT] ",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.error_border.into()).add_modifier(Modifier::BOLD),
           ));
         }
         SearchBadge::Remaster => {
           row_spans.push(Span::styled(
             "[REMASTER] ",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.hint.into()).add_modifier(Modifier::BOLD),
           ));
         }
         SearchBadge::Live => {
           row_spans.push(Span::styled(
             "[LIVE] ",
-            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.hovered.into()).add_modifier(Modifier::BOLD),
           ));
         }
         SearchBadge::Custom(label) => {
           row_spans.push(Span::styled(
             format!("[{}] ", label.to_uppercase()),
-            Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.header.into()).add_modifier(Modifier::BOLD),
           ));
         }
       }
@@ -454,17 +462,17 @@ pub fn draw_live_youtube_search(f: &mut Frame<'_>, app: &App, area: Rect) {
 
     // Title
     let title_style = if is_selected {
-      Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+      Style::default().fg(theme.text.into()).add_modifier(Modifier::BOLD)
     } else {
-      Style::default().fg(Color::White)
+      Style::default().fg(theme.text.into())
     };
     row_spans.push(Span::styled(&item.title, title_style));
 
     // Artist
     let artist_style = if is_selected {
-      Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+      Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD)
     } else {
-      Style::default().fg(Color::LightCyan)
+      Style::default().fg(theme.hint.into())
     };
     row_spans.push(Span::styled(format!(" - {}", item.artist), artist_style));
 
@@ -472,7 +480,7 @@ pub fn draw_live_youtube_search(f: &mut Frame<'_>, app: &App, area: Rect) {
     if let Some(album) = &item.album {
       row_spans.push(Span::styled(
         format!("  ({})", album),
-        Style::default().fg(app.user_config.theme.hint.into()),
+        Style::default().fg(theme.hint.into()),
       ));
     }
 
@@ -480,7 +488,7 @@ pub fn draw_live_youtube_search(f: &mut Frame<'_>, app: &App, area: Rect) {
     if !item.duration_str.is_empty() {
       row_spans.push(Span::styled(
         format!("  [{}]", item.duration_str),
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(theme.inactive.into()),
       ));
     } else if item.duration_ms > 0 {
       let secs = item.duration_ms / 1000;
@@ -488,20 +496,22 @@ pub fn draw_live_youtube_search(f: &mut Frame<'_>, app: &App, area: Rect) {
       let s = secs % 60;
       row_spans.push(Span::styled(
         format!("  [{}:{:02}]", min, s),
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(theme.inactive.into()),
       ));
     }
 
     rows.push(Line::from(row_spans));
   }
 
-  let results_widget = Paragraph::new(rows).block(
-    Block::default()
-      .borders(Borders::ALL)
-      .border_type(BorderType::Rounded)
-      .border_style(Style::default().fg(results_border_color.into()))
-      .title(Span::styled(results_title, Style::default().fg(Color::Cyan))),
-  );
+  let results_widget = Paragraph::new(rows)
+    .style(theme.base_style())
+    .block(
+      Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(results_border_color.into()))
+        .title(Span::styled(results_title, Style::default().fg(theme.header.into()))),
+    );
   f.render_widget(results_widget, results_area);
 }
 
@@ -785,7 +795,8 @@ mod tests {
   /// The Spotify layout renders the active music search blocks (Songs, Artists, Albums, Playlists).
   #[test]
   fn spotify_results_render_four_blocks() {
-    let app = App::default();
+    let mut app = App::default();
+    app.active_source = crate::core::source::Source::Spotify;
     let content = rendered(&app, Rect::new(0, 0, 90, 30));
     for spotify_panel in ["Songs", "Artists", "Albums", "Playlists"] {
       assert!(
@@ -805,6 +816,7 @@ mod tests {
     use crate::core::plugin_api::AlbumInfo;
     use unicode_width::UnicodeWidthStr;
     let mut app = App::default();
+    app.active_source = crate::core::source::Source::Spotify;
     app.set_search_results(crate::core::app::SearchResult {
       albums: Some(crate::core::pagination::Paged {
         items: vec![AlbumInfo {
@@ -920,7 +932,7 @@ mod tests {
     }
 
     assert!(text.contains("Filter Scope"), "Scope bar: {text}");
-    assert!(text.contains("[ Songs ]"), "Active Songs scope: {text}");
+    assert!(text.contains("[ MUSIC ]"), "Active Music scope: {text}");
     assert!(text.contains("Suggestions"), "Suggestions panel: {text}");
     assert!(text.contains("bohemian rhapsody"), "Autocomplete suggestion: {text}");
     assert!(text.contains("Bohemian Rhapsody"), "Track title: {text}");

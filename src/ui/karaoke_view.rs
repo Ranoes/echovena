@@ -1,8 +1,9 @@
 use crate::core::app::App;
 use crate::lyrics::KaraokeTimeline;
+use crate::tui::theme::ThemeExt;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Paragraph},
     Frame,
@@ -183,14 +184,16 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
         ])
         .split(right_area);
 
+    let theme = &app.user_config.theme;
+
     // 1A. Now Playing Box
     f.render_widget(Clear, right_sections[0]);
     let np_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Yellow))
-        .style(Style::default().bg(app.user_config.theme.background.into()))
-        .title(Span::styled(" Now Playing ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+        .border_style(Style::default().fg(theme.header.into()))
+        .style(theme.base_style())
+        .title(Span::styled(" Now Playing ", Style::default().fg(theme.header.into()).add_modifier(Modifier::BOLD)));
     let np_inner = np_block.inner(right_sections[0]);
     f.render_widget(np_block, right_sections[0]);
 
@@ -230,11 +233,11 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
             let art_rect = crate::tui::layout::center_rect_within(bounds, Rect::new(0, 0, art_w, art_h));
             let placeholder = vec![
                 Line::from(""),
-                Line::from(Span::styled("┌───────────────────┐", Style::default().fg(Color::DarkGray))),
-                Line::from(Span::styled("│   ♫  EchoVena  ♫  │", Style::default().fg(Color::Cyan))),
-                Line::from(Span::styled("│   ●───────────●   │", Style::default().fg(Color::Yellow))),
-                Line::from(Span::styled("│     ALBUM ART     │", Style::default().fg(Color::White))),
-                Line::from(Span::styled("└───────────────────┘", Style::default().fg(Color::DarkGray))),
+                Line::from(Span::styled("┌───────────────────┐", Style::default().fg(theme.inactive.into()))),
+                Line::from(Span::styled("│   ♫  EchoVena  ♫  │", Style::default().fg(theme.selected.into()))),
+                Line::from(Span::styled("│   ●───────────●   │", Style::default().fg(theme.hint.into()))),
+                Line::from(Span::styled("│     ALBUM ART     │", Style::default().fg(theme.text.into()))),
+                Line::from(Span::styled("└───────────────────┘", Style::default().fg(theme.inactive.into()))),
             ];
             f.render_widget(Paragraph::new(placeholder).alignment(Alignment::Center), art_rect);
         }
@@ -246,7 +249,7 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
         let art_rect = crate::tui::layout::center_rect_within(bounds, Rect::new(0, 0, art_w, art_h));
         let placeholder = vec![
             Line::from(""),
-            Line::from(Span::styled("♪ ♫ [EchoVena HD Art] ♫ ♪", Style::default().fg(Color::Cyan))),
+            Line::from(Span::styled("♪ ♫ [EchoVena HD Art] ♫ ♪", Style::default().fg(theme.selected.into()))),
         ];
         f.render_widget(Paragraph::new(placeholder).alignment(Alignment::Center), art_rect);
     }
@@ -254,8 +257,8 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
     // Song Info (Title, Artist, Album)
     let album_display = if album.is_empty() { String::new() } else { format!(" — {}", album) };
     let info_text = vec![
-        Line::from(Span::styled(&title, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
-        Line::from(Span::styled(format!("{}{}", artist, album_display), Style::default().fg(Color::LightYellow))),
+        Line::from(Span::styled(&title, Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(format!("{}{}", artist, album_display), Style::default().fg(theme.hint.into()))),
     ];
     f.render_widget(Paragraph::new(info_text).alignment(Alignment::Center), np_layout[1]);
 
@@ -289,8 +292,8 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
     let status_line = format!("{}  •  Opus 160k  •  Vol {}%", state_str, app.desired_volume());
 
     let playbar_widget = Paragraph::new(vec![
-        Line::from(Span::styled(progress_line, Style::default().fg(Color::LightCyan))),
-        Line::from(Span::styled(status_line, Style::default().fg(Color::DarkGray))),
+        Line::from(Span::styled(progress_line, Style::default().fg(theme.playbar_progress.into()))),
+        Line::from(Span::styled(status_line, Style::default().fg(theme.inactive.into()))),
     ])
     .alignment(Alignment::Center);
     f.render_widget(playbar_widget, np_layout[2]);
@@ -300,9 +303,9 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
     let next_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::LightGreen))
-        .style(Style::default().bg(app.user_config.theme.background.into()))
-        .title(Span::styled(" Up Next ", Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD)));
+        .border_style(Style::default().fg(theme.hovered.into()))
+        .style(theme.base_style())
+        .title(Span::styled(" Up Next ", Style::default().fg(theme.hovered.into()).add_modifier(Modifier::BOLD)));
     let next_inner = next_block.inner(right_sections[1]);
     f.render_widget(next_block, right_sections[1]);
 
@@ -310,14 +313,14 @@ pub fn draw_karaoke_stage_view(f: &mut Frame<'_>, app: &App) {
         let mins = n_dur / 60;
         let secs = n_dur % 60;
         Line::from(vec![
-            Span::styled(" ⏭  ", Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{} — {} ", n_title, n_artist), Style::default().fg(Color::White)),
-            Span::styled(format!("[{:02}:{:02}]", mins, secs), Style::default().fg(Color::DarkGray)),
+            Span::styled(" ⏭  ", Style::default().fg(theme.hovered.into()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{} — {} ", n_title, n_artist), Style::default().fg(theme.text.into())),
+            Span::styled(format!("[{:02}:{:02}]", mins, secs), Style::default().fg(theme.inactive.into())),
         ])
     } else {
         Line::from(vec![
-            Span::styled(" ⏭  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("[Auto-Play Radio] Discovering similar track...", Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
+            Span::styled(" ⏭  ", Style::default().fg(theme.inactive.into())),
+            Span::styled("[Auto-Play Radio] Discovering similar track...", Style::default().fg(theme.inactive.into()).add_modifier(Modifier::ITALIC)),
         ])
     };
     f.render_widget(Paragraph::new(next_line).alignment(Alignment::Left), next_inner);

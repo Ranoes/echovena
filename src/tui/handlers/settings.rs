@@ -152,6 +152,7 @@ fn request_exit_settings(app: &mut App) {
 }
 
 pub(super) fn close_settings(app: &mut App) {
+  app.discard_settings_changes();
   app.view.settings_unsaved_prompt_visible = false;
   app.view.settings_unsaved_prompt_save_selected = true;
   app.view.settings_edit_mode = false;
@@ -262,6 +263,7 @@ fn handle_string_edit(key: Key, app: &mut App) {
   match key {
     Key::Enter => {
       // Apply the edited string
+      let mut color_to_apply: Option<(String, String)> = None;
       if let Some(setting) = app.settings_items.get_mut(app.view.settings_selected_index) {
         let new_value = app.view.settings_edit_buffer.clone();
 
@@ -309,30 +311,106 @@ fn handle_string_edit(key: Key, app: &mut App) {
 
         let is_color_edit = matches!(setting.value, SettingValue::Color(_))
           && setting.id != "theme.cover_art_dither_color";
+        let setting_id = setting.id.clone();
         match &setting.value {
           SettingValue::String(_) => {
-            setting.value = SettingValue::String(new_value);
+            setting.value = SettingValue::String(new_value.clone());
           }
           SettingValue::Color(_) => {
-            setting.value = SettingValue::Color(new_value);
+            setting.value = SettingValue::Color(new_value.clone());
           }
           // The field opens empty, so Enter without typing keeps the saved password.
           SettingValue::Secret(_) if !new_value.is_empty() => {
-            setting.value = SettingValue::Secret(new_value);
+            setting.value = SettingValue::Secret(new_value.clone());
           }
           _ => {}
         }
-        // Editing an individual color switches the theme to Custom
         if is_color_edit {
-          if let Some(preset_setting) = app
-            .settings_items
-            .iter_mut()
-            .find(|s| s.id == "theme.preset")
-          {
-            if let SettingValue::Preset(name) = &mut preset_setting.value {
-              *name = "Custom".to_string();
-            }
+          color_to_apply = Some((setting_id, new_value));
+        }
+      }
+
+      // Editing an individual color switches the theme to Custom and live previews
+      if let Some((id, val)) = color_to_apply {
+        if let Some(preset_setting) = app
+          .settings_items
+          .iter_mut()
+          .find(|s| s.id == "theme.preset")
+        {
+          if let SettingValue::Preset(name) = &mut preset_setting.value {
+            *name = "Custom".to_string();
           }
+        }
+        if let Ok(c) = crate::core::user_config::parse_theme_item(&val) {
+          app.user_config.current_preset = crate::core::user_config::ThemePreset::Custom;
+          match id.as_str() {
+            "theme.active" => {
+              app.user_config.theme.active = c;
+              app.user_config.custom_theme.active = c;
+            }
+            "theme.banner" => {
+              app.user_config.theme.banner = c;
+              app.user_config.custom_theme.banner = c;
+            }
+            "theme.hint" => {
+              app.user_config.theme.hint = c;
+              app.user_config.custom_theme.hint = c;
+            }
+            "theme.hovered" => {
+              app.user_config.theme.hovered = c;
+              app.user_config.custom_theme.hovered = c;
+            }
+            "theme.selected" => {
+              app.user_config.theme.selected = c;
+              app.user_config.custom_theme.selected = c;
+            }
+            "theme.inactive" => {
+              app.user_config.theme.inactive = c;
+              app.user_config.custom_theme.inactive = c;
+            }
+            "theme.text" => {
+              app.user_config.theme.text = c;
+              app.user_config.custom_theme.text = c;
+            }
+            "theme.error_text" => {
+              app.user_config.theme.error_text = c;
+              app.user_config.custom_theme.error_text = c;
+            }
+            "theme.error_border" => {
+              app.user_config.theme.error_border = c;
+              app.user_config.custom_theme.error_border = c;
+            }
+            "theme.playbar_background" => {
+              app.user_config.theme.playbar_background = c;
+              app.user_config.custom_theme.playbar_background = c;
+            }
+            "theme.playbar_progress" => {
+              app.user_config.theme.playbar_progress = c;
+              app.user_config.custom_theme.playbar_progress = c;
+            }
+            "theme.playbar_progress_text" => {
+              app.user_config.theme.playbar_progress_text = c;
+              app.user_config.custom_theme.playbar_progress_text = c;
+            }
+            "theme.playbar_text" => {
+              app.user_config.theme.playbar_text = c;
+              app.user_config.custom_theme.playbar_text = c;
+            }
+            "theme.highlighted_lyrics" => {
+              app.user_config.theme.highlighted_lyrics = c;
+              app.user_config.custom_theme.highlighted_lyrics = c;
+            }
+            "theme.background" => {
+              app.user_config.theme.background = c;
+              app.user_config.custom_theme.background = c;
+            }
+            "theme.header" => {
+              app.user_config.theme.header = c;
+              app.user_config.custom_theme.header = c;
+            }
+            _ => {}
+          }
+          app.bump_display(crate::core::app::DisplayDomain::Theme);
         }
       }
       app.view.settings_edit_mode = false;
@@ -530,6 +608,9 @@ pub(super) fn enter_edit_mode(app: &mut App) {
       };
       app.sync_theme_color_settings(&preview_theme);
       app.sync_banner_gradient_setting(next);
+      app.user_config.theme = preview_theme;
+      app.user_config.current_preset = next;
+      app.bump_display(crate::core::app::DisplayDomain::Theme);
       return;
     }
 
@@ -593,6 +674,9 @@ fn handle_preset_edit(key: Key, app: &mut App) {
         };
         app.sync_theme_color_settings(&preview_theme);
         app.sync_banner_gradient_setting(next);
+        app.user_config.theme = preview_theme;
+        app.user_config.current_preset = next;
+        app.bump_display(crate::core::app::DisplayDomain::Theme);
       }
     }
   }

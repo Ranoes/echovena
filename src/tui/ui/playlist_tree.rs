@@ -3,7 +3,7 @@ use crate::tui::handlers::playlist::{get_playlist_tree_items, PlaylistTreeItem};
 use crate::tui::theme::ThemeExt;
 use ratatui::{
   layout::{Constraint, Layout, Rect},
-  style::{Color, Modifier, Style},
+  style::{Modifier, Style},
   text::{Line, Span},
   widgets::{Block, BorderType, Borders, List, ListItem, Paragraph},
   Frame,
@@ -22,6 +22,7 @@ pub fn draw_playlist_tree_view(f: &mut Frame<'_>, app: &App, area: Rect) {
 
   // 1. Header with Categories & Tabs
   let active_tab = app.view.playlist_panel_tab;
+  let theme = &app.user_config.theme;
   let tab_titles = ["1: EchoVena / Local", "2: Spotify (Imported)", "3: YouTube & YTMusic"];
   let mut tab_spans = Vec::new();
   tab_spans.push(Span::raw(" Source Category [Tab]: "));
@@ -30,14 +31,14 @@ pub fn draw_playlist_tree_view(f: &mut Frame<'_>, app: &App, area: Rect) {
       tab_spans.push(Span::styled(
         format!(" [{title}] "),
         Style::default()
-          .fg(Color::Black)
-          .bg(Color::Cyan)
+          .fg(theme.background.into())
+          .bg(theme.selected.into())
           .add_modifier(Modifier::BOLD),
       ));
     } else {
       tab_spans.push(Span::styled(
         format!("  {title}  "),
-        Style::default().fg(app.user_config.theme.inactive.into()),
+        Style::default().fg(theme.inactive.into()),
       ));
     }
   }
@@ -45,14 +46,14 @@ pub fn draw_playlist_tree_view(f: &mut Frame<'_>, app: &App, area: Rect) {
   let header_block = Block::default()
     .borders(Borders::ALL)
     .border_type(BorderType::Rounded)
-    .border_style(Style::default().fg(app.user_config.theme.selected.into()))
+    .border_style(Style::default().fg(theme.selected.into()))
     .title(Span::styled(
       " All Playlists — Tree View ",
-      Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+      Style::default().fg(theme.header.into()).add_modifier(Modifier::BOLD),
     ));
   let header_widget = Paragraph::new(Line::from(tab_spans))
     .block(header_block)
-    .style(app.user_config.theme.base_style());
+    .style(theme.base_style());
   f.render_widget(header_widget, header_area);
 
   // 2. Tree Item List
@@ -77,10 +78,10 @@ pub fn draw_playlist_tree_view(f: &mut Frame<'_>, app: &App, area: Rect) {
           PlaylistTreeItem::ActionItem { label, .. } => {
             let style = if is_selected {
               Style::default()
-                .fg(Color::Yellow)
+                .fg(theme.selected.into())
                 .add_modifier(Modifier::BOLD)
             } else {
-              Style::default().fg(Color::Green)
+              Style::default().fg(theme.hovered.into())
             };
             ListItem::new(Line::from(vec![
               Span::raw(if is_selected { " \u{25B6} " } else { "   " }),
@@ -95,11 +96,11 @@ pub fn draw_playlist_tree_view(f: &mut Frame<'_>, app: &App, area: Rect) {
             ..
           } => {
             let arrow = if *is_expanded { "\u{25BC}" } else { "\u{25B6}" };
-            let (tag, tag_color) = match platform.as_str() {
-              "spotify" | "spotify_synced" => ("Spotify", Color::Green),
-              "youtube" | "ytmusic" => ("YouTube", Color::Red),
-              "local" => ("Local", Color::Magenta),
-              _ => ("EchoVena", Color::Cyan),
+            let (tag, tag_color): (&str, ratatui::style::Color) = match platform.as_str() {
+              "spotify" | "spotify_synced" => ("Spotify", theme.hovered.into()),
+              "youtube" | "ytmusic" => ("YouTube", theme.error_text.into()),
+              "local" => ("Local", theme.hint.into()),
+              _ => ("EchoVena", theme.selected.into()),
             };
 
             let prefix = if is_selected { " \u{25B6} " } else { "   " };
@@ -107,7 +108,7 @@ pub fn draw_playlist_tree_view(f: &mut Frame<'_>, app: &App, area: Rect) {
               Span::raw(prefix),
               Span::styled(
                 format!("{arrow} "),
-                Style::default().fg(if *is_expanded { Color::Yellow } else { Color::White }),
+                Style::default().fg(if *is_expanded { theme.selected.into() } else { theme.text.into() }),
               ),
               Span::styled(
                 format!("[{tag}] "),
@@ -117,15 +118,15 @@ pub fn draw_playlist_tree_view(f: &mut Frame<'_>, app: &App, area: Rect) {
                 title.clone(),
                 if is_selected {
                   Style::default()
-                    .fg(Color::White)
+                    .fg(theme.selected.into())
                     .add_modifier(Modifier::BOLD)
                 } else {
-                  Style::default().fg(Color::White)
+                  Style::default().fg(theme.text.into())
                 },
               ),
               Span::styled(
                 format!("  ({track_count} tracks)"),
-                Style::default().fg(app.user_config.theme.hint.into()),
+                Style::default().fg(theme.hint.into()),
               ),
             ]);
             ListItem::new(line)
@@ -156,21 +157,21 @@ pub fn draw_playlist_tree_view(f: &mut Frame<'_>, app: &App, area: Rect) {
 
             let line = Line::from(vec![
               Span::raw(prefix),
-              Span::styled(branch, Style::default().fg(Color::DarkGray)),
-              Span::styled(num_str, Style::default().fg(app.user_config.theme.hint.into())),
+              Span::styled(branch, Style::default().fg(theme.inactive.into())),
+              Span::styled(num_str, Style::default().fg(theme.hint.into())),
               Span::styled(
                 title.clone(),
                 if is_selected {
                   Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme.selected.into())
                     .add_modifier(Modifier::BOLD)
                 } else {
-                  Style::default().fg(Color::White)
+                  Style::default().fg(theme.text.into())
                 },
               ),
-              Span::styled(" \u{2014} ", Style::default().fg(Color::DarkGray)),
-              Span::styled(artist.clone(), Style::default().fg(Color::Gray)),
-              Span::styled(dur_str, Style::default().fg(Color::Yellow)),
+              Span::styled(" \u{2014} ", Style::default().fg(theme.inactive.into())),
+              Span::styled(artist.clone(), Style::default().fg(theme.text.into())),
+              Span::styled(dur_str, Style::default().fg(theme.hint.into())),
             ]);
             ListItem::new(line)
           }
@@ -182,10 +183,10 @@ pub fn draw_playlist_tree_view(f: &mut Frame<'_>, app: &App, area: Rect) {
   let list_block = Block::default()
     .borders(Borders::ALL)
     .border_type(BorderType::Rounded)
-    .border_style(Style::default().fg(app.user_config.theme.selected.into()))
+    .border_style(Style::default().fg(theme.selected.into()))
     .title(Span::styled(
       format!(" Playlist Contents ({} items in tree) ", tree.len()),
-      Style::default().fg(Color::White),
+      Style::default().fg(theme.header.into()),
     ));
 
   // Compute scroll offset so the selection stays in view
@@ -201,33 +202,33 @@ pub fn draw_playlist_tree_view(f: &mut Frame<'_>, app: &App, area: Rect) {
   let visible_items: Vec<ListItem> = items.into_iter().skip(scroll_offset).take(max_visible).collect();
   let list_widget = List::new(visible_items)
     .block(list_block)
-    .style(app.user_config.theme.base_style());
+    .style(theme.base_style());
 
   f.render_widget(list_widget, list_area);
 
   // 3. Footer Action Hints
   let footer_spans = vec![
-    Span::styled(" [h] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+    Span::styled(" [h] ", Style::default().fg(theme.hint.into()).add_modifier(Modifier::BOLD)),
     Span::raw("Collapse  │"),
-    Span::styled(" [l] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+    Span::styled(" [l] ", Style::default().fg(theme.hint.into()).add_modifier(Modifier::BOLD)),
     Span::raw("Expand  │"),
-    Span::styled(" [Enter] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+    Span::styled(" [Enter] ", Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD)),
     Span::raw("Play  │"),
-    Span::styled(" [e/E] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+    Span::styled(" [e/E] ", Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD)),
     Span::raw("Queue (End/Next)  │"),
-    Span::styled(" [s/S] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+    Span::styled(" [s/S] ", Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD)),
     Span::raw("Save (Track/Album)  │"),
-    Span::styled(" [d/x] ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+    Span::styled(" [d/x] ", Style::default().fg(theme.error_border.into()).add_modifier(Modifier::BOLD)),
     Span::raw("Delete Track  │"),
-    Span::styled(" [X] ", Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD)),
+    Span::styled(" [X] ", Style::default().fg(theme.error_text.into()).add_modifier(Modifier::BOLD)),
     Span::raw("Delete Playlist  │"),
-    Span::styled(" [I] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+    Span::styled(" [I] ", Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD)),
     Span::raw("Import URL  │"),
-    Span::styled(" [Esc/q] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+    Span::styled(" [Esc/q] ", Style::default().fg(theme.header.into()).add_modifier(Modifier::BOLD)),
     Span::raw("Back"),
   ];
   let footer_widget = Paragraph::new(Line::from(footer_spans))
-    .style(app.user_config.theme.base_style());
+    .style(theme.base_style());
   f.render_widget(footer_widget, footer_area);
 }
 

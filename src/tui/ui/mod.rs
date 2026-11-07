@@ -175,16 +175,19 @@ pub fn draw_action_bar(f: &mut Frame<'_>, app: &App, area: Rect) {
   }
 
   use ratatui::{
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Paragraph},
   };
+  use crate::tui::theme::ThemeExt;
+
+  let theme = &app.user_config.theme;
 
   let key_style = Style::default()
-    .fg(Color::Cyan)
+    .fg(theme.selected.into())
     .add_modifier(Modifier::BOLD);
-  let label_style = Style::default().fg(Color::Gray);
-  let sep_style = Style::default().fg(Color::DarkGray);
+  let label_style = Style::default().fg(theme.text.into());
+  let sep_style = Style::default().fg(theme.inactive.into());
 
   // Check for any processing message or status message returned by the program
   let status_msg = app.status_message();
@@ -203,20 +206,20 @@ pub fn draw_action_bar(f: &mut Frame<'_>, app: &App, area: Rect) {
   if has_status {
     if is_error {
       let err_text = status_msg.unwrap_or("An unexpected error occurred");
-      spans.push(Span::styled("[✖ ERROR] ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)));
-      spans.push(Span::styled(err_text, Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD)));
+      spans.push(Span::styled("[✖ ERROR] ", Style::default().fg(theme.error_border.into()).add_modifier(Modifier::BOLD)));
+      spans.push(Span::styled(err_text, Style::default().fg(theme.error_text.into()).add_modifier(Modifier::BOLD)));
     } else if is_syncing {
-      spans.push(Span::styled("[⟳ SYNCING] ", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)));
-      spans.push(Span::styled("Bidirectional playlist sync in progress...", Style::default().fg(Color::White)));
+      spans.push(Span::styled("[⟳ SYNCING] ", Style::default().fg(theme.hovered.into()).add_modifier(Modifier::BOLD)));
+      spans.push(Span::styled("Bidirectional playlist sync in progress...", Style::default().fg(theme.text.into())));
     } else if is_importing {
-      spans.push(Span::styled("[⟳ IMPORTING] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
-      spans.push(Span::styled("Fetching & importing playlist from URL...", Style::default().fg(Color::White)));
+      spans.push(Span::styled("[⟳ IMPORTING] ", Style::default().fg(theme.hint.into()).add_modifier(Modifier::BOLD)));
+      spans.push(Span::styled("Fetching & importing playlist from URL...", Style::default().fg(theme.text.into())));
     } else if is_advancing {
-      spans.push(Span::styled("[⟳ BUFFERING] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
-      spans.push(Span::styled("Loading next audio stream...", Style::default().fg(Color::White)));
+      spans.push(Span::styled("[⟳ BUFFERING] ", Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD)));
+      spans.push(Span::styled("Loading next audio stream...", Style::default().fg(theme.text.into())));
     } else if is_searching {
-      spans.push(Span::styled("[⟳ SEARCHING] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
-      spans.push(Span::styled("Fetching YouTube results...", Style::default().fg(Color::White)));
+      spans.push(Span::styled("[⟳ SEARCHING] ", Style::default().fg(theme.hint.into()).add_modifier(Modifier::BOLD)));
+      spans.push(Span::styled("Fetching YouTube results...", Style::default().fg(theme.text.into())));
     } else if let Some(msg) = status_msg {
       if msg.contains("Fetching")
         || msg.contains("Loading")
@@ -226,14 +229,14 @@ pub fn draw_action_bar(f: &mut Frame<'_>, app: &App, area: Rect) {
         || msg.contains("Syncing")
         || msg.contains("in background")
       {
-        spans.push(Span::styled("[⟳ PROCESSING] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
-        spans.push(Span::styled(msg, Style::default().fg(Color::LightYellow)));
+        spans.push(Span::styled("[⟳ PROCESSING] ", Style::default().fg(theme.hint.into()).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(msg, Style::default().fg(theme.hint.into())));
       } else if msg.contains("Playing") || msg.starts_with('♪') || msg.starts_with('\u{266a}') {
-        spans.push(Span::styled("[▶ PLAYING] ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)));
-        spans.push(Span::styled(msg, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled("[▶ PLAYING] ", Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(msg, Style::default().fg(theme.text.into()).add_modifier(Modifier::BOLD)));
       } else {
-        spans.push(Span::styled("[ℹ STATUS] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
-        spans.push(Span::styled(msg, Style::default().fg(Color::White)));
+        spans.push(Span::styled("[ℹ STATUS] ", Style::default().fg(theme.header.into()).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(msg, Style::default().fg(theme.text.into())));
       }
     }
 
@@ -262,7 +265,9 @@ pub fn draw_action_bar(f: &mut Frame<'_>, app: &App, area: Rect) {
     spans.push(Span::styled(*label, label_style));
   }
 
-  let paragraph = Paragraph::new(Line::from(spans)).block(Block::default());
+  let paragraph = Paragraph::new(Line::from(spans))
+    .style(theme.base_style())
+    .block(Block::default());
   f.render_widget(paragraph, area);
 }
 

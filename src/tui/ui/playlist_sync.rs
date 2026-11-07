@@ -1,7 +1,7 @@
 use crate::core::app::{ActiveBlock, App};
 use ratatui::{
   layout::{Constraint, Layout, Rect},
-  style::{Color, Modifier, Style},
+  style::{Modifier, Style},
   text::{Line, Span},
   widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Wrap},
   Frame,
@@ -39,49 +39,49 @@ fn draw_sync_settings(f: &mut Frame<'_>, app: &App, area: Rect, highlight_state:
 
   let spotify_spans = if spotify_connected {
     vec![
-      Span::styled("  ● Spotify:   ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-      Span::styled("CONNECTED (sp_dc authenticated)    ", Style::default().fg(Color::White)),
-      Span::styled("[Key C] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-      Span::styled("Update sp_dc Cookie", Style::default().fg(Color::Gray)),
+      Span::styled("  ● Spotify:   ", Style::default().fg(theme.hovered.into()).add_modifier(Modifier::BOLD)),
+      Span::styled("CONNECTED (sp_dc authenticated)    ", Style::default().fg(theme.text.into())),
+      Span::styled("[Key C] ", Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD)),
+      Span::styled("Update sp_dc Cookie", Style::default().fg(theme.inactive.into())),
     ]
   } else {
     vec![
-      Span::styled("  ○ Spotify:   ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-      Span::styled("NOT CONFIGURED                     ", Style::default().fg(Color::DarkGray)),
-      Span::styled("[Key C] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-      Span::styled("Set sp_dc Cookie (Required for Spotify Sync)", Style::default().fg(Color::Yellow)),
+      Span::styled("  ○ Spotify:   ", Style::default().fg(theme.hint.into()).add_modifier(Modifier::BOLD)),
+      Span::styled("NOT CONFIGURED                     ", Style::default().fg(theme.inactive.into())),
+      Span::styled("[Key C] ", Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD)),
+      Span::styled("Set sp_dc Cookie (Required for Spotify Sync)", Style::default().fg(theme.hint.into())),
     ]
   };
 
   let youtube_spans = if youtube_connected {
     vec![
-      Span::styled("  ● YouTube:   ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-      Span::styled("CONNECTED (cookies active)         ", Style::default().fg(Color::White)),
-      Span::styled("[Key Y] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-      Span::styled("Update YouTube Cookies", Style::default().fg(Color::Gray)),
+      Span::styled("  ● YouTube:   ", Style::default().fg(theme.hovered.into()).add_modifier(Modifier::BOLD)),
+      Span::styled("CONNECTED (cookies active)         ", Style::default().fg(theme.text.into())),
+      Span::styled("[Key Y] ", Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD)),
+      Span::styled("Update YouTube Cookies", Style::default().fg(theme.inactive.into())),
     ]
   } else {
     vec![
-      Span::styled("  ○ YouTube:   ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-      Span::styled("NOT CONFIGURED                     ", Style::default().fg(Color::DarkGray)),
-      Span::styled("[Key Y] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-      Span::styled("Set cookies.txt (Optional for Private Playlists)", Style::default().fg(Color::Yellow)),
+      Span::styled("  ○ YouTube:   ", Style::default().fg(theme.hint.into()).add_modifier(Modifier::BOLD)),
+      Span::styled("NOT CONFIGURED                     ", Style::default().fg(theme.inactive.into())),
+      Span::styled("[Key Y] ", Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD)),
+      Span::styled("Set cookies.txt (Optional for Private Playlists)", Style::default().fg(theme.hint.into())),
     ]
   };
 
   let sync_status_spans = if sync_in_flight {
     vec![
-      Span::styled("  ⟳ Sync Engine: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-      Span::styled("SYNCING IN BACKGROUND...           ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-      Span::styled("[Key s / Enter] ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-      Span::styled("Trigger Sync", Style::default().fg(Color::DarkGray)),
+      Span::styled("  ⟳ Sync Engine: ", Style::default().fg(theme.hint.into()).add_modifier(Modifier::BOLD)),
+      Span::styled("SYNCING IN BACKGROUND...           ", Style::default().fg(theme.hint.into()).add_modifier(Modifier::BOLD)),
+      Span::styled("[Key s / Enter] ", Style::default().fg(theme.text.into()).add_modifier(Modifier::BOLD)),
+      Span::styled("Trigger Sync", Style::default().fg(theme.inactive.into())),
     ]
   } else {
     vec![
-      Span::styled("  ✔ Sync Engine: ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-      Span::styled("Ready (Bidirectional Sync Active)  ", Style::default().fg(Color::White)),
-      Span::styled("[Key s / Enter] ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-      Span::styled("Run Full Bidirectional Sync Now", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+      Span::styled("  ✔ Sync Engine: ", Style::default().fg(theme.hovered.into()).add_modifier(Modifier::BOLD)),
+      Span::styled("Ready (Bidirectional Sync Active)  ", Style::default().fg(theme.text.into())),
+      Span::styled("[Key s / Enter] ", Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD)),
+      Span::styled("Run Full Bidirectional Sync Now", Style::default().fg(theme.text.into()).add_modifier(Modifier::BOLD)),
     ]
   };
 
@@ -126,26 +126,26 @@ fn draw_synced_playlists(f: &mut Frame<'_>, app: &App, area: Rect, highlight_sta
       )),
       Line::from(""),
       Line::from(vec![
-        Span::styled("  • Press ", Style::default().fg(Color::DarkGray)),
-        Span::styled("[s]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::styled(" or ", Style::default().fg(Color::DarkGray)),
-        Span::styled("[Enter]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::styled(" to auto-fetch remote playlists from Spotify and YouTube.", Style::default().fg(Color::White)),
+        Span::styled("  • Press ", Style::default().fg(theme.inactive.into())),
+        Span::styled("[s]", Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD)),
+        Span::styled(" or ", Style::default().fg(theme.inactive.into())),
+        Span::styled("[Enter]", Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD)),
+        Span::styled(" to auto-fetch remote playlists from Spotify and YouTube.", Style::default().fg(theme.text.into())),
       ]),
       Line::from(vec![
-        Span::styled("  • Press ", Style::default().fg(Color::DarkGray)),
-        Span::styled("[C]", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-        Span::styled(" to configure your Spotify sp_dc authentication cookie.", Style::default().fg(Color::White)),
+        Span::styled("  • Press ", Style::default().fg(theme.inactive.into())),
+        Span::styled("[C]", Style::default().fg(theme.hovered.into()).add_modifier(Modifier::BOLD)),
+        Span::styled(" to configure your Spotify sp_dc authentication cookie.", Style::default().fg(theme.text.into())),
       ]),
       Line::from(vec![
-        Span::styled("  • Press ", Style::default().fg(Color::DarkGray)),
-        Span::styled("[Y]", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-        Span::styled(" to configure your YouTube Netscape cookies.", Style::default().fg(Color::White)),
+        Span::styled("  • Press ", Style::default().fg(theme.inactive.into())),
+        Span::styled("[Y]", Style::default().fg(theme.error_text.into()).add_modifier(Modifier::BOLD)),
+        Span::styled(" to configure your YouTube Netscape cookies.", Style::default().fg(theme.text.into())),
       ]),
       Line::from(vec![
-        Span::styled("  • Press ", Style::default().fg(Color::DarkGray)),
-        Span::styled("[U]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        Span::styled(" anywhere to paste and import any Spotify or YouTube URL directly.", Style::default().fg(Color::White)),
+        Span::styled("  • Press ", Style::default().fg(theme.inactive.into())),
+        Span::styled("[U]", Style::default().fg(theme.hint.into()).add_modifier(Modifier::BOLD)),
+        Span::styled(" anywhere to paste and import any Spotify or YouTube URL directly.", Style::default().fg(theme.text.into())),
       ]),
     ];
 
@@ -170,44 +170,44 @@ fn draw_synced_playlists(f: &mut Frame<'_>, app: &App, area: Rect, highlight_sta
         let prefix = if is_selected { " ▶ " } else { "   " };
 
         let (tag_color, tag_text) = match pl.platform.as_str() {
-          "spotify" => (Color::Green, "[Spotify] "),
-          "youtube" => (Color::Red, "[YouTube] "),
-          _ => (Color::Cyan, "[EchoVena] "),
+          "spotify" => (theme.hovered.into(), "[Spotify] "),
+          "youtube" => (theme.error_text.into(), "[YouTube] "),
+          _ => (theme.selected.into(), "[EchoVena] "),
         };
 
         let mut spans = vec![
-          Span::styled(prefix, Style::default().fg(if is_selected { Color::Cyan } else { Color::DarkGray })),
+          Span::styled(prefix, Style::default().fg(if is_selected { theme.selected.into() } else { theme.inactive.into() })),
           Span::styled(tag_text, Style::default().fg(tag_color).add_modifier(Modifier::BOLD)),
           Span::styled(
             &pl.title,
             if is_selected {
-              Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+              Style::default().fg(theme.text.into()).add_modifier(Modifier::BOLD)
             } else {
-              Style::default().fg(Color::Gray)
+              Style::default().fg(theme.text.into())
             },
           ),
         ];
 
         if let Some(ref author) = pl.author {
           if !author.is_empty() {
-            spans.push(Span::styled(format!("  by {}", author), Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(format!("  by {}", author), Style::default().fg(theme.inactive.into())));
           }
         }
 
         spans.push(Span::styled(
           format!("  ({} tracks)", pl.track_count),
-          Style::default().fg(Color::Yellow),
+          Style::default().fg(theme.hint.into()),
         ));
 
         if pl.last_synced_at > 0 {
           let synced_time = chrono::DateTime::from_timestamp(pl.last_synced_at, 0)
             .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_else(|| "recent".to_string());
-          spans.push(Span::styled(format!("  Synced: {}", synced_time), Style::default().fg(Color::DarkGray)));
+          spans.push(Span::styled(format!("  Synced: {}", synced_time), Style::default().fg(theme.inactive.into())));
         }
 
         let item_style = if is_selected {
-          Style::default().bg(Color::Rgb(30, 35, 45))
+          Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD).add_modifier(Modifier::REVERSED)
         } else {
           Style::default()
         };

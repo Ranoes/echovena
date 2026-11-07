@@ -4,14 +4,14 @@ use crate::tui::layout::fullscreen_view_layout;
 use crate::ui::karaoke_view::detect_instrumental_break;
 use ratatui::{
   layout::{Alignment, Constraint, Direction, Layout, Rect},
-  style::{Color, Modifier, Style},
+  style::{Modifier, Style},
   text::{Line, Span},
   widgets::{Block, BorderType, Borders, Gauge, Paragraph},
   Frame,
 };
 
 use super::player::draw_playbar;
-use crate::tui::theme::EmphasisExt;
+use crate::tui::theme::{EmphasisExt, ThemeExt};
 
 pub fn draw_lyrics_view(f: &mut Frame<'_>, app: &App) {
   f.render_widget(ratatui::widgets::Clear, f.area());
@@ -40,8 +40,8 @@ pub fn draw_lyrics(f: &mut Frame<'_>, app: &App, area: Rect) {
   let block = Block::default()
     .borders(Borders::ALL)
     .border_type(BorderType::Rounded)
-    .title(Span::styled(title, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)))
-    .style(Style::default().fg(theme.inactive.into()).bg(theme.background.into()));
+    .title(Span::styled(title, Style::default().fg(theme.header.into()).add_modifier(Modifier::BOLD)))
+    .style(theme.base_style());
   f.render_widget(block.clone(), area);
 
   let inner_area = block.inner(area);
@@ -77,6 +77,7 @@ fn draw_rich_karaoke_stage(
   timeline: &crate::lyrics::KaraokeTimeline,
   inner_area: Rect,
 ) {
+  let theme = &app.user_config.theme;
   let offset_ms = app.view.lyrics_view.timing_offset_ms;
 
   #[cfg(feature = "youtube")]
@@ -107,8 +108,8 @@ fn draw_rich_karaoke_stage(
       .block(Block::default().borders(Borders::NONE))
       .gauge_style(
         Style::default()
-          .fg(Color::LightMagenta)
-          .bg(Color::DarkGray)
+          .fg(theme.selected.into())
+          .bg(theme.inactive.into())
           .add_modifier(Modifier::BOLD),
       )
       .percent((progress * 100.0) as u16)
@@ -143,9 +144,9 @@ fn draw_rich_karaoke_stage(
     }
 
     let role_style = match line.vocal_role {
-      VocalRole::Lead1 => Style::default().fg(Color::Cyan),
-      VocalRole::Lead2 => Style::default().fg(Color::LightMagenta),
-      VocalRole::Background => Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+      VocalRole::Lead1 => Style::default().fg(theme.selected.into()),
+      VocalRole::Lead2 => Style::default().fg(theme.hovered.into()),
+      VocalRole::Background => Style::default().fg(theme.inactive.into()).add_modifier(Modifier::ITALIC),
     };
 
     let prefix = if is_focused { "▶ " } else { "  " };
@@ -153,42 +154,42 @@ fn draw_rich_karaoke_stage(
     if is_active {
       match display_mode {
         crate::core::app::LyricsDisplayMode::Original => {
-          let mut spans = vec![Span::styled(prefix, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))];
+          let mut spans = vec![Span::styled(prefix, Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD))];
           if line.words.is_empty() {
-            spans.push(Span::styled(&line.text, role_style.add_modifier(Modifier::BOLD).fg(Color::Yellow)));
+            spans.push(Span::styled(&line.text, role_style.add_modifier(Modifier::BOLD).fg(theme.highlighted_lyrics.into())));
           } else {
             for word in &line.words {
               if current_time_ms >= word.end_time_ms {
-                spans.push(Span::styled(&word.text, role_style.add_modifier(Modifier::BOLD).fg(Color::White)));
+                spans.push(Span::styled(&word.text, role_style.add_modifier(Modifier::BOLD).fg(theme.text.into())));
               } else if current_time_ms >= word.start_time_ms {
                 spans.push(Span::styled(
                   &word.text,
-                  role_style.add_modifier(Modifier::BOLD).add_modifier(Modifier::UNDERLINED).fg(Color::Yellow),
+                  role_style.add_modifier(Modifier::BOLD).add_modifier(Modifier::UNDERLINED).fg(theme.highlighted_lyrics.into()),
                 ));
               } else {
-                spans.push(Span::styled(&word.text, Style::default().fg(Color::DarkGray)));
+                spans.push(Span::styled(&word.text, Style::default().fg(theme.inactive.into())));
               }
             }
           }
           rendered_lines.push(Line::from(spans).alignment(alignment));
         }
         crate::core::app::LyricsDisplayMode::Romanized => {
-          let mut spans = vec![Span::styled(prefix, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))];
+          let mut spans = vec![Span::styled(prefix, Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD))];
           if line.words.is_empty() {
             let text = line.romanization.as_deref().unwrap_or(&line.text);
-            spans.push(Span::styled(text, role_style.add_modifier(Modifier::BOLD).fg(Color::Yellow)));
+            spans.push(Span::styled(text, role_style.add_modifier(Modifier::BOLD).fg(theme.highlighted_lyrics.into())));
           } else {
             for word in &line.words {
               let text = word.romanization.as_deref().unwrap_or(&word.text);
               if current_time_ms >= word.end_time_ms {
-                spans.push(Span::styled(text, role_style.add_modifier(Modifier::BOLD).fg(Color::White)));
+                spans.push(Span::styled(text, role_style.add_modifier(Modifier::BOLD).fg(theme.text.into())));
               } else if current_time_ms >= word.start_time_ms {
                 spans.push(Span::styled(
                   text,
-                  role_style.add_modifier(Modifier::BOLD).add_modifier(Modifier::UNDERLINED).fg(Color::Yellow),
+                  role_style.add_modifier(Modifier::BOLD).add_modifier(Modifier::UNDERLINED).fg(theme.highlighted_lyrics.into()),
                 ));
               } else {
-                spans.push(Span::styled(text, Style::default().fg(Color::DarkGray)));
+                spans.push(Span::styled(text, Style::default().fg(theme.inactive.into())));
               }
             }
           }
@@ -196,20 +197,20 @@ fn draw_rich_karaoke_stage(
         }
         crate::core::app::LyricsDisplayMode::Both => {
           // Row 1: Original text
-          let mut orig_spans = vec![Span::styled(prefix, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))];
+          let mut orig_spans = vec![Span::styled(prefix, Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD))];
           if line.words.is_empty() {
-            orig_spans.push(Span::styled(&line.text, role_style.add_modifier(Modifier::BOLD).fg(Color::Yellow)));
+            orig_spans.push(Span::styled(&line.text, role_style.add_modifier(Modifier::BOLD).fg(theme.highlighted_lyrics.into())));
           } else {
             for word in &line.words {
               if current_time_ms >= word.end_time_ms {
-                orig_spans.push(Span::styled(&word.text, role_style.add_modifier(Modifier::BOLD).fg(Color::White)));
+                orig_spans.push(Span::styled(&word.text, role_style.add_modifier(Modifier::BOLD).fg(theme.text.into())));
               } else if current_time_ms >= word.start_time_ms {
                 orig_spans.push(Span::styled(
                   &word.text,
-                  role_style.add_modifier(Modifier::BOLD).add_modifier(Modifier::UNDERLINED).fg(Color::Yellow),
+                  role_style.add_modifier(Modifier::BOLD).add_modifier(Modifier::UNDERLINED).fg(theme.highlighted_lyrics.into()),
                 ));
               } else {
-                spans_push(&mut orig_spans, &word.text, Style::default().fg(Color::DarkGray));
+                spans_push(&mut orig_spans, &word.text, Style::default().fg(theme.inactive.into()));
               }
             }
           }
@@ -223,15 +224,15 @@ fn draw_rich_karaoke_stage(
               for word in &line.words {
                 let rom_w = word.romanization.as_deref().unwrap_or(&word.text);
                 if current_time_ms >= word.end_time_ms {
-                  rom_spans.push(Span::styled(rom_w, Style::default().fg(Color::LightCyan)));
+                  rom_spans.push(Span::styled(rom_w, Style::default().fg(theme.hint.into())));
                 } else if current_time_ms >= word.start_time_ms {
-                  rom_spans.push(Span::styled(rom_w, Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD)));
+                  rom_spans.push(Span::styled(rom_w, Style::default().fg(theme.highlighted_lyrics.into()).add_modifier(Modifier::BOLD)));
                 } else {
-                  rom_spans.push(Span::styled(rom_w, Style::default().fg(Color::DarkGray)));
+                  rom_spans.push(Span::styled(rom_w, Style::default().fg(theme.inactive.into())));
                 }
               }
             } else {
-              rom_spans.push(Span::styled(rom_line, Style::default().fg(Color::LightCyan)));
+              rom_spans.push(Span::styled(rom_line, Style::default().fg(theme.hint.into())));
             }
             rendered_lines.push(Line::from(rom_spans).alignment(alignment));
           }
@@ -246,13 +247,13 @@ fn draw_rich_karaoke_stage(
       }
 
       let line_style = if is_focused {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD)
       } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(theme.inactive.into())
       };
 
       let prefix_span = if is_focused {
-        Span::styled("▶ ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        Span::styled("▶ ", Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD))
       } else {
         Span::raw("  ")
       };
@@ -261,7 +262,7 @@ fn draw_rich_karaoke_stage(
 
       if display_mode == crate::core::app::LyricsDisplayMode::Both {
         if let Some(ref rom) = line.romanization {
-          rendered_lines.push(Line::from(vec![Span::raw("  "), Span::styled(rom.clone(), Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC))]).alignment(alignment));
+          rendered_lines.push(Line::from(vec![Span::raw("  "), Span::styled(rom.clone(), Style::default().fg(theme.inactive.into()).add_modifier(Modifier::ITALIC))]).alignment(alignment));
         }
       }
     }
@@ -290,7 +291,7 @@ fn draw_rich_karaoke_stage(
   } else {
     "[j/k: Browse lines │ b: Align │ t: Mode │ p: Spacing │ [/]: Offset]"
   };
-  let hint_widget = Paragraph::new(Line::from(Span::styled(hint_text, Style::default().fg(Color::DarkGray)))).alignment(Alignment::Center);
+  let hint_widget = Paragraph::new(Line::from(Span::styled(hint_text, Style::default().fg(theme.inactive.into())))).alignment(Alignment::Center);
   f.render_widget(hint_widget, chunks[2]);
 }
 

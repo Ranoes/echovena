@@ -6,7 +6,7 @@ use crate::core::plugin_api::PopupLine;
 use crate::infra::network::sync::PartyStatus;
 use ratatui::{
   layout::{Alignment, Constraint, Direction, Layout, Rect},
-  style::{Color, Modifier, Style},
+  style::{Modifier, Style},
   text::{Line, Span},
   widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Row, Table, Wrap},
   Frame,
@@ -133,31 +133,33 @@ pub fn draw_help_menu(f: &mut Frame<'_>, app: &App) {
     return;
   };
 
+  let theme = &app.user_config.theme;
+
   // Render Help Category Tabs
   let mut tab_spans = Vec::new();
   for (i, cat) in HelpCategory::ALL.iter().enumerate() {
     if i > 0 {
-      tab_spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+      tab_spans.push(Span::styled(" │ ", Style::default().fg(theme.inactive.into())));
     }
     let is_selected = *cat == app.view.help_category;
     if is_selected {
       tab_spans.push(Span::styled(
         format!(" [{}] ", cat.label()),
         Style::default()
-          .fg(Color::Cyan)
+          .fg(theme.selected.into())
           .add_modifier(Modifier::BOLD)
           .add_modifier(Modifier::REVERSED),
       ));
     } else {
       tab_spans.push(Span::styled(
         format!(" {} ", cat.label()),
-        Style::default().fg(Color::Gray),
+        Style::default().fg(theme.text.into()),
       ));
     }
   }
   tab_spans.push(Span::styled(
     "    [Tab: Cycle Category │ /: Filter │ Esc/q: Close]",
-    Style::default().fg(Color::DarkGray),
+    Style::default().fg(theme.inactive.into()),
   ));
   f.render_widget(Paragraph::new(Line::from(tab_spans)), tabs_area);
 
@@ -672,7 +674,6 @@ pub fn get_queue_data(app: &App) -> QueueSectionData {
 }
 
 pub fn draw_queue(f: &mut Frame<'_>, app: &App) {
-  use ratatui::style::Color;
 
   let [area] = f
     .area()
@@ -703,13 +704,15 @@ pub fn draw_queue(f: &mut Frame<'_>, app: &App) {
   let sec1_area = chunks[0];
   let sec2_area = chunks[1];
 
+  let theme = &app.user_config.theme;
+
   // -------------------------------------------------------------------------
   // SECTION 1: Now Playing & User Queue
   // -------------------------------------------------------------------------
   let sec1_border = if in_section_1 {
-    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD)
   } else {
-    Style::default().fg(Color::DarkGray)
+    Style::default().fg(theme.inactive.into())
   };
 
   let mut sec1_items: Vec<ListItem> = Vec::new();
@@ -720,15 +723,15 @@ pub fn draw_queue(f: &mut Frame<'_>, app: &App) {
     let secs = (dur_ms / 1000) % 60;
     let dur_str = if *dur_ms > 0 { format!(" [{:02}:{:02}]", mins, secs) } else { String::new() };
     sec1_items.push(ListItem::new(Line::from(vec![
-      Span::styled(" ▶  ", Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD)),
-      Span::styled(format!("{}. {} ", num, title), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-      Span::styled(format!("— {} ", artist), Style::default().fg(Color::Gray)),
-      Span::styled(dur_str, Style::default().fg(Color::LightYellow)),
+      Span::styled(" ▶  ", Style::default().fg(theme.hovered.into()).add_modifier(Modifier::BOLD)),
+      Span::styled(format!("{}. {} ", num, title), Style::default().fg(theme.text.into()).add_modifier(Modifier::BOLD)),
+      Span::styled(format!("— {} ", artist), Style::default().fg(theme.inactive.into())),
+      Span::styled(dur_str, Style::default().fg(theme.hint.into())),
     ])));
   } else {
     sec1_items.push(ListItem::new(Line::from(Span::styled(
       " ▶  (Nothing currently playing)",
-      Style::default().fg(Color::DarkGray),
+      Style::default().fg(theme.inactive.into()),
     ))));
   }
 
@@ -736,7 +739,7 @@ pub fn draw_queue(f: &mut Frame<'_>, app: &App) {
   if user_q_len == 0 {
     sec1_items.push(ListItem::new(Line::from(Span::styled(
       "    (No user-queued tracks — press 'z' on any song to add next)",
-      Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+      Style::default().fg(theme.inactive.into()).add_modifier(Modifier::ITALIC),
     ))));
   } else {
     for (idx, track) in data.user_queue.iter().enumerate() {
@@ -745,9 +748,9 @@ pub fn draw_queue(f: &mut Frame<'_>, app: &App) {
       let secs = (dur_ms / 1000) % 60;
       let dur_str = if dur_ms > 0 { format!(" [{:02}:{:02}]", mins, secs) } else { String::new() };
       sec1_items.push(ListItem::new(Line::from(vec![
-        Span::styled(format!("    {}. ", idx + 1), Style::default().fg(Color::LightYellow)),
-        Span::styled(format!("{} — {} ", track.name, track.artists.join(", ")), Style::default().fg(Color::White)),
-        Span::styled(dur_str, Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("    {}. ", idx + 1), Style::default().fg(theme.hint.into())),
+        Span::styled(format!("{} — {} ", track.name, track.artists.join(", ")), Style::default().fg(theme.text.into())),
+        Span::styled(dur_str, Style::default().fg(theme.inactive.into())),
       ])));
     }
   }
@@ -768,9 +771,9 @@ pub fn draw_queue(f: &mut Frame<'_>, app: &App) {
     )
     .highlight_style(
       Style::default()
-        .fg(Color::Cyan)
-        .bg(Color::Rgb(30, 45, 60))
-        .add_modifier(Modifier::BOLD),
+        .fg(theme.selected.into())
+        .add_modifier(Modifier::BOLD)
+        .add_modifier(Modifier::REVERSED),
     )
     .highlight_symbol("▶ ");
   f.render_stateful_widget(sec1_list, sec1_area, &mut sec1_state);
@@ -779,16 +782,16 @@ pub fn draw_queue(f: &mut Frame<'_>, app: &App) {
   // SECTION 2: Next from Album / Playlist / YouTube Auto-Play Radio
   // -------------------------------------------------------------------------
   let sec2_border = if !in_section_1 {
-    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD)
   } else {
-    Style::default().fg(Color::DarkGray)
+    Style::default().fg(theme.inactive.into())
   };
 
   let mut sec2_items: Vec<ListItem> = Vec::new();
   if sec2_count == 0 {
     sec2_items.push(ListItem::new(Line::from(Span::styled(
       "    (End of context — auto-play radio will discover more songs when needed)",
-      Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+      Style::default().fg(theme.inactive.into()).add_modifier(Modifier::ITALIC),
     ))));
   } else {
     for item in &data.context_tracks {
@@ -796,9 +799,9 @@ pub fn draw_queue(f: &mut Frame<'_>, app: &App) {
       let secs = (item.duration_ms / 1000) % 60;
       let dur_str = if item.duration_ms > 0 { format!(" [{:02}:{:02}]", mins, secs) } else { String::new() };
       sec2_items.push(ListItem::new(Line::from(vec![
-        Span::styled(format!("   {:2}. ", item.display_index), Style::default().fg(Color::LightCyan)),
-        Span::styled(format!("{} — {} ", item.title, item.artist), Style::default().fg(Color::White)),
-        Span::styled(dur_str, Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("   {:2}. ", item.display_index), Style::default().fg(theme.hint.into())),
+        Span::styled(format!("{} — {} ", item.title, item.artist), Style::default().fg(theme.text.into())),
+        Span::styled(dur_str, Style::default().fg(theme.inactive.into())),
       ])));
     }
   }
@@ -819,9 +822,9 @@ pub fn draw_queue(f: &mut Frame<'_>, app: &App) {
     )
     .highlight_style(
       Style::default()
-        .fg(Color::Cyan)
-        .bg(Color::Rgb(30, 45, 60))
-        .add_modifier(Modifier::BOLD),
+        .fg(theme.selected.into())
+        .add_modifier(Modifier::BOLD)
+        .add_modifier(Modifier::REVERSED),
     )
     .highlight_symbol("▶ ");
   f.render_stateful_widget(sec2_list, sec2_area, &mut sec2_state);

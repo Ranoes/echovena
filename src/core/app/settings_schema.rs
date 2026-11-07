@@ -1359,6 +1359,14 @@ impl App {
     self.settings_items != self.settings_saved_items
   }
 
+  /// Discard staged settings edits and restore the previously saved settings
+  pub fn discard_settings_changes(&mut self) {
+    if self.has_unsaved_settings_changes() {
+      self.settings_items = self.settings_saved_items.clone();
+      self.apply_settings_changes();
+    }
+  }
+
   /// Open the settings row filter on a fresh, empty query.
   pub fn begin_settings_filter(&mut self) {
     self.view.settings_filter.clear();
