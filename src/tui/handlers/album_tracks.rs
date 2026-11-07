@@ -53,7 +53,8 @@ pub fn handler(key: Key, app: &mut App) {
     k if common_key_events::middle_event(k) => handle_middle_event(app),
     k if common_key_events::low_event(k) => handle_low_event(app),
     Key::Char('s') => handle_save_event(app),
-    Key::Char('S') => super::handle_save_album_or_playlist(app),
+    Key::Char('S') => super::handle_save_playing_track(app),
+    Key::Char('z') => super::handle_save_album_or_playlist(app),
     Key::Char('w') => handle_save_album_event(app),
     Key::Enter => {
       if let Some((uri, offset)) = open_album_start(app) {
@@ -65,12 +66,12 @@ pub fn handler(key: Key, app: &mut App) {
     }
     Key::Char('e') => {
       if let Some(track) = selected_album_track(app).cloned() {
-        app.apply(Action::QueueTrack(track));
+        app.apply(Action::QueueTrackNext(track));
       }
     }
     Key::Char('E') => {
       if let Some(track) = selected_album_track(app).cloned() {
-        app.apply(Action::QueueTrackNext(track));
+        app.apply(Action::QueueTrack(track));
       }
     }
     Key::Char('\'') => {

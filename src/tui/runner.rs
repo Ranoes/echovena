@@ -80,7 +80,7 @@ fn modal_captures_key_before_back(app: &App) -> bool {
 /// its route popped instead of receiving the key, however well its own handler
 /// copes with it.
 fn key_reaches_handlers_before_back(app: &App, key: Key) -> bool {
-  if app.view.url_import_visible || app.view.relay_status_visible || app.view.karaoke_stage_visible || app.view.sync_auth_modal.is_some() {
+  if app.view.url_import_visible || app.view.relay_status_visible || app.view.karaoke_stage_visible || app.view.sync_auth_modal.is_some() || app.view.remap_modal_visible || app.view.song_list_delete_confirm.is_some() || app.view.settings_storage_confirm_action.is_some() {
     return true;
   }
   if app.view.search_drilldown != crate::core::app::SearchDrilldown::None {

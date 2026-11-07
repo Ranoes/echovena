@@ -325,7 +325,7 @@ pub fn help_entries_for(strings: &crate::core::i18n::Strings) -> Vec<HelpEntry> 
     row("Album Information & Tracklist", Literal("G"), help.context_general).category(HelpCategory::Navigation),
     row("Fullscreen Album Art", Literal("N"), help.context_general).category(HelpCategory::Navigation),
     row("Mini Player View", Literal("M"), help.context_general).category(HelpCategory::Navigation),
-    row("Play Queue (Two-section active & upcoming)", Literal("e | E"), help.context_queue).category(HelpCategory::Library),
+    row("Play Queue (Two-section active & upcoming)", Binding(|k| k.show_queue), help.context_queue).category(HelpCategory::Library),
     row("Select / Play Highlighted Item", Literal("o | O | <Enter>"), help.context_general).category(HelpCategory::Navigation),
     row("Open Sort Menu", Literal("'"), help.context_sortable_lists).category(HelpCategory::Library),
     row("Cycle Grouping Scope in Song List (Title/Artist/Album)", Literal("<Tab>"), help.context_general).category(HelpCategory::Navigation),
@@ -341,10 +341,11 @@ pub fn help_entries_for(strings: &crate::core::i18n::Strings) -> Vec<HelpEntry> 
     row("Nudge Lyrics Timing Offset (-100ms / +100ms)", Literal("[ / ]"), help.context_lyrics).category(HelpCategory::Lyrics),
     row("Resume Lyrics Auto-Follow", Literal("f | <Esc>"), help.context_lyrics).category(HelpCategory::Lyrics),
     row("Refetch Lyrics via Auto Waterfall", Literal("<Ctrl+r> | R"), help.context_lyrics).category(HelpCategory::Lyrics),
-    row("Download Track to Offline Archive (.elrc)", Literal("s"), help.context_general).category(HelpCategory::Library),
-    row("Batch Download Playlist to Offline Archive", Literal("S"), help.context_general).category(HelpCategory::Library),
-    row("Queue Highlighted Track Next (Play Next)", Literal("z"), help.context_selected_block).category(HelpCategory::Library),
-    row("Add Track to End of Queue", Literal("Z"), help.context_selected_block).category(HelpCategory::Library),
+    row("Save Highlighted Song to Offline Archive (.elrc)", Literal("s"), help.context_selected_block).category(HelpCategory::Library),
+    row("Save Currently Playing Track to Offline Archive (.elrc)", Literal("S"), help.context_general).category(HelpCategory::Library),
+    row("Download Playlist / Album to Offline Archive", Literal("z"), help.context_general).category(HelpCategory::Library),
+    row("Queue Highlighted Track Next (Play Next)", Literal("e"), help.context_selected_block).category(HelpCategory::Library),
+    row("Add Highlighted Track to End of Queue", Literal("E"), help.context_selected_block).category(HelpCategory::Library),
     row("Cycle Search Scope (Music / Album / Artist / Video)", Literal("<Tab> | <Shift+Tab>"), help.context_general).category(HelpCategory::Navigation),
     row("Paste URL or Search from Clipboard", Literal("p | <Ctrl+v>"), help.context_general).category(HelpCategory::Navigation),
     row("Add Playing Song to Playlist", Literal("W"), help.context_global).category(HelpCategory::Library),
@@ -459,11 +460,6 @@ pub fn help_entries_for(strings: &crate::core::i18n::Strings) -> Vec<HelpEntry> 
     )
     .needs(SPOTIFY),
     row(help.album_save, Literal("w"), help.context_save_album).needs(SPOTIFY),
-    row(
-      help.playlist_random,
-      Literal("S"),
-      help.context_selected_playlist,
-    ),
     row(help.episode_sort, Literal("S"), help.context_selected_show).needs(SPOTIFY),
     row(help.show_follow, Literal("s"), help.context_selected_show).needs(SPOTIFY),
     row(help.show_unfollow, Literal("D"), help.context_selected_show).needs(SPOTIFY),
@@ -1055,7 +1051,7 @@ mod tests {
     // The copy keys read the Spotify playback, whatever the browse scope.
     assert!(rows.contains(&"Copy url to currently playing song/episode".to_string()));
     assert!(!rows.iter().any(|row| row == "Search with input text"));
-    assert!(rows.contains(&"Play random song in playlist".to_string()));
+    assert!(rows.contains(&"Save Currently Playing Track to Offline Archive (.elrc)".to_string()));
   }
 
   #[test]

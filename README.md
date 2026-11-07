@@ -45,7 +45,7 @@ cargo install --git https://github.com/Ranoes/echovena.git --locked
 - **Multi-Platform Playlist Sync Engine:** Import and sync playlists from Spotify (via public HTML scraping or ChaCha20-Poly1305 encrypted `sp_dc` cookie sync) and YouTube / YouTube Music with smart regex title sanitation.
 - **High-Precision Track Resolution:** Multi-stage resolution pipeline combining international standard recording codes (ISRC), Songlink / Odesli universal bridges, and Jaro-Winkler fuzzy text similarity with duration validation gates.
 - **60 FPS Live Karaoke Stage View:** Smooth sub-word character interpolation rendering word-by-word synced lyrics from Apple Music TTML (including duet roles and background vocals), Musixmatch RichSync, Spotify `color-lyrics`, LRCLIB `.elrc`, and NetEase `.yrc`.
-- **Local Lossless Archiver:** Save individual tracks (`S`) or entire playlists (`Shift+S`) as FLAC files with embedded Vorbis comments and cover art via `lofty`, accompanied by `.elrc` enhanced lyric sidecars and `.m3u8` playlist files in `~/Music/EchoVena`.
+- **Local Lossless Archiver:** Save highlighted songs (`s`), currently playing tracks (`S`), or entire playlists/albums (`z`) as audio files with embedded metadata and cover art via `lofty`, accompanied by `.elrc` enhanced lyric sidecars and `.m3u8` playlist files in `~/Music/EchoVena`.
 - **FFT Audio Spectrum Visualizer:** Real-time CAVA audio visualizer and responsive playbar telemetry displaying live sample rates, bit depths, and active streaming codecs.
 - **Dynamic Provider Registry:** Fully configurable relay endpoints loaded dynamically from `~/.config/echovena/providers.json` with automatic health scoring and cooldown management.
 
@@ -58,20 +58,22 @@ cargo install --git https://github.com/Ranoes/echovena.git --locked
 | `/` | **Live Search & Autocomplete:** Real-time YouTube / YTMusic search with `Tab` scope filtering (`Music`, `Album`, `Artist`, `Video`) |
 | `h` / `j` / `k` / `l` | **Vim Navigation:** Move across panels, lists, columns, and playlists (`H` / `M` / `L` jump top/mid/bottom) |
 | `p` / `Ctrl+V` | **Safe Clipboard Paste:** Paste URLs, tokens, or search queries inside input modals |
-| `I` | **URL Import Modal:** Paste Spotify or YouTube playlist / track URLs to resolve and import |
-| `O` | **Now Playing & Karaoke Stage:** Open the 60 FPS word-by-word Karaoke & Visualizer dashboard |
-| `B` | **Fullscreen Lyrics:** Toggle dedicated synchronized lyrics view (`[` / `]` adjust `-50ms` / `+50ms` offset) |
-| `s` | **Single Track Archiver:** Save selected/playing track offline with cover art and `.elrc` lyrics |
-| `S` (`Shift+S`) | **Batch Playlist Archiver:** Download full playlist offline with metadata, cover art, `.elrc`, and `.m3u8` |
-| `z` | **Add to Queue:** Append selected track to playback queue |
+| `U` | **URL Import Modal:** Paste Spotify or YouTube playlist / track URLs to resolve and import |
+| `T` | **Now Playing Dashboard:** Open the 60 FPS word-by-word Karaoke & Cover Art dashboard |
+| `B` | **Fullscreen Lyrics:** Toggle dedicated synchronized lyrics view (`[` / `]` adjust `-100ms` / `+100ms` offset) |
+| `Q` | **Play Queue:** Open two-section active & upcoming playback queue |
+| `e` / `E` | **Queue Track:** `e` queues highlighted track next (Play Next); `E` adds to end of queue |
+| `s` | **Save Highlighted Song:** Archive highlighted song offline with cover art and `.elrc` lyrics |
+| `S` (`Shift+S`) | **Save Playing Track:** Archive currently playing track offline with cover art and `.elrc` lyrics |
+| `z` | **Download Playlist / Album:** Batch archive full playlist or album offline with `.elrc` and `.m3u8` |
 | `Space` | Play / Pause playback |
 | `>` / `<` | Next / Previous track |
 | `.` / `,` | Seek forward / backward |
 | `+` / `-` | Increase / Decrease volume |
 | `r` / `R` | Cycle repeat mode / Toggle shuffle |
-| `i` | Open Source Picker |
+| `d` | Open Audio Stream & Download Source Picker |
 | `?` | Open context-aware Keybindings Help modal |
-| `q` | Quit EchoVena |
+| `q` / `Ctrl+Q` | `q` Back / Close modal; `Ctrl+Q` Quit EchoVena |
 
 ---
 

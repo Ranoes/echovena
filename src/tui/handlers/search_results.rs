@@ -765,7 +765,21 @@ fn handle_drilldown_events(key: Key, app: &mut App) {
         _ => {}
       }
     }
-    Key::Char('z') => {
+    Key::Char('e') => {
+      let track_opt = match &app.view.search_drilldown {
+        SearchDrilldown::AlbumDetail { tracks, selected_index, .. } => tracks.get(*selected_index).cloned(),
+        SearchDrilldown::ArtistDetail { top_songs, selected_index, focus_section: ArtistDetailSection::TopSongs, .. } => {
+          top_songs.get(*selected_index).cloned()
+        }
+        _ => None,
+      };
+      if let Some(track) = track_opt {
+        let name = track.name.clone();
+        app.apply(Action::QueueTrackNext(track));
+        app.set_status_message(format!("Queued '{}' next", name), 3);
+      }
+    }
+    Key::Char('E') => {
       let track_opt = match &app.view.search_drilldown {
         SearchDrilldown::AlbumDetail { tracks, selected_index, .. } => tracks.get(*selected_index).cloned(),
         SearchDrilldown::ArtistDetail { top_songs, selected_index, focus_section: ArtistDetailSection::TopSongs, .. } => {
@@ -776,8 +790,11 @@ fn handle_drilldown_events(key: Key, app: &mut App) {
       if let Some(track) = track_opt {
         let name = track.name.clone();
         app.apply(Action::QueueTrack(track));
-        app.set_status_message(format!("Queued '{}'", name), 3);
+        app.set_status_message(format!("Queued '{}' to end of queue", name), 3);
       }
+    }
+    Key::Char('z') => {
+      super::handle_save_album_or_playlist(app);
     }
     _ => {}
   }
@@ -855,11 +872,11 @@ pub fn handler(key: Key, app: &mut App) {
         return;
       }
       Key::Char('e') => {
-        app.queue_selected_live_search_item_end();
+        app.queue_selected_live_search_item_next();
         return;
       }
       Key::Char('E') => {
-        app.queue_selected_live_search_item_next();
+        app.queue_selected_live_search_item_end();
         return;
       }
       _ => {}
@@ -1033,8 +1050,9 @@ pub fn handler(key: Key, app: &mut App) {
       }
       SearchResultBlock::Empty => {}
     },
-    Key::Char('e') => handle_add_item_to_queue_end(app),
-    Key::Char('E') => handle_add_item_to_queue(app),
+    Key::Char('e') => handle_add_item_to_queue(app),
+    Key::Char('E') => handle_add_item_to_queue_end(app),
+    Key::Char('z') => super::handle_save_album_or_playlist(app),
     Key::Char('s') => handle_save_track_event(app),
     Key::Char('\'') => {
       super::sort_menu::open_sort_menu(app, crate::core::sort::SortContext::SavedAlbums);

@@ -9,6 +9,11 @@ use crate::tui::handlers::filter_input::{self, FilterEdit};
 use crate::tui::ui::settings::{filtered_setting_indices, selected_setting_position};
 
 pub fn handler(key: Key, app: &mut App) {
+  if app.view.settings_storage_confirm_action.is_some() {
+    handle_storage_confirm_prompt(key, app);
+    return;
+  }
+
   if app.view.settings_unsaved_prompt_visible {
     handle_unsaved_changes_prompt(key, app);
     return;
@@ -37,8 +42,16 @@ fn handle_navigation(key: Key, app: &mut App) {
     key if down_event(key, &app.user_config.keys) => select_next_item(app),
     key if up_event(key, &app.user_config.keys) => select_previous_item(app),
 
-    // Enter edit mode
+    // Enter edit mode (or open y/n confirmation for Storage & Cache actions)
     Key::Enter => enter_edit_mode(app),
+    Key::Char('d') | Key::Char('D') | Key::Char('x') | Key::Delete => {
+      if matches!(
+        app.settings_items.get(app.view.settings_selected_index).map(|s| &s.value),
+        Some(SettingValue::Action(_))
+      ) {
+        enter_edit_mode(app);
+      }
+    }
 
     // Save settings
     key if key == app.effective_save_settings_key() => {
@@ -155,10 +168,51 @@ pub(super) fn close_settings(app: &mut App) {
   app.discard_settings_changes();
   app.view.settings_unsaved_prompt_visible = false;
   app.view.settings_unsaved_prompt_save_selected = true;
+  app.view.settings_storage_confirm_action = None;
+  app.view.settings_storage_confirm_yes_selected = false;
   app.view.settings_edit_mode = false;
   app.view.settings_edit_buffer.clear();
   app.clear_settings_filter();
   app.pop_navigation_stack();
+}
+
+fn handle_storage_confirm_prompt(key: Key, app: &mut App) {
+  match key {
+    Key::Char('y') | Key::Char('Y') => {
+      if let Some((action_id, _, _)) = app.view.settings_storage_confirm_action.take() {
+        app.view.settings_storage_confirm_yes_selected = false;
+        execute_storage_action(app, &action_id);
+      }
+    }
+    Key::Char('n') | Key::Char('N') | Key::Esc | Key::Char('q') => {
+      app.view.settings_storage_confirm_action = None;
+      app.view.settings_storage_confirm_yes_selected = false;
+    }
+    key if key == app.user_config.keys.back => {
+      app.view.settings_storage_confirm_action = None;
+      app.view.settings_storage_confirm_yes_selected = false;
+    }
+    Key::Tab => {
+      app.view.settings_storage_confirm_yes_selected =
+        !app.view.settings_storage_confirm_yes_selected;
+    }
+    key if left_event(key, &app.user_config.keys) || right_event(key, &app.user_config.keys) => {
+      app.view.settings_storage_confirm_yes_selected =
+        !app.view.settings_storage_confirm_yes_selected;
+    }
+    Key::Enter => {
+      if app.view.settings_storage_confirm_yes_selected {
+        if let Some((action_id, _, _)) = app.view.settings_storage_confirm_action.take() {
+          app.view.settings_storage_confirm_yes_selected = false;
+          execute_storage_action(app, &action_id);
+        }
+      } else {
+        app.view.settings_storage_confirm_action = None;
+        app.view.settings_storage_confirm_yes_selected = false;
+      }
+    }
+    _ => {}
+  }
 }
 
 fn handle_edit_mode(key: Key, app: &mut App) {
@@ -625,10 +679,14 @@ pub(super) fn enter_edit_mode(app: &mut App) {
       return;
     }
 
-    // For actions, execute directly without entering edit mode
+    // For Storage & Cache destructive actions, open a y/n confirmation popup first
     if let SettingValue::Action(_) = &setting.value {
-      let action_id = setting.id.clone();
-      execute_storage_action(app, &action_id);
+      app.view.settings_storage_confirm_action = Some((
+        setting.id.clone(),
+        setting.name.clone(),
+        setting.description.clone(),
+      ));
+      app.view.settings_storage_confirm_yes_selected = false;
       return;
     }
 
@@ -1148,6 +1206,43 @@ mod tests {
     handler(app.user_config.keys.back, &mut app);
     assert_eq!(app.get_current_route().id, previous_route);
     assert!(app.view.settings_filter.is_empty());
+  }
+
+  #[test]
+  fn storage_actions_require_yn_confirmation_popup_before_executing() {
+    let mut app = App::default();
+    open_settings(&mut app);
+    app.view.settings_category = SettingsCategory::Storage;
+    app.load_settings_for_category();
+    app.view.settings_selected_index = setting_index(&app, "storage.clear_resolution_cache");
+
+    // Pressing Enter opens the confirmation popup instead of executing immediately.
+    handle_app(Key::Enter, &mut app);
+    let pending = app
+      .view
+      .settings_storage_confirm_action
+      .clone()
+      .expect("Storage action must open y/n confirmation popup");
+    assert_eq!(pending.0, "storage.clear_resolution_cache");
+    assert!(app.status_message().is_none());
+
+    // Pressing 'n' cancels without executing or leaving Settings.
+    handle_app(Key::Char('n'), &mut app);
+    assert!(app.view.settings_storage_confirm_action.is_none());
+    assert_eq!(app.get_current_route().id, RouteId::Settings);
+    assert!(app.status_message().is_none());
+
+    // Pressing 'x' also opens the popup, and 'y' executes and closes the popup.
+    handle_app(Key::Char('x'), &mut app);
+    assert!(app.view.settings_storage_confirm_action.is_some());
+    handle_app(Key::Char('y'), &mut app);
+    assert!(app.view.settings_storage_confirm_action.is_none());
+    assert!(
+      app
+        .status_message()
+        .is_some_and(|msg| msg.contains("Cleared search and resolution cache")),
+      "expected execution status message after confirming with 'y'"
+    );
   }
 }
 

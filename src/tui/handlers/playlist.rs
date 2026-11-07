@@ -817,8 +817,8 @@ pub fn handler(key: Key, app: &mut App) {
             release_date: None,
             generated_name: None,
           };
-          app.apply(Action::QueueTrack(track_info));
-          app.set_status_message(format!("Queued '{}' to end of queue", title), 3);
+          app.apply(Action::QueueTrackNext(track_info));
+          app.set_status_message(format!("Queued '{}' as next played song", title), 3);
         }
       }
     }
@@ -844,8 +844,8 @@ pub fn handler(key: Key, app: &mut App) {
             release_date: None,
             generated_name: None,
           };
-          app.apply(Action::QueueTrackNext(track_info));
-          app.set_status_message(format!("Queued '{}' as next played song", title), 3);
+          app.apply(Action::QueueTrack(track_info));
+          app.set_status_message(format!("Queued '{}' to end of queue", title), 3);
         }
       }
     }
@@ -906,7 +906,10 @@ pub fn handler(key: Key, app: &mut App) {
         }
       }
     }
-    Key::Char('S') | Key::Char('Z') => {
+    Key::Char('S') => {
+      super::handle_save_playing_track(app);
+    }
+    Key::Char('z') | Key::Char('Z') => {
       let tree = get_playlist_tree_items(app);
       if let Some(idx) = app.view.selected_playlist_index {
         let target_pl_id = match tree.get(idx) {

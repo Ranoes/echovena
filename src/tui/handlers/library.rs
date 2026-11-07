@@ -86,15 +86,6 @@ mod tests {
   use std::sync::mpsc::channel;
   use std::time::SystemTime;
 
-  /// A source switch persists; without a seeded path it would write the
-  /// developer's real state.yml.
-  #[allow(dead_code)]
-  fn seed_state_path(app: &mut App) -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    app.state_path = Some(dir.path().join("state.yml"));
-    dir
-  }
-
   fn app_selecting(
     target: LibraryTarget,
     session: Option<SystemTime>,

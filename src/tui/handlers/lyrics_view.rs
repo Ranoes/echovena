@@ -74,8 +74,8 @@ pub fn handler(key: Key, app: &mut App) {
     Key::Char('-') => { let _ = app.apply(Action::VolumeDown); }
     Key::Char('r') => { let _ = app.apply(Action::CycleRepeat); }
     Key::Char('R') => { let _ = app.apply(Action::ToggleShuffle); }
-    Key::Char('s') => super::handle_save_single_track(app),
-    Key::Char('S') => super::handle_save_album_or_playlist(app),
+    Key::Char('s') | Key::Char('S') => super::handle_save_playing_track(app),
+    Key::Char('z') => super::handle_save_album_or_playlist(app),
     Key::Char('w') => { let _ = app.apply(Action::OpenAddPlayingTrackDialog); }
     Key::Char('y') => {
       super::copy_url(app, Action::CopyUrl(CopyTarget::CurrentSong));

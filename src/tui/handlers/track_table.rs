@@ -1,6 +1,10 @@
 use super::common_key_events;
 use crate::core::action::{Action, ListTarget};
-use crate::core::app::{song_list_rows, App, SongListRow, SongListScope, TrackTable, TrackTableContext};
+use crate::core::app::{
+  song_list_group_key, song_list_rows, App, PendingSongListGroupDelete, SongListRow, SongListScope,
+  TrackTable, TrackTableContext,
+};
+use crate::core::plugin_api::TrackInfo;
 use crate::tui::event::Key;
 use rspotify::prelude::Id;
 
@@ -32,6 +36,39 @@ fn grouped_handler(key: Key, app: &mut App) -> bool {
     app.view.song_list_cursor = c;
     return true;
   }
+
+  // In Artist or Album scope inside Song List, pressing x/d/D/Delete opens a
+  // y/n confirmation popup to delete the entire highlighted artist or album.
+  if app.track_table.context == Some(TrackTableContext::SavedTracks)
+    && matches!(key, Key::Char('d') | Key::Char('D') | Key::Char('x') | Key::Delete)
+  {
+    let scope = app.view.song_list_scope;
+    let group_key = match &rows[cur] {
+      SongListRow::Group { key: g, .. } => g.clone(),
+      SongListRow::Track(i) => app
+        .track_table
+        .tracks
+        .get(*i)
+        .map(|t| song_list_group_key(t, scope))
+        .unwrap_or_default(),
+    };
+    let track_count = app
+      .track_table
+      .tracks
+      .iter()
+      .filter(|t| song_list_group_key(t, scope).eq_ignore_ascii_case(&group_key))
+      .count();
+    if track_count > 0 {
+      app.view.song_list_delete_confirm = Some(PendingSongListGroupDelete {
+        scope,
+        group_key,
+        track_count,
+      });
+      app.view.song_list_delete_confirm_yes_selected = false;
+      return true;
+    }
+  }
+
   match (&rows[cur], key) {
     (SongListRow::Group { key: g, .. }, Key::Enter | Key::Char('l') | Key::Right | Key::Char(' ')) => {
       if !app.view.song_list_expanded.remove(g) {
@@ -39,11 +76,68 @@ fn grouped_handler(key: Key, app: &mut App) -> bool {
       }
       true
     }
+    (SongListRow::Group { key: g, expanded, .. }, Key::Char('h') | Key::Left) => {
+      if *expanded {
+        app.view.song_list_expanded.remove(g);
+        true
+      } else {
+        false
+      }
+    }
+    (SongListRow::Group { key: g, .. }, Key::Char('e')) => {
+      let scope = app.view.song_list_scope;
+      let group_tracks: Vec<TrackInfo> = app
+        .track_table
+        .tracks
+        .iter()
+        .filter(|t| song_list_group_key(t, scope).eq_ignore_ascii_case(g))
+        .cloned()
+        .collect();
+      let count = group_tracks.len();
+      for track in group_tracks.into_iter().rev() {
+        app.apply(Action::QueueTrackNext(track));
+      }
+      if count > 0 {
+        app.set_status_message(format!("Queued {} tracks from '{}' to play next", count, g), 3);
+      }
+      true
+    }
+    (SongListRow::Group { key: g, .. }, Key::Char('E')) => {
+      let scope = app.view.song_list_scope;
+      let group_tracks: Vec<TrackInfo> = app
+        .track_table
+        .tracks
+        .iter()
+        .filter(|t| song_list_group_key(t, scope).eq_ignore_ascii_case(g))
+        .cloned()
+        .collect();
+      let count = group_tracks.len();
+      for track in group_tracks {
+        app.apply(Action::QueueTrack(track));
+      }
+      if count > 0 {
+        app.set_status_message(format!("Queued {} tracks from '{}' to end of queue", count, g), 3);
+      }
+      true
+    }
+    (SongListRow::Group { .. }, Key::Char('z')) => {
+      super::handle_save_album_or_playlist(app);
+      true
+    }
+    (SongListRow::Group { .. }, Key::Char('s')) => {
+      app.set_status_message(
+        "Highlight a song to save with 's', or press 'z' to download all tracks in this group"
+          .to_string(),
+        3,
+      );
+      true
+    }
+    (SongListRow::Group { .. }, Key::Char('\'') | Key::Char('q')) => false,
+    (SongListRow::Group { .. }, _) => true,
     (SongListRow::Track(i), _) => {
       app.view.track_table_index = *i;
       false
     }
-    _ => false,
   }
 }
 
@@ -196,8 +290,9 @@ pub fn handler(key: Key, app: &mut App) {
     }
     k if k == app.user_config.keys.jump_to_end => jump_to_end(app),
     k if k == app.user_config.keys.jump_to_start => jump_to_start(app),
-    Key::Char('e') => on_queue_end(app),
-    Key::Char('E') => on_queue(app),
+    Key::Char('e') => on_queue(app),
+    Key::Char('E') => on_queue_end(app),
+    Key::Char('z') => super::handle_save_album_or_playlist(app),
     // Open sort menu
     Key::Char('\'') => {
       super::sort_menu::open_sort_menu(app, crate::core::sort::SortContext::PlaylistTracks);
@@ -318,82 +413,130 @@ fn play_random_song(app: &mut App) {
   };
 }
 
-fn handle_delete_track(app: &mut App) {
-  if app.track_table.context == Some(TrackTableContext::SavedTracks) {
-    let idx = app.view.track_table_index;
-    if let Some(track) = app.track_table.tracks.get(idx).cloned() {
-      let title = track.name.clone();
-      let artist = track.artists.join(", ");
-      let track_id = track.uri.clone().or_else(|| track.id.clone()).unwrap_or_else(|| title.clone());
-      let raw_uri = track.uri.clone().unwrap_or_default();
-      let raw_id = track.id.clone().unwrap_or_default();
-      let local_tag = format!("local:track:{}", crate::sources::lossless_relay::archiver::sanitize_filename(&format!("{}-{}", artist, title)));
+fn delete_single_saved_track_artifacts(
+  app: &mut App,
+  track: &TrackInfo,
+  db: Option<&crate::sources::lossless_relay::db::Database>,
+) {
+  let title = track.name.clone();
+  let artist = track.artists.join(", ");
+  let track_id = track
+    .uri
+    .clone()
+    .or_else(|| track.id.clone())
+    .unwrap_or_else(|| title.clone());
+  let raw_uri = track.uri.clone().unwrap_or_default();
+  let raw_id = track.id.clone().unwrap_or_default();
+  let local_tag = format!(
+    "local:track:{}",
+    crate::sources::lossless_relay::archiver::sanitize_filename(&format!("{}-{}", artist, title))
+  );
 
-      let mut ids: Vec<&str> = vec![&track_id];
-      if !raw_uri.is_empty() { ids.push(&raw_uri); }
-      if !raw_id.is_empty() { ids.push(&raw_id); }
-      ids.push(&local_tag);
+  let mut ids: Vec<&str> = vec![&track_id];
+  if !raw_uri.is_empty() {
+    ids.push(&raw_uri);
+  }
+  if !raw_id.is_empty() {
+    ids.push(&raw_id);
+  }
+  ids.push(&local_tag);
 
-      // 1. Delete permanently from SQLite database across all tables, disk files & cache
-      if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
-        let _ = db.delete_track_permanently(&title, &artist, &ids);
-        let _ = db.purge_missing_files();
+  // 1. Delete permanently from SQLite database across all tables
+  if let Some(db) = db {
+    let _ = db.delete_track_permanently(&title, &artist, &ids);
+  }
+
+  #[cfg(not(test))]
+  {
+    // 2. Direct URI file delete if file:// path
+    if let Some(path_str) = track.uri.as_deref().and_then(|u| u.strip_prefix("file://")) {
+      let p = std::path::PathBuf::from(path_str);
+      if p.exists() {
+        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(p.with_extension("elrc"));
       }
+    }
 
-      // 2. Direct URI file delete if file:// path
-      if let Some(path_str) = track.uri.as_deref().and_then(|u| u.strip_prefix("file://")) {
-        let p = std::path::PathBuf::from(path_str);
-        if p.exists() {
-          let _ = std::fs::remove_file(&p);
-          let _ = std::fs::remove_file(p.with_extension("elrc"));
-        }
-      }
-
-      // 3. Recursively scan & delete all matching audio/elrc files in Music/EchoVena archive
-      if let Some(root) = crate::core::paths::music_archive_dir() {
-        if root.exists() {
-          let mut dirs = vec![root.clone()];
-          let clean_title = title.to_lowercase();
-          let sanitized_title = crate::sources::lossless_relay::archiver::sanitize_filename(&title).to_lowercase();
-          while let Some(dir) = dirs.pop() {
-            if let Ok(entries) = std::fs::read_dir(&dir) {
-              for entry in entries.flatten() {
-                let p = entry.path();
-                if p.is_dir() {
-                  dirs.push(p);
-                } else if p.is_file() {
-                  let fname = p.file_name().and_then(|f| f.to_str()).unwrap_or("").to_lowercase();
-                  if fname.contains(&clean_title) || fname.contains(&sanitized_title) {
-                    let _ = std::fs::remove_file(&p);
-                    let _ = std::fs::remove_file(p.with_extension("elrc"));
-                  }
+    // 3. Recursively scan & delete all matching audio/elrc files in Music/EchoVena archive
+    if let Some(root) = crate::core::paths::music_archive_dir() {
+      let clean_title = title.trim().to_lowercase();
+      let sanitized_title =
+        crate::sources::lossless_relay::archiver::sanitize_filename(&title).to_lowercase();
+      if root.exists() && !clean_title.is_empty() {
+        let mut dirs = vec![root];
+        while let Some(dir) = dirs.pop() {
+          if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+              let p = entry.path();
+              if p.is_dir() {
+                dirs.push(p);
+              } else if p.is_file() {
+                let fname = p
+                  .file_name()
+                  .and_then(|f| f.to_str())
+                  .unwrap_or("")
+                  .to_lowercase();
+                if fname.contains(&clean_title)
+                  || (!sanitized_title.is_empty() && fname.contains(&sanitized_title))
+                {
+                  let _ = std::fs::remove_file(&p);
+                  let _ = std::fs::remove_file(p.with_extension("elrc"));
                 }
               }
             }
           }
         }
       }
+    }
 
-      // 4. Purge cached stream files in ~/.cache/echovena/audio/
-      if let Some(audio_cache) = crate::core::paths::audio_cache_dir() {
-        if let Ok(entries) = std::fs::read_dir(&audio_cache) {
-          for entry in entries.flatten() {
-            let p = entry.path();
-            if let Some(fname) = p.file_name().and_then(|f| f.to_str()) {
-              if fname.contains(&title) || (!raw_id.is_empty() && fname.contains(&raw_id)) {
-                let _ = std::fs::remove_file(&p);
-              }
+    // 4. Purge cached stream files in ~/.cache/echovena/audio/
+    if let Some(audio_cache) = crate::core::paths::audio_cache_dir() {
+      if let Ok(entries) = std::fs::read_dir(&audio_cache) {
+        for entry in entries.flatten() {
+          let p = entry.path();
+          if let Some(fname) = p.file_name().and_then(|f| f.to_str()) {
+            if (!title.trim().is_empty() && fname.contains(&title))
+              || (!raw_id.is_empty() && fname.contains(&raw_id))
+            {
+              let _ = std::fs::remove_file(&p);
             }
           }
         }
       }
+    }
+  }
 
-      // 5. Purge from listening history log (listens.jsonl) & invalidate stats cache
-      let _ = crate::infra::history::remove_track_from_history(&title, &artist, &ids);
+  // 5. Purge from listening history log (listens.jsonl)
+  let _ = crate::infra::history::remove_track_from_history(&title, &artist, &ids);
+
+  // 6. Remove from in-memory saved pages & liked song IDs
+  for page in &mut app.library_mut().saved_tracks.pages {
+    page.items.retain(|t| {
+      let name_match = t.name.eq_ignore_ascii_case(&title);
+      let uri_match = track.uri.is_some() && t.uri == track.uri;
+      let id_match = track.id.is_some() && t.id == track.id;
+      !name_match && !uri_match && !id_match
+    });
+  }
+  app.liked_song_ids_set_mut().remove(&track_id);
+  if !raw_uri.is_empty() {
+    app.liked_song_ids_set_mut().remove(&raw_uri);
+  }
+}
+
+fn handle_delete_track(app: &mut App) {
+  if app.track_table.context == Some(TrackTableContext::SavedTracks) {
+    let idx = app.view.track_table_index;
+    if let Some(track) = app.track_table.tracks.get(idx).cloned() {
+      let title = track.name.clone();
+      let db = crate::sources::lossless_relay::db::Database::open_default().ok();
+      delete_single_saved_track_artifacts(app, &track, db.as_ref());
+      if let Some(ref db) = db {
+        let _ = db.purge_missing_files();
+      }
       app.stats_data = None;
       app.reload_stats();
 
-      // 6. Remove from in-memory track table & caches
       if idx < app.track_table.tracks.len() {
         app.track_table.tracks.remove(idx);
       }
@@ -403,23 +546,113 @@ fn handle_delete_track(app: &mut App) {
         app.view.track_table_index = 0;
       }
 
-      for page in &mut app.library_mut().saved_tracks.pages {
-        page.items.retain(|t| {
-          let name_match = t.name.eq_ignore_ascii_case(&title);
-          let uri_match = track.uri.is_some() && t.uri == track.uri;
-          let id_match = track.id.is_some() && t.id == track.id;
-          !name_match && !uri_match && !id_match
-        });
-      }
-      app.liked_song_ids_set_mut().remove(&track_id);
-      if !raw_uri.is_empty() {
-        app.liked_song_ids_set_mut().remove(&raw_uri);
-      }
-
-      app.set_status_message(format!("Permanently deleted '{}' from Song List, disk & history", title), 4);
+      app.set_status_message(
+        format!("Permanently deleted '{}' from Song List, disk & history", title),
+        4,
+      );
     }
   } else {
     app.apply(Action::OpenRemoveTrackDialog);
+  }
+}
+
+pub(crate) fn execute_group_delete_confirm(app: &mut App) {
+  let Some(pending) = app.view.song_list_delete_confirm.take() else {
+    return;
+  };
+  let matching: Vec<TrackInfo> = app
+    .track_table
+    .tracks
+    .iter()
+    .filter(|t| song_list_group_key(t, pending.scope).eq_ignore_ascii_case(&pending.group_key))
+    .cloned()
+    .collect();
+  let removed_count = matching.len();
+  if removed_count == 0 {
+    return;
+  }
+
+  let db = crate::sources::lossless_relay::db::Database::open_default().ok();
+  for track in &matching {
+    delete_single_saved_track_artifacts(app, track, db.as_ref());
+  }
+  if let Some(ref db) = db {
+    let _ = db.purge_missing_files();
+  }
+  app.stats_data = None;
+  app.reload_stats();
+
+  app
+    .track_table
+    .tracks
+    .retain(|t| !song_list_group_key(t, pending.scope).eq_ignore_ascii_case(&pending.group_key));
+  app
+    .view
+    .song_list_expanded
+    .retain(|k| !k.eq_ignore_ascii_case(&pending.group_key));
+
+  if !app.track_table.tracks.is_empty() {
+    app.view.track_table_index = app
+      .view
+      .track_table_index
+      .min(app.track_table.tracks.len() - 1);
+  } else {
+    app.view.track_table_index = 0;
+  }
+  let rows = song_list_rows(
+    &app.track_table.tracks,
+    app.view.song_list_scope,
+    &app.view.song_list_expanded,
+  );
+  if rows.is_empty() {
+    app.view.song_list_cursor = 0;
+  } else {
+    app.view.song_list_cursor = app.view.song_list_cursor.min(rows.len() - 1);
+  }
+
+  app.set_status_message(
+    format!(
+      "Permanently deleted {} '{}' ({} tracks) from Song List, disk & history",
+      pending.scope.label(),
+      pending.group_key,
+      removed_count
+    ),
+    4,
+  );
+}
+
+pub(crate) fn handle_group_delete_confirm(key: Key, app: &mut App) {
+  match key {
+    Key::Char('y') | Key::Char('Y') => {
+      execute_group_delete_confirm(app);
+    }
+    Key::Char('n') | Key::Char('N') | Key::Esc | Key::Char('q') => {
+      app.view.song_list_delete_confirm = None;
+      app.view.song_list_delete_confirm_yes_selected = false;
+    }
+    k if k == app.user_config.keys.back => {
+      app.view.song_list_delete_confirm = None;
+      app.view.song_list_delete_confirm_yes_selected = false;
+    }
+    Key::Tab => {
+      app.view.song_list_delete_confirm_yes_selected =
+        !app.view.song_list_delete_confirm_yes_selected;
+    }
+    k if common_key_events::left_event(k, &app.user_config.keys)
+      || common_key_events::right_event(k, &app.user_config.keys) =>
+    {
+      app.view.song_list_delete_confirm_yes_selected =
+        !app.view.song_list_delete_confirm_yes_selected;
+    }
+    Key::Enter => {
+      if app.view.song_list_delete_confirm_yes_selected {
+        execute_group_delete_confirm(app);
+      } else {
+        app.view.song_list_delete_confirm = None;
+        app.view.song_list_delete_confirm_yes_selected = false;
+      }
+    }
+    _ => {}
   }
 }
 
@@ -1349,5 +1582,109 @@ mod tests {
     let current_route = app.get_current_route();
     assert_eq!(current_route.active_block, ActiveBlock::Empty);
     assert_eq!(current_route.hovered_block, ActiveBlock::Library);
+  }
+
+  fn saved_track_with_meta(id: &str, name: &str, artist: &str, album: &str) -> TrackInfo {
+    let mut t = TrackInfo::from(&full_track(id, name));
+    t.uri = Some(format!("youtube:video:{id}"));
+    t.artists = vec![artist.to_string()];
+    t.album = album.to_string();
+    t
+  }
+
+  #[test]
+  fn lowercase_e_queues_play_next_and_uppercase_e_queues_end_of_queue() {
+    let mut app = App::default();
+    app.set_track_table(
+      vec![
+        saved_track_with_meta("00000000001", "First", "Artist A", "Album A"),
+        saved_track_with_meta("00000000002", "Second", "Artist B", "Album B"),
+        saved_track_with_meta("00000000003", "Third", "Artist C", "Album C"),
+      ],
+      TrackTableContext::SavedTracks,
+    );
+
+    app.view.track_table_index = 0;
+    handler(Key::Char('E'), &mut app);
+    app.view.track_table_index = 1;
+    handler(Key::Char('E'), &mut app);
+    assert_eq!(
+      app.native_queue.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+      vec!["First", "Second"]
+    );
+
+    // Lowercase 'e' must insert at the front (Play Next).
+    app.view.track_table_index = 2;
+    handler(Key::Char('e'), &mut app);
+    assert_eq!(
+      app.native_queue.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+      vec!["Third", "First", "Second"]
+    );
+  }
+
+  #[test]
+  fn song_list_title_scope_deletes_immediately_while_artist_and_album_require_yn_popup() {
+    let mut app = App::default();
+    app.set_current_route_state(Some(ActiveBlock::TrackTable), Some(ActiveBlock::TrackTable));
+    app.set_track_table(
+      vec![
+        saved_track_with_meta("00000000001", "Solo", "Alpha", "Solo LP"),
+        saved_track_with_meta("00000000002", "Hit 1", "Beta", "Shared LP"),
+        saved_track_with_meta("00000000003", "Hit 2", "Beta", "Other LP"),
+        saved_track_with_meta("00000000004", "Closer", "Gamma", "Shared LP"),
+      ],
+      TrackTableContext::SavedTracks,
+    );
+
+    // 1. Title scope: immediate single-song delete with NO confirmation popup.
+    assert_eq!(app.view.song_list_scope, SongListScope::Title);
+    app.view.track_table_index = 0;
+    super::super::handle_app(Key::Char('x'), &mut app);
+    assert!(app.view.song_list_delete_confirm.is_none());
+    assert_eq!(app.track_table.tracks.len(), 3);
+    assert_eq!(app.track_table.tracks[0].name, "Hit 1");
+
+    // 2. Artist scope: pressing 'x' opens confirmation popup; 'n' cancels; 'y' deletes whole artist.
+    super::super::handle_app(Key::Tab, &mut app);
+    assert_eq!(app.view.song_list_scope, SongListScope::Artist);
+    app.view.song_list_cursor = 0; // "Beta" group (2 tracks)
+    super::super::handle_app(Key::Char('x'), &mut app);
+    let pending = app
+      .view
+      .song_list_delete_confirm
+      .clone()
+      .expect("Artist scope delete must open y/n popup");
+    assert_eq!(pending.scope, SongListScope::Artist);
+    assert_eq!(pending.group_key, "Beta");
+    assert_eq!(pending.track_count, 2);
+
+    super::super::handle_app(Key::Char('n'), &mut app);
+    assert!(app.view.song_list_delete_confirm.is_none());
+    assert_eq!(app.track_table.tracks.len(), 3, "'n' must keep all tracks");
+
+    super::super::handle_app(Key::Char('d'), &mut app);
+    assert!(app.view.song_list_delete_confirm.is_some());
+    super::super::handle_app(Key::Char('y'), &mut app);
+    assert!(app.view.song_list_delete_confirm.is_none());
+    assert_eq!(app.track_table.tracks.len(), 1);
+    assert_eq!(app.track_table.tracks[0].artists, vec!["Gamma".to_string()]);
+
+    // 3. Album scope: pressing 'd' opens confirmation popup; 'y' deletes whole album.
+    super::super::handle_app(Key::Tab, &mut app);
+    assert_eq!(app.view.song_list_scope, SongListScope::Album);
+    app.view.song_list_cursor = 0; // "Shared LP" group (1 remaining track)
+    super::super::handle_app(Key::Char('d'), &mut app);
+    let pending = app
+      .view
+      .song_list_delete_confirm
+      .clone()
+      .expect("Album scope delete must open y/n popup");
+    assert_eq!(pending.scope, SongListScope::Album);
+    assert_eq!(pending.group_key, "Shared LP");
+    assert_eq!(pending.track_count, 1);
+
+    super::super::handle_app(Key::Char('y'), &mut app);
+    assert!(app.view.song_list_delete_confirm.is_none());
+    assert!(app.track_table.tracks.is_empty());
   }
 }

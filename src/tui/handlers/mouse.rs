@@ -18,6 +18,10 @@ const SETTINGS_UNSAVED_PROMPT_WIDTH: u16 = 58;
 const SETTINGS_UNSAVED_PROMPT_HEIGHT: u16 = 9;
 
 pub fn handler(mouse: MouseEvent, app: &mut App) {
+  if app.view.song_list_delete_confirm.is_some() {
+    return;
+  }
+
   let current_route = app.get_current_route();
   let current_route_id = current_route.id.clone();
   let current_active_block = current_route.active_block;
@@ -574,6 +578,10 @@ fn handle_playbar_mouse(
 }
 
 fn handle_settings_screen_mouse(mouse: MouseEvent, app: &mut App) {
+  if app.view.settings_storage_confirm_action.is_some() {
+    return;
+  }
+
   if app.view.settings_unsaved_prompt_visible {
     handle_unsaved_settings_prompt_mouse(mouse, app);
     return;

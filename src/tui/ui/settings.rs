@@ -122,6 +122,9 @@ pub fn draw_settings(f: &mut Frame<'_>, app: &App) {
   if app.view.settings_unsaved_prompt_visible {
     draw_unsaved_changes_prompt(f, app);
   }
+  if app.view.settings_storage_confirm_action.is_some() {
+    draw_storage_confirm_prompt(f, app);
+  }
 }
 
 fn draw_category_tabs(f: &mut Frame<'_>, app: &App, area: Rect) {
@@ -468,6 +471,108 @@ fn draw_unsaved_changes_prompt(f: &mut Frame<'_>, app: &App) {
     .alignment(Alignment::Center)
     .style(Style::default().fg(app.user_config.theme.inactive.into()));
   f.render_widget(hint, hint_area);
+}
+
+fn draw_storage_confirm_prompt(f: &mut Frame<'_>, app: &App) {
+  let Some((_action_id, action_name, action_desc)) = &app.view.settings_storage_confirm_action else {
+    return;
+  };
+
+  let bounds = f.area();
+  let width = std::cmp::min(bounds.width.saturating_sub(4), 66);
+  if width < 16 {
+    return;
+  }
+
+  let height = 10u16.min(bounds.height.saturating_sub(2).max(1));
+  let left = bounds.x + bounds.width.saturating_sub(width) / 2;
+  let top = bounds.y + bounds.height.saturating_sub(height) / 2;
+  let rect = Rect::new(left, top, width, height);
+
+  f.render_widget(Clear, rect);
+
+  let theme = &app.user_config.theme;
+  let bold = app.user_config.behavior.emphasis(Modifier::BOLD);
+  let block = Block::default()
+    .title(Span::styled(
+      " Confirm Storage & Cache Action ",
+      Style::default().fg(theme.header.into()).add_modifier(bold),
+    ))
+    .borders(Borders::ALL)
+    .style(theme.base_style())
+    .border_style(Style::default().fg(theme.active.into()));
+  f.render_widget(block, rect);
+
+  let [message_area, buttons_area, hint_area] = rect.layout(
+    &Layout::vertical([
+      Constraint::Min(3),
+      Constraint::Length(2),
+      Constraint::Length(1),
+    ])
+    .margin(1),
+  );
+
+  let lines = vec![
+    Line::from(vec![
+      Span::styled("Proceed with ", Style::default().fg(theme.text.into())),
+      Span::styled(
+        format!("\"{action_name}\""),
+        Style::default().fg(theme.selected.into()).add_modifier(bold),
+      ),
+      Span::styled("?", Style::default().fg(theme.text.into())),
+    ]),
+    Line::from(Span::styled(
+      action_desc.clone(),
+      Style::default().fg(theme.inactive.into()),
+    )),
+  ];
+  let message = Paragraph::new(lines)
+    .style(theme.base_style())
+    .alignment(Alignment::Center)
+    .wrap(ratatui::widgets::Wrap { trim: true });
+  f.render_widget(message, message_area);
+
+  let [yes_area, no_area] = buttons_area.layout(
+    &Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).horizontal_margin(4),
+  );
+
+  let yes_selected = app.view.settings_storage_confirm_yes_selected;
+  let (yes_prefix, yes_style) = if yes_selected {
+    (
+      "● ",
+      Style::default().fg(theme.selected.into()).add_modifier(bold),
+    )
+  } else {
+    ("○ ", Style::default().fg(theme.inactive.into()))
+  };
+  let (no_prefix, no_style) = if !yes_selected {
+    (
+      "● ",
+      Style::default().fg(theme.selected.into()).add_modifier(bold),
+    )
+  } else {
+    ("○ ", Style::default().fg(theme.inactive.into()))
+  };
+
+  f.render_widget(
+    Paragraph::new(format!("{yes_prefix}[Y]es, Confirm"))
+      .alignment(Alignment::Center)
+      .style(yes_style),
+    yes_area,
+  );
+  f.render_widget(
+    Paragraph::new(format!("{no_prefix}[N]o, Cancel"))
+      .alignment(Alignment::Center)
+      .style(no_style),
+    no_area,
+  );
+
+  f.render_widget(
+    Paragraph::new("y: Confirm  |  n / Esc: Cancel  |  h/l/Tab: Switch  |  Enter: Select")
+      .alignment(Alignment::Center)
+      .style(Style::default().fg(theme.inactive.into())),
+    hint_area,
+  );
 }
 
 #[cfg(test)]

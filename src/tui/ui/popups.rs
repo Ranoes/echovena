@@ -2059,6 +2059,117 @@ pub fn draw_plugin_popup(f: &mut Frame<'_>, app: &App) {
   f.render_widget(paragraph, rect);
 }
 
+/// Draw confirmation popup when deleting an entire Artist or Album in Song List (`x`/`d`).
+pub fn draw_song_list_delete_confirm_modal(f: &mut Frame<'_>, app: &App) {
+  let Some(pending) = &app.view.song_list_delete_confirm else {
+    return;
+  };
+
+  let bounds = f.area();
+  let width = 64u16.min(bounds.width.saturating_sub(4));
+  let height = 10u16.min(bounds.height.saturating_sub(2).max(1));
+  if width < 16 || height < 5 {
+    return;
+  }
+
+  let rect = centered_modal_rect(bounds, width, height);
+  f.render_widget(Clear, rect);
+
+  let theme = &app.user_config.theme;
+  let bold = app.user_config.behavior.emphasis(Modifier::BOLD);
+  let scope_label = pending.scope.label();
+  let block = Block::default()
+    .borders(Borders::ALL)
+    .style(theme.base_style())
+    .border_style(Style::default().fg(theme.active.into()))
+    .title(Span::styled(
+      format!(" Confirm Delete {scope_label} "),
+      Style::default().fg(theme.header.into()).add_modifier(bold),
+    ));
+  f.render_widget(block, rect);
+
+  let [message_area, buttons_area, hint_area] = rect.layout(
+    &Layout::vertical([
+      Constraint::Min(3),
+      Constraint::Length(2),
+      Constraint::Length(1),
+    ])
+    .margin(1),
+  );
+
+  let noun = if pending.track_count == 1 {
+    "track"
+  } else {
+    "tracks"
+  };
+  let msg_lines = vec![
+    Line::from(vec![
+      Span::styled(
+        format!("Delete entire {} ", scope_label.to_lowercase()),
+        Style::default().fg(theme.text.into()),
+      ),
+      Span::styled(
+        format!("\"{}\"", pending.group_key),
+        Style::default().fg(theme.selected.into()).add_modifier(bold),
+      ),
+      Span::styled(
+        format!(" ({} {})?", pending.track_count, noun),
+        Style::default().fg(theme.text.into()),
+      ),
+    ]),
+    Line::from(Span::styled(
+      "Removes matching songs from Song List, disk & listening history.",
+      Style::default().fg(theme.inactive.into()),
+    )),
+  ];
+  let message = Paragraph::new(msg_lines)
+    .style(theme.base_style())
+    .alignment(Alignment::Center)
+    .wrap(Wrap { trim: true });
+  f.render_widget(message, message_area);
+
+  let [yes_area, no_area] = buttons_area.layout(
+    &Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).horizontal_margin(4),
+  );
+  let yes_selected = app.view.song_list_delete_confirm_yes_selected;
+  let (yes_prefix, yes_style) = if yes_selected {
+    (
+      "● ",
+      Style::default().fg(theme.selected.into()).add_modifier(bold),
+    )
+  } else {
+    ("○ ", Style::default().fg(theme.inactive.into()))
+  };
+  let (no_prefix, no_style) = if !yes_selected {
+    (
+      "● ",
+      Style::default().fg(theme.selected.into()).add_modifier(bold),
+    )
+  } else {
+    ("○ ", Style::default().fg(theme.inactive.into()))
+  };
+
+  f.render_widget(
+    Paragraph::new(format!("{yes_prefix}[Y]es, Delete"))
+      .style(yes_style)
+      .alignment(Alignment::Center),
+    yes_area,
+  );
+  f.render_widget(
+    Paragraph::new(format!("{no_prefix}[N]o, Cancel"))
+      .style(no_style)
+      .alignment(Alignment::Center),
+    no_area,
+  );
+
+  f.render_widget(
+    Paragraph::new("y: Delete  |  n / Esc: Cancel  |  h/l/Tab: Switch  |  Enter: Select")
+      .alignment(Alignment::Center)
+      .style(Style::default().fg(theme.inactive.into())),
+    hint_area,
+  );
+}
+
 fn build_popup_line<'a>(pl: &'a PopupLine) -> Line<'a> {
   let mut style = Style::default();
   if let Some(fg) = pl.fg {

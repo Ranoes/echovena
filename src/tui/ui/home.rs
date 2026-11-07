@@ -614,8 +614,9 @@ fn build_changelog_lines(
     ("  T            ", "Now Playing Dashboard (Live Lyrics & Cover Art)"),
     ("  B            ", "Dedicated Fullscreen Lyrics View"),
     ("  G            ", "Album Information & Full Tracklist"),
-    ("  e / E        ", "Play Queue (Two-section active & upcoming)"),
-    ("  s / S        ", "Offline Archive (s: current track, S: full playlist)"),
+    ("  Q            ", "Play Queue (Two-section active & upcoming)"),
+    ("  e / E        ", "Queue Highlighted Track (e: Play Next, E: End of Queue)"),
+    ("  s / S / z    ", "Save Offline (s: highlighted, S: playing, z: playlist/album)"),
     ("  ?            ", "Full Help Menu (categorized with Tab)"),
     ("  Ctrl+q       ", "Immediately quit EchoVena"),
   ];

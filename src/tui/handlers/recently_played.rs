@@ -89,7 +89,7 @@ pub fn handler(key: Key, app: &mut App) {
         .as_ref()
         .and_then(|r| r.items.get(app.view.recently_played_index).cloned());
       if let Some(track) = track {
-        app.apply(Action::QueueTrack(track));
+        app.apply(Action::QueueTrackNext(track));
       }
     }
     Key::Char('E') => {
@@ -98,7 +98,7 @@ pub fn handler(key: Key, app: &mut App) {
         .as_ref()
         .and_then(|r| r.items.get(app.view.recently_played_index).cloned());
       if let Some(track) = track {
-        app.apply(Action::QueueTrackNext(track));
+        app.apply(Action::QueueTrack(track));
       }
     }
     _ => {}

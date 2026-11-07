@@ -159,6 +159,10 @@ pub struct ViewState {
   /// Yes/no cursor of the unsaved-changes prompt. Set to `true` whenever the
   /// prompt opens; only read while the prompt is visible.
   pub settings_unsaved_prompt_save_selected: bool,
+  /// Pending Storage & Cache delete/clear confirmation: `(action_id, name, description)`.
+  pub settings_storage_confirm_action: Option<(String, String, String)>,
+  /// Yes/no cursor of the Storage & Cache confirmation popup.
+  pub settings_storage_confirm_yes_selected: bool,
 
   // Discover and Stats screens
   /// Selected index in the Discover view
@@ -302,6 +306,17 @@ pub struct ViewState {
   pub song_list_expanded: std::collections::HashSet<String>,
   /// Cursor over the grouped rows (Artist / Album scope only).
   pub song_list_cursor: usize,
+  /// Pending confirmation popup when deleting an entire Artist or Album in Song List.
+  pub song_list_delete_confirm: Option<PendingSongListGroupDelete>,
+  /// Yes/no cursor of the Song List group delete confirmation popup.
+  pub song_list_delete_confirm_yes_selected: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingSongListGroupDelete {
+  pub scope: SongListScope,
+  pub group_key: String,
+  pub track_count: usize,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
@@ -336,6 +351,22 @@ pub enum SongListRow {
   Track(usize),
 }
 
+/// Returns the Artist or Album group label for a track in Song List.
+pub fn song_list_group_key(
+  track: &crate::core::plugin_api::TrackInfo,
+  scope: SongListScope,
+) -> String {
+  let raw = match scope {
+    SongListScope::Artist => track.artists.first().cloned().unwrap_or_default(),
+    _ => track.album.clone(),
+  };
+  if raw.trim().is_empty() {
+    "Unknown".to_string()
+  } else {
+    raw
+  }
+}
+
 /// Flattens tracks into a tree of groups (sorted case-insensitively) with the
 /// tracks of expanded groups listed beneath their header.
 pub fn song_list_rows(
@@ -348,11 +379,7 @@ pub fn song_list_rows(
   }
   let mut groups: std::collections::BTreeMap<String, (String, Vec<usize>)> = Default::default();
   for (i, t) in tracks.iter().enumerate() {
-    let key = match scope {
-      SongListScope::Artist => t.artists.first().cloned().unwrap_or_default(),
-      _ => t.album.clone(),
-    };
-    let key = if key.trim().is_empty() { "Unknown".to_string() } else { key };
+    let key = song_list_group_key(t, scope);
     groups.entry(key.to_lowercase()).or_insert_with(|| (key.clone(), Vec::new())).1.push(i);
   }
   let mut rows = Vec::new();

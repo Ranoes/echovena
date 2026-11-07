@@ -221,8 +221,8 @@ pub fn handle_app(key: Key, app: &mut App) {
       Key::Char('-') => { let _ = app.apply(Action::VolumeDown); }
       Key::Char('r') => { let _ = app.apply(Action::CycleRepeat); }
       Key::Char('R') => { let _ = app.apply(Action::ToggleShuffle); }
-      Key::Char('s') => handle_save_single_track(app),
-      Key::Char('S') => handle_save_album_or_playlist(app),
+      Key::Char('s') | Key::Char('S') => handle_save_playing_track(app),
+      Key::Char('z') => handle_save_album_or_playlist(app),
       Key::Char('w') => { let _ = app.apply(Action::OpenAddPlayingTrackDialog); }
       Key::Char('y') => {
         copy_url(app, Action::CopyUrl(CopyTarget::CurrentSong));
@@ -460,11 +460,20 @@ pub fn handle_app(key: Key, app: &mut App) {
     return;
   }
 
+  // Song List Artist/Album delete confirmation popup: intercept before globals
+  // so y/N/q are not claimed by copy_song_url, cover_art_view, or back.
+  if app.view.song_list_delete_confirm.is_some() {
+    track_table::handle_group_delete_confirm(key, app);
+    return;
+  }
+
   // Settings has the same inline modal inputs: an open edit, the unsaved-changes
-  // prompt, and the row filter. Each needs the raw key before global bindings
-  // claim it, and the search binding is what opens the filter in the first place.
+  // prompt, the storage delete confirmation prompt, and the row filter. Each needs
+  // the raw key before global bindings claim it, and the search binding is what
+  // opens the filter in the first place.
   if app.get_current_route().active_block == ActiveBlock::Settings
     && (app.view.settings_unsaved_prompt_visible
+      || app.view.settings_storage_confirm_action.is_some()
       || app.view.settings_edit_mode
       || app.view.settings_filter_editing
       || key == app.user_config.keys.search)
@@ -819,14 +828,27 @@ pub fn handle_app(key: Key, app: &mut App) {
       }
     }
     Key::Char('s') => {
-      if is_input_mode(app) {
+      let active = app.get_current_route().active_block;
+      if is_input_mode(app)
+        || active == ActiveBlock::PlaylistSync
+        || active == ActiveBlock::EpisodeTable
+      {
         handle_block_events(key, app);
       } else {
-        handle_save_single_track(app);
+        handle_save_highlighted_track(app);
       }
     }
-    Key::Char('S') | Key::Char('Z') => {
-      if is_input_mode(app) {
+    Key::Char('S') => {
+      let active = app.get_current_route().active_block;
+      if is_input_mode(app) || active == ActiveBlock::EpisodeTable {
+        handle_block_events(key, app);
+      } else {
+        handle_save_playing_track(app);
+      }
+    }
+    Key::Char('z') | Key::Char('Z') => {
+      let active = app.get_current_route().active_block;
+      if is_input_mode(app) || active == ActiveBlock::Friends {
         handle_block_events(key, app);
       } else {
         handle_save_album_or_playlist(app);
@@ -931,49 +953,213 @@ pub fn handle_jump_to_album(app: &mut App) {
   app.apply(Action::JumpToAlbum);
 }
 
-/// Archives the single highlighted or currently playing track.
-pub fn handle_save_single_track(app: &mut App) {
-  let active = app.get_current_route().active_block;
+fn archive_single_playlist_track(
+  app: &mut App,
+  track: crate::sources::lossless_relay::db::PlaylistTrack,
+) {
+  let title = track.clean_title.clone();
+  let artist = track.artist.clone();
+  let dl_source = app.active_download_source;
+  app.set_status_message(
+    format!(
+      "Archiving '{} - {}' [{}] to ~/Music/EchoVena...",
+      title,
+      artist,
+      dl_source.label()
+    ),
+    4,
+  );
+  tokio::spawn(async move {
+    if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+      if let Some(root) = crate::core::paths::music_archive_dir() {
+        let _ = crate::sources::lossless_relay::archiver::resolve_and_archive_track_with_source(
+          &db, &track, &root, dl_source,
+        )
+        .await;
+      }
+    }
+  });
+}
 
-  // Context-aware target resolution:
-  // 1. Try resolving highlighted track from cursor in active block
-  let target_from_cursor: Option<crate::sources::lossless_relay::db::PlaylistTrack> = match active {
-    ActiveBlock::AlbumTracks => {
-      album_tracks::selected_album_track(app).map(|t| {
-        let idx = match app.album_table_context {
-          AlbumTableContext::Full => app.view.saved_album_tracks_index,
-          AlbumTableContext::Simplified => app.selected_album_simplified.as_ref().map_or(0, |s| s.selected_index),
-        };
-        crate::sources::lossless_relay::archiver::track_info_to_playlist_track(t, idx, "album")
-      })
-    }
-    ActiveBlock::TrackTable => {
-      app.track_table.tracks.get(app.view.track_table_index).map(|t| {
-        crate::sources::lossless_relay::archiver::track_info_to_playlist_track(t, app.view.track_table_index, "library")
-      })
-    }
-    ActiveBlock::SearchResultBlock => {
-      // First check YouTube live search items
-      app.selected_live_search_item().map(|item| {
-        let t = item.to_track_info();
-        crate::sources::lossless_relay::archiver::track_info_to_playlist_track(&t, app.live_search_selected_index, "search")
-      }).or_else(|| {
-        // Legacy Spotify search fallback
-        if let crate::core::app::SearchResultBlock::SongSearch = app.view.search_selected_block {
-          app.view.search_selected_tracks_index.and_then(|idx| {
-            app.search_results().tracks.as_ref().and_then(|p| p.items.get(idx)).map(|t| {
-              crate::sources::lossless_relay::archiver::track_info_to_playlist_track(t, idx, "search")
-            })
-          })
-        } else {
-          None
+fn resolve_currently_playing_playlist_track(
+  app: &App,
+) -> Option<crate::sources::lossless_relay::db::PlaylistTrack> {
+  #[cfg(feature = "audio-decode-queue")]
+  let queue_track = if let Some(crate::infra::queue::QueueNowPlaying::Decoded(d)) =
+    app.queue_now.as_ref()
+  {
+    Some(crate::sources::lossless_relay::archiver::track_info_to_playlist_track(
+      &d.track, 0, "queue",
+    ))
+  } else if let Some(crate::infra::queue::QueueNowPlaying::Spotify { track }) =
+    app.queue_now.as_ref()
+  {
+    Some(crate::sources::lossless_relay::archiver::track_info_to_playlist_track(
+      track, 0, "queue",
+    ))
+  } else {
+    None
+  };
+  #[cfg(not(feature = "audio-decode-queue"))]
+  let queue_track = None;
+
+  #[cfg(feature = "youtube")]
+  let yt_track = app.youtube_playback.as_ref().and_then(|yt| {
+    yt.current().map(|t| {
+      crate::sources::lossless_relay::archiver::track_info_to_playlist_track(
+        t,
+        0,
+        "youtube_playback",
+      )
+    })
+  });
+  #[cfg(not(feature = "youtube"))]
+  let yt_track = None;
+
+  queue_track
+    .or(yt_track)
+    .or_else(|| {
+      app
+        .lossless_playback
+        .as_ref()
+        .and_then(|l| l.current_track.clone())
+    })
+    .or_else(|| {
+      crate::infra::media_metadata::tracking_playback_snapshot(app).map(|snapshot| {
+        crate::sources::lossless_relay::db::PlaylistTrack {
+          playlist_id: "now_playing".to_string(),
+          position: 0,
+          source_track_id: snapshot
+            .item_uri
+            .clone()
+            .unwrap_or_else(|| format!("track:{}", snapshot.metadata.title)),
+          raw_title: snapshot.metadata.title.clone(),
+          clean_title: snapshot.metadata.title.clone(),
+          artist: snapshot.primary_artist(),
+          album: if snapshot.metadata.album.is_empty() {
+            None
+          } else {
+            Some(snapshot.metadata.album)
+          },
+          duration_ms: snapshot.metadata.duration_ms as i64,
+          isrc: None,
+          cover_art_url: snapshot.metadata.image_url,
         }
       })
+    })
+}
+
+/// Archives the highlighted song under the cursor in the active list (`s`).
+pub fn handle_save_highlighted_track(app: &mut App) {
+  let active = app.get_current_route().active_block;
+
+  let target_from_cursor: Option<crate::sources::lossless_relay::db::PlaylistTrack> = match active {
+    ActiveBlock::AlbumTracks => album_tracks::selected_album_track(app).map(|t| {
+      let idx = match app.album_table_context {
+        AlbumTableContext::Full => app.view.saved_album_tracks_index,
+        AlbumTableContext::Simplified => app
+          .selected_album_simplified
+          .as_ref()
+          .map_or(0, |s| s.selected_index),
+      };
+      crate::sources::lossless_relay::archiver::track_info_to_playlist_track(t, idx, "album")
+    }),
+    ActiveBlock::TrackTable => {
+      if app.view.song_list_scope != crate::core::app::SongListScope::Title {
+        let rows = crate::core::app::song_list_rows(
+          &app.track_table.tracks,
+          app.view.song_list_scope,
+          &app.view.song_list_expanded,
+        );
+        let cur = app.view.song_list_cursor.min(rows.len().saturating_sub(1));
+        match rows.get(cur) {
+          Some(crate::core::app::SongListRow::Track(idx)) => app.track_table.tracks.get(*idx).map(|t| {
+            crate::sources::lossless_relay::archiver::track_info_to_playlist_track(t, *idx, "library")
+          }),
+          _ => None,
+        }
+      } else {
+        app.track_table.tracks.get(app.view.track_table_index).map(|t| {
+          crate::sources::lossless_relay::archiver::track_info_to_playlist_track(
+            t,
+            app.view.track_table_index,
+            "library",
+          )
+        })
+      }
     }
+    ActiveBlock::SearchResultBlock => match &app.view.search_drilldown {
+      crate::core::app::SearchDrilldown::AlbumDetail {
+        tracks,
+        selected_index,
+        ..
+      } => tracks.get(*selected_index).map(|t| {
+        crate::sources::lossless_relay::archiver::track_info_to_playlist_track(
+          t,
+          *selected_index,
+          "album",
+        )
+      }),
+      crate::core::app::SearchDrilldown::ArtistDetail {
+        top_songs,
+        selected_index,
+        focus_section: crate::core::app::ArtistDetailSection::TopSongs,
+        ..
+      } => top_songs.get(*selected_index).map(|t| {
+        crate::sources::lossless_relay::archiver::track_info_to_playlist_track(
+          t,
+          *selected_index,
+          "artist",
+        )
+      }),
+      crate::core::app::SearchDrilldown::ArtistDetail { .. } => None,
+      crate::core::app::SearchDrilldown::None => app
+        .selected_live_search_item()
+        .filter(|item| {
+          item.scope == crate::sources::youtube_search::SearchScope::Music
+            || item.scope == crate::sources::youtube_search::SearchScope::Video
+            || item.video_id.is_some()
+        })
+        .map(|item| {
+          let t = item.to_track_info();
+          crate::sources::lossless_relay::archiver::track_info_to_playlist_track(
+            &t,
+            app.live_search_selected_index,
+            "search",
+          )
+        })
+        .or_else(|| {
+          if let crate::core::app::SearchResultBlock::SongSearch = app.view.search_selected_block {
+            app.view.search_selected_tracks_index.and_then(|idx| {
+              app
+                .search_results()
+                .tracks
+                .as_ref()
+                .and_then(|p| p.items.get(idx))
+                .map(|t| {
+                  crate::sources::lossless_relay::archiver::track_info_to_playlist_track(
+                    t, idx, "search",
+                  )
+                })
+            })
+          } else {
+            None
+          }
+        }),
+    },
     ActiveBlock::Playlists | ActiveBlock::MyPlaylists => {
       let tree = playlist::get_playlist_tree_items(app);
       if let Some(idx) = app.view.selected_playlist_index {
-        if let Some(playlist::PlaylistTreeItem::TrackLeaf { playlist_id, track_id, title, artist, duration_ms, position, .. }) = tree.get(idx) {
+        if let Some(playlist::PlaylistTreeItem::TrackLeaf {
+          playlist_id,
+          track_id,
+          title,
+          artist,
+          duration_ms,
+          position,
+          ..
+        }) = tree.get(idx)
+        {
           Some(crate::sources::lossless_relay::db::PlaylistTrack {
             playlist_id: playlist_id.clone(),
             position: *position as i64,
@@ -993,78 +1179,54 @@ pub fn handle_save_single_track(app: &mut App) {
         None
       }
     }
+    ActiveBlock::RecentlyPlayed => app
+      .recently_played
+      .as_ref()
+      .and_then(|r| r.items.get(app.view.recently_played_index))
+      .map(|t| {
+        crate::sources::lossless_relay::archiver::track_info_to_playlist_track(
+          t,
+          app.view.recently_played_index,
+          "history",
+        )
+      }),
+    ActiveBlock::ArtistBlock => app
+      .artist
+      .as_ref()
+      .filter(|a| a.artist_selected_block == ArtistBlock::TopTracks)
+      .and_then(|a| {
+        a.top_tracks.get(a.selected_top_track_index).map(|t| {
+          crate::sources::lossless_relay::archiver::track_info_to_playlist_track(
+            t,
+            a.selected_top_track_index,
+            "artist",
+          )
+        })
+      }),
     _ => None,
   };
 
-  // 2. Also check if live search dropdown has an active selection
-  let target_from_cursor = target_from_cursor.or_else(|| {
-    app.selected_live_search_item().map(|item| {
-      let t = item.to_track_info();
-      crate::sources::lossless_relay::archiver::track_info_to_playlist_track(&t, 0, "search")
-    })
-  });
-
-  // 3. Fall back unconditionally to currently playing track (YouTube, Queue, Lossless, Snapshot)
-  let track_to_archive = target_from_cursor.or_else(|| {
-    #[cfg(feature = "audio-decode-queue")]
-    let queue_track = if let Some(crate::infra::queue::QueueNowPlaying::Decoded(d)) = app.queue_now.as_ref() {
-      Some(crate::sources::lossless_relay::archiver::track_info_to_playlist_track(&d.track, 0, "queue"))
-    } else if let Some(crate::infra::queue::QueueNowPlaying::Spotify { track }) = app.queue_now.as_ref() {
-      Some(crate::sources::lossless_relay::archiver::track_info_to_playlist_track(track, 0, "queue"))
-    } else {
-      None
-    };
-    #[cfg(not(feature = "audio-decode-queue"))]
-    let queue_track = None;
-
-    #[cfg(feature = "youtube")]
-    let yt_track = app.youtube_playback.as_ref().and_then(|yt| {
-      yt.current().map(|t| {
-        crate::sources::lossless_relay::archiver::track_info_to_playlist_track(t, 0, "youtube_playback")
-      })
-    });
-    #[cfg(not(feature = "youtube"))]
-    let yt_track = None;
-
-    queue_track
-      .or(yt_track)
-      .or_else(|| app.lossless_playback.as_ref().and_then(|l| l.current_track.clone()))
-      .or_else(|| {
-        crate::infra::media_metadata::tracking_playback_snapshot(app).map(|snapshot| {
-          crate::sources::lossless_relay::db::PlaylistTrack {
-            playlist_id: "now_playing".to_string(),
-            position: 0,
-            source_track_id: snapshot.item_uri.clone().unwrap_or_else(|| format!("track:{}", snapshot.metadata.title)),
-            raw_title: snapshot.metadata.title.clone(),
-            clean_title: snapshot.metadata.title.clone(),
-            artist: snapshot.primary_artist(),
-            album: if snapshot.metadata.album.is_empty() { None } else { Some(snapshot.metadata.album) },
-            duration_ms: snapshot.metadata.duration_ms as i64,
-            isrc: None,
-            cover_art_url: snapshot.metadata.image_url,
-          }
-        })
-      })
-  });
-
-  if let Some(track) = track_to_archive {
-    let title = track.clean_title.clone();
-    let artist = track.artist.clone();
-    let dl_source = app.active_download_source;
-    app.set_status_message(format!("Archiving '{} - {}' [{}] to ~/Music/EchoVena...", title, artist, dl_source.label()), 4);
-    tokio::spawn(async move {
-      if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
-        if let Some(root) = crate::core::paths::music_archive_dir() {
-          let _ = crate::sources::lossless_relay::archiver::resolve_and_archive_track_with_source(&db, &track, &root, dl_source).await;
-        }
-      }
-    });
+  if let Some(track) = target_from_cursor {
+    archive_single_playlist_track(app, track);
   } else {
-    app.set_status_message("No track playing or selected to archive".to_string(), 4);
+    app.set_status_message(
+      "No highlighted song to save (press 'S' for playing track, 'z' for playlist/album)"
+        .to_string(),
+      4,
+    );
   }
 }
 
-/// Archives the entire open or currently playing album or playlist.
+/// Archives the currently playing track regardless of list cursor (`S`).
+pub fn handle_save_playing_track(app: &mut App) {
+  if let Some(track) = resolve_currently_playing_playlist_track(app) {
+    archive_single_playlist_track(app, track);
+  } else {
+    app.set_status_message("No track is currently playing to save".to_string(), 4);
+  }
+}
+
+/// Archives the entire open or currently playing album or playlist (`z`).
 pub fn handle_save_album_or_playlist(app: &mut App) {
   let active = app.get_current_route().active_block;
 
@@ -1093,14 +1255,65 @@ pub fn handle_save_album_or_playlist(app: &mut App) {
     }
   }
 
-  // 2. Check if inside Playlists block
+  // 1b. Check SearchResultBlock drilldown (AlbumDetail / ArtistDetail)
+  if album_tracks_to_archive.is_empty() && active == ActiveBlock::SearchResultBlock {
+    match &app.view.search_drilldown {
+      crate::core::app::SearchDrilldown::AlbumDetail { title, tracks, .. } => {
+        album_name = title.clone();
+        album_tracks_to_archive = tracks
+          .iter()
+          .enumerate()
+          .map(|(pos, t)| {
+            crate::sources::lossless_relay::archiver::track_info_to_playlist_track(
+              t, pos, &album_name,
+            )
+          })
+          .collect();
+      }
+      crate::core::app::SearchDrilldown::ArtistDetail { name, top_songs, .. } => {
+        album_name = name.clone();
+        album_tracks_to_archive = top_songs
+          .iter()
+          .enumerate()
+          .map(|(pos, t)| {
+            crate::sources::lossless_relay::archiver::track_info_to_playlist_track(
+              t, pos, &album_name,
+            )
+          })
+          .collect();
+      }
+      crate::core::app::SearchDrilldown::None => {}
+    }
+  }
+
+  // 2. Check if inside Playlists block (both header and track leaf)
   if album_tracks_to_archive.is_empty() && (active == ActiveBlock::Playlists || active == ActiveBlock::MyPlaylists) {
     let tree = playlist::get_playlist_tree_items(app);
     if let Some(idx) = app.view.selected_playlist_index {
-      if let Some(playlist::PlaylistTreeItem::PlaylistHeader { id, title, .. }) = tree.get(idx) {
-        album_name = title.clone();
+      let target = match tree.get(idx) {
+        Some(playlist::PlaylistTreeItem::PlaylistHeader { id, title, .. }) => {
+          Some((id.clone(), title.clone()))
+        }
+        Some(playlist::PlaylistTreeItem::TrackLeaf { playlist_id, .. }) => {
+          let title = tree
+            .iter()
+            .find_map(|it| match it {
+              playlist::PlaylistTreeItem::PlaylistHeader { id, title, .. }
+                if id == playlist_id =>
+              {
+                Some(title.clone())
+              }
+              _ => None,
+            })
+            .unwrap_or_else(|| "Playlist".to_string());
+          Some((playlist_id.clone(), title))
+        }
+        _ => None,
+      };
+      if let Some((id, title)) = target {
+        album_name = title;
         if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
-          if let Ok(tracks) = db.get_playlist_tracks(id) {
+          if let Ok(tracks) = db.get_playlist_tracks(&id) {
             album_tracks_to_archive = tracks;
           }
         }
@@ -1108,12 +1321,61 @@ pub fn handle_save_album_or_playlist(app: &mut App) {
     }
   }
 
-  // 3. Check track table
+  // 3. Check track table (in Artist/Album scope, download the highlighted group; otherwise full table)
   if album_tracks_to_archive.is_empty() && !app.track_table.tracks.is_empty() {
-    album_name = app.track_table.context.as_ref().map(|_| "Current Tracklist".to_string()).unwrap_or_else(|| "EchoVena Album".to_string());
-    album_tracks_to_archive = app.track_table.tracks.iter().enumerate().map(|(pos, t)| {
-      crate::sources::lossless_relay::archiver::track_info_to_playlist_track(t, pos, &album_name)
-    }).collect();
+    if active == ActiveBlock::TrackTable
+      && app.view.song_list_scope != crate::core::app::SongListScope::Title
+    {
+      let scope = app.view.song_list_scope;
+      let rows = crate::core::app::song_list_rows(
+        &app.track_table.tracks,
+        scope,
+        &app.view.song_list_expanded,
+      );
+      let cur = app.view.song_list_cursor.min(rows.len().saturating_sub(1));
+      let group_key = match rows.get(cur) {
+        Some(crate::core::app::SongListRow::Group { key, .. }) => Some(key.clone()),
+        Some(crate::core::app::SongListRow::Track(i)) => app
+          .track_table
+          .tracks
+          .get(*i)
+          .map(|t| crate::core::app::song_list_group_key(t, scope)),
+        None => None,
+      };
+      if let Some(gk) = group_key {
+        album_name = gk.clone();
+        album_tracks_to_archive = app
+          .track_table
+          .tracks
+          .iter()
+          .filter(|t| crate::core::app::song_list_group_key(t, scope).eq_ignore_ascii_case(&gk))
+          .enumerate()
+          .map(|(pos, t)| {
+            crate::sources::lossless_relay::archiver::track_info_to_playlist_track(
+              t, pos, &album_name,
+            )
+          })
+          .collect();
+      }
+    } else {
+      album_name = app
+        .track_table
+        .context
+        .as_ref()
+        .map(|_| "Current Tracklist".to_string())
+        .unwrap_or_else(|| "EchoVena Album".to_string());
+      album_tracks_to_archive = app
+        .track_table
+        .tracks
+        .iter()
+        .enumerate()
+        .map(|(pos, t)| {
+          crate::sources::lossless_relay::archiver::track_info_to_playlist_track(
+            t, pos, &album_name,
+          )
+        })
+        .collect();
+    }
   }
 
   // 4. Check YouTube playback queue
@@ -1243,7 +1505,7 @@ pub fn handle_save_album_or_playlist(app: &mut App) {
         }
       });
     } else {
-      handle_save_single_track(app);
+      handle_save_playing_track(app);
     }
   } else {
     app.set_status_message("No playlist or track list open to batch archive".to_string(), 4);
