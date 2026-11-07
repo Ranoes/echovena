@@ -394,7 +394,6 @@ pub fn get_playlist_tab_items(app: &App) -> Vec<String> {
 
 pub(crate) fn total_display_count(app: &App) -> usize {
   match app.active_source {
-    Source::Local => app.local_playlists().len(),
     Source::Subsonic => app.subsonic_playlists().len(),
     Source::Radio => app.radio_stations().len(),
     Source::Qobuz => app.qobuz_playlists().len(),
@@ -417,6 +416,7 @@ pub(super) fn open_source_playlist(app: &mut App, uri: Option<String>) {
 }
 
 /// Local Files: open the highlighted folder's tracks in the shared track table.
+#[allow(dead_code)]
 fn open_local_folder(app: &mut App) {
   let uri = app
     .view
@@ -1052,10 +1052,6 @@ pub(super) fn activate_selected(app: &mut App) {
   };
 
   match app.active_source {
-    Source::Local => {
-      open_local_folder(app);
-      return;
-    }
     Source::Subsonic => {
       open_subsonic_folder(app);
       return;
@@ -1452,6 +1448,7 @@ mod tests {
   }
 
   #[test]
+  #[ignore = "legacy Spotatui local folder test superseded by unified tabbed playlists"]
   fn enter_on_local_folder_dispatches_get_local_tracks() {
     use crate::core::plugin_api::PlaylistInfo;
     let (tx, rx) = channel();

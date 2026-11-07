@@ -8,7 +8,7 @@ use ratatui::{
 
 use super::{
   search::draw_input_and_help_box,
-  util::{draw_selectable_list, FOLDER_ICON},
+  util::draw_selectable_list,
 };
 
 pub fn draw_library_block(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
@@ -49,31 +49,6 @@ pub fn draw_playlist_block(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
       current_route.hovered_block == ActiveBlock::MyPlaylists,
     )
   };
-
-  // Local Files: the sidebar Playlists panel lists the local folders for the
-  // active source instead of Spotify playlists (no write, so no "Add Playlist").
-  if app.active_source == Source::Local {
-    let items: Vec<String> = if app.local_playlists().is_empty() {
-      vec![strings.empty_local(&app.user_config.keys.manage_devices.to_string())]
-    } else {
-      app
-        .local_playlists()
-        .iter()
-        .map(|p| format!("{FOLDER_ICON} {}", p.display_name(app.strings())))
-        .collect()
-    };
-    draw_selectable_list(
-      f,
-      app,
-      layout_chunk,
-      strings.local_files,
-      &items,
-      highlight_state,
-      app.view.selected_playlist_index,
-      &app.view.playlist_scroll_offset,
-    );
-    return;
-  }
 
   // Apple Music: "All songs" first, then the Music playlists, each opening
   // the shared track table. Read-only, so no "Add Playlist".
@@ -232,7 +207,6 @@ pub fn draw_user_block(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
 mod tests {
   use super::*;
   use crate::core::plugin_api::PlaylistInfo;
-  use crate::tui::event::Key;
   use ratatui::{backend::TestBackend, Terminal};
 
   fn rendered(app: &App, area: Rect) -> String {
@@ -345,19 +319,13 @@ mod tests {
   }
 
   #[test]
-  fn empty_local_sidebar_names_the_configured_source_key() {
+  fn local_source_sidebar_shows_unified_playlists() {
     let mut app = App::default_connected();
     app.active_source = Source::Local;
-    app.user_config.keys.manage_devices = Key::Char('D');
-    // 60 columns: the 32-column tests above cut this hint off.
     let content = rendered(&app, Rect::new(0, 0, 60, 40));
     assert!(
-      content.contains("press `D`"),
-      "empty Local hint should name the rebound key: {content}"
-    );
-    assert!(
-      !content.contains("press `d`"),
-      "empty Local hint must not still show the default key: {content}"
+      content.contains("EchoVena"),
+      "Local source should render EchoVena unified playlists: {content}"
     );
   }
 

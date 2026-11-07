@@ -348,6 +348,7 @@ impl App {
     let sources = Source::picker_sources();
     if !sources.contains(&runtime_state.active_source)
       || (!spotify_connected && runtime_state.active_source == Source::Spotify)
+      || (!spotify_connected && runtime_state.active_source == Source::Local)
     {
       runtime_state.active_source = Source::YouTube;
     }
