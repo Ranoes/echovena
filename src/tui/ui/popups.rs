@@ -1,12 +1,12 @@
 use crate::core::app::{
-  ActiveBlock, AnnouncementLevel, App, DialogContext, HelpMenuModel, PlaylistPickerRow,
+  ActiveBlock, AnnouncementLevel, App, DialogContext, HelpCategory, HelpMenuModel, PlaylistPickerRow,
 };
 use crate::core::plugin_api::PlayableInfo;
 use crate::core::plugin_api::PopupLine;
 use crate::infra::network::sync::PartyStatus;
 use ratatui::{
   layout::{Alignment, Constraint, Direction, Layout, Rect},
-  style::{Modifier, Style},
+  style::{Color, Modifier, Style},
   text::{Line, Span},
   widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Row, Table, Wrap},
   Frame,
@@ -28,6 +28,7 @@ pub fn ensure_help_menu_model(app: &mut App) {
       || m.keys != app.user_config.keys
       || m.source != app.active_source
       || m.spotify_connected != app.spotify_connected
+      || m.category != app.view.help_category
       || m.filter != app.view.help_filter
   });
   if !stale {
@@ -46,6 +47,7 @@ pub fn ensure_help_menu_model(app: &mut App) {
     keys: app.user_config.keys.clone(),
     source: app.active_source,
     spotify_connected: app.spotify_connected,
+    category: app.view.help_category,
     filter: app.view.help_filter.clone(),
     header,
     rows,
@@ -119,7 +121,8 @@ pub fn draw_help_menu(f: &mut Frame<'_>, app: &App) {
   let [area] = f
     .area()
     .layout(&Layout::vertical([Constraint::Percentage(100)]).margin(2));
-  let [table_area, filter_area] = area.layout(&Layout::vertical([
+  let [tabs_area, table_area, filter_area] = area.layout(&Layout::vertical([
+    Constraint::Length(1),
     Constraint::Min(0),
     Constraint::Length(1),
   ]));
@@ -129,6 +132,34 @@ pub fn draw_help_menu(f: &mut Frame<'_>, app: &App) {
   let Some(model) = app.view.help_menu_model.as_ref() else {
     return;
   };
+
+  // Render Help Category Tabs
+  let mut tab_spans = Vec::new();
+  for (i, cat) in HelpCategory::ALL.iter().enumerate() {
+    if i > 0 {
+      tab_spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+    }
+    let is_selected = *cat == app.view.help_category;
+    if is_selected {
+      tab_spans.push(Span::styled(
+        format!(" [{}] ", cat.label()),
+        Style::default()
+          .fg(Color::Cyan)
+          .add_modifier(Modifier::BOLD)
+          .add_modifier(Modifier::REVERSED),
+      ));
+    } else {
+      tab_spans.push(Span::styled(
+        format!(" {} ", cat.label()),
+        Style::default().fg(Color::Gray),
+      ));
+    }
+  }
+  tab_spans.push(Span::styled(
+    "    [Tab: Cycle Category │ /: Filter │ Esc/q: Close]",
+    Style::default().fg(Color::DarkGray),
+  ));
+  f.render_widget(Paragraph::new(Line::from(tab_spans)), tabs_area);
 
   let help_menu_style = app.user_config.theme.base_style();
   let header = &model.header;

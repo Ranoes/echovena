@@ -102,6 +102,8 @@ pub struct ViewState {
   pub help_filter: String,
   /// Whether typed keys are currently editing [`Self::help_filter`].
   pub help_filter_editing: bool,
+  /// Active Help menu category tab, cycled with `Tab`.
+  pub help_category: HelpCategory,
   /// Formatted Help rows for the current width/keys/filter; `None` until the
   /// Help menu is first prepared for rendering.
   pub help_menu_model: Option<HelpMenuModel>,

@@ -23,7 +23,7 @@ pub fn draw_lyrics_view(f: &mut Frame<'_>, app: &App) {
   }
 }
 
-fn draw_lyrics(f: &mut Frame<'_>, app: &App, area: Rect) {
+pub fn draw_lyrics(f: &mut Frame<'_>, app: &App, area: Rect) {
   let theme = &app.user_config.theme;
   let offset_ms = app.view.lyrics_view.timing_offset_ms;
 

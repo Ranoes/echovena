@@ -589,7 +589,7 @@ fn build_changelog_lines(
   push_wrapped(
     &mut lines,
     &[StyledSegment {
-      text: "EchoVena 2.0 — Fast Terminal Music Streamer, Offline Downloader & Karaoke".to_string(),
+      text: "EchoVena — Fast Terminal Music Streamer, Offline Downloader & Karaoke".to_string(),
       style: Style::default()
         .fg(theme.banner.into())
         .add_modifier(Modifier::BOLD),
@@ -608,16 +608,16 @@ fn build_changelog_lines(
   );
 
   let shortcuts = [
-    ("  /            ", "Search tracks, artists, or paste any YouTube / Spotify URL"),
+    ("  /            ", "Search YouTube/YTMusic, or paste any video/playlist URL"),
     ("  Space        ", "Play / Pause active playback"),
-    ("  n / p        ", "Next / Previous track in queue"),
-    ("  K            ", "Toggle live 60 FPS syllable-by-syllable karaoke stage"),
-    ("  d            ", "Select audio stream source & download quality source"),
-    ("  s / S        ", "Offline archive (s: current track, S: full playlist with .elrc)"),
-    ("  Tab          ", "Cycle active panel focus (Quick Menu / Playlists / Main / Player)"),
-    ("  h / j / k / l", "Pure Vim navigation | p: paste clipboard text | ?: help"),
-    ("  Q            ", "Show playback queue"),
-    ("  Ctrl+c / q   ", "Immediately quit EchoVena"),
+    ("  < / >        ", "Previous / Next track in queue"),
+    ("  T            ", "Now Playing Dashboard (Live Lyrics & Cover Art)"),
+    ("  B            ", "Dedicated Fullscreen Lyrics View"),
+    ("  G            ", "Album Information & Full Tracklist"),
+    ("  e / E        ", "Play Queue (Two-section active & upcoming)"),
+    ("  s / S        ", "Offline Archive (s: current track, S: full playlist)"),
+    ("  ?            ", "Full Help Menu (categorized with Tab)"),
+    ("  Ctrl+q       ", "Immediately quit EchoVena"),
   ];
 
   for (key, desc) in shortcuts {

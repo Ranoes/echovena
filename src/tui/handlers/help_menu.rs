@@ -30,8 +30,24 @@ pub fn handler(key: Key, app: &mut App) {
   }
 
   match key {
+    Key::Tab | Key::Char('l') => {
+      app.view.help_category = app.view.help_category.next();
+      app.view.help_menu_model = None;
+      reset_page(app);
+    }
+    Key::BackTab | Key::Char('h') => {
+      app.view.help_category = app.view.help_category.prev();
+      app.view.help_menu_model = None;
+      reset_page(app);
+    }
+    Key::Char('q') => {
+      app.pop_navigation_stack();
+    }
     k if k == app.user_config.keys.search => begin_filter(app),
     Key::Esc if !app.view.help_filter.is_empty() => clear_filter(app),
+    Key::Esc => {
+      app.pop_navigation_stack();
+    }
     k if common_key_events::down_event(k, &app.user_config.keys) => {
       move_page(Direction::Down, app);
     }
@@ -90,7 +106,7 @@ fn move_page(direction: Direction, app: &mut App) {
 mod tests {
   use super::*;
   use crate::{
-    core::app::{ActiveBlock, RouteId},
+    core::app::{ActiveBlock, HelpCategory, RouteId},
     core::source::Source,
     core::user_config::UserConfig,
     tui::{handlers::handle_app, keymap::help_rows, ui::ensure_help_menu_model},
@@ -250,5 +266,33 @@ mod tests {
 
     assert!(app.view.help_filter_editing);
     assert!(app.view.help_filter.is_empty());
+  }
+
+  #[test]
+  fn test_help_category_cycle_and_filter() {
+    let mut app = App::default();
+    handle_app(app.user_config.keys.help, &mut app);
+    assert_eq!(app.view.help_category, HelpCategory::All);
+    ensure_help_menu_model(&mut app);
+    let all_count = app.view.help_docs_size;
+    assert!(all_count > 0);
+
+    // Tab cycles to Navigation
+    handle_app(Key::Tab, &mut app);
+    assert_eq!(app.view.help_category, HelpCategory::Navigation);
+    ensure_help_menu_model(&mut app);
+    let nav_count = app.view.help_docs_size;
+    assert!(nav_count > 0 && nav_count < all_count);
+
+    // Tab cycles to Playback
+    handle_app(Key::Tab, &mut app);
+    assert_eq!(app.view.help_category, HelpCategory::Playback);
+    ensure_help_menu_model(&mut app);
+    let play_count = app.view.help_docs_size;
+    assert!(play_count > 0 && play_count < all_count);
+
+    // BackTab (Shift+Tab) cycles back to Navigation
+    handle_app(Key::BackTab, &mut app);
+    assert_eq!(app.view.help_category, HelpCategory::Navigation);
   }
 }

@@ -313,7 +313,7 @@ pub fn draw_live_youtube_search(f: &mut Frame<'_>, app: &App, area: Rect) {
         vec![
           Line::from(""),
           Line::from(Span::styled(
-            "    EchoVena 2.0 Live YouTube & YouTube Music Search",
+            "    EchoVena Live YouTube & YouTube Music Search",
             Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
           )),
           Line::from(""),

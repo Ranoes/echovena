@@ -1,5 +1,60 @@
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HelpCategory {
+  #[default]
+  All,
+  Navigation,
+  Playback,
+  Lyrics,
+  Library,
+  System,
+}
+
+impl HelpCategory {
+  pub const ALL: [HelpCategory; 6] = [
+    HelpCategory::All,
+    HelpCategory::Navigation,
+    HelpCategory::Playback,
+    HelpCategory::Lyrics,
+    HelpCategory::Library,
+    HelpCategory::System,
+  ];
+
+  pub fn label(&self) -> &'static str {
+    match self {
+      HelpCategory::All => "ALL",
+      HelpCategory::Navigation => "Navigation",
+      HelpCategory::Playback => "Playback",
+      HelpCategory::Lyrics => "Lyrics & Karaoke",
+      HelpCategory::Library => "Playlists & Library",
+      HelpCategory::System => "System & Settings",
+    }
+  }
+
+  pub fn next(&self) -> Self {
+    match self {
+      Self::All => Self::Navigation,
+      Self::Navigation => Self::Playback,
+      Self::Playback => Self::Lyrics,
+      Self::Lyrics => Self::Library,
+      Self::Library => Self::System,
+      Self::System => Self::All,
+    }
+  }
+
+  pub fn prev(&self) -> Self {
+    match self {
+      Self::All => Self::System,
+      Self::Navigation => Self::All,
+      Self::Playback => Self::Navigation,
+      Self::Lyrics => Self::Playback,
+      Self::Library => Self::Lyrics,
+      Self::System => Self::Library,
+    }
+  }
+}
+
 /// Formatted Help-menu rows, static between terminal-width, keybinding, or
 /// filter changes. Rebuilt outside the draw path (see
 /// `tui::ui::popups::ensure_help_menu_model`) so Help rendering reads immutable
@@ -9,6 +64,7 @@ pub struct HelpMenuModel {
   pub keys: crate::core::user_config::KeyBindings,
   pub source: Source,
   pub spotify_connected: bool,
+  pub category: HelpCategory,
   pub filter: String,
   pub header: String,
   pub rows: Vec<String>,

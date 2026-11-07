@@ -1291,16 +1291,19 @@ fn copy_url(app: &mut App, copy: Action) {
 }
 
 fn is_input_mode(app: &App) -> bool {
-  matches!(
-    app.get_current_route().active_block,
-    ActiveBlock::Input
-      | ActiveBlock::Dialog(_)
-      | ActiveBlock::AnnouncementPrompt
-      | ActiveBlock::ExitPrompt
-      | ActiveBlock::CreatePlaylistForm
-      | ActiveBlock::RecapPrompt
-      | ActiveBlock::CommunityPinPrompt
-  ) || {
+  app.view.help_filter_editing
+    || app.view.settings_filter_editing
+    || app.view.url_import_visible
+    || matches!(
+      app.get_current_route().active_block,
+      ActiveBlock::Input
+        | ActiveBlock::Dialog(_)
+        | ActiveBlock::AnnouncementPrompt
+        | ActiveBlock::ExitPrompt
+        | ActiveBlock::CreatePlaylistForm
+        | ActiveBlock::RecapPrompt
+        | ActiveBlock::CommunityPinPrompt
+    ) || {
     #[cfg(feature = "ai-dj")]
     {
       app.get_current_route().active_block == ActiveBlock::AiDj

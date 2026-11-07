@@ -8,7 +8,7 @@
 )]
 
 use crate::core::action::{Action, CopyTarget, LibraryTarget, NavTarget};
-use crate::core::app::App;
+use crate::core::app::{App, HelpCategory};
 use crate::core::input::Key;
 use crate::core::requirement::{Capability, Requirement};
 use crate::core::sort::SortContext;
@@ -31,14 +31,17 @@ pub struct HelpEntry {
   pub key: HelpKey,
   pub context: &'static str,
   pub needs: Requirement,
+  pub category: HelpCategory,
 }
 
 fn row(description: &'static str, key: HelpKey, context: &'static str) -> HelpEntry {
+  let category = categorize_entry(description, context);
   HelpEntry {
     description,
     key,
     context,
     needs: Requirement::None,
+    category,
   }
 }
 
@@ -46,6 +49,38 @@ impl HelpEntry {
   fn needs(mut self, needs: Requirement) -> Self {
     self.needs = needs;
     self
+  }
+
+  pub fn category(mut self, cat: HelpCategory) -> Self {
+    self.category = cat;
+    self
+  }
+}
+
+fn categorize_entry(description: &'static str, context: &'static str) -> HelpCategory {
+  let d = description.to_lowercase();
+  let c = context.to_lowercase();
+
+  if d.contains("lyric") || d.contains("karaoke") || c.contains("lyric") {
+    HelpCategory::Lyrics
+  } else if d.contains("playlist") || d.contains("queue") || d.contains("download")
+    || d.contains("archive") || d.contains("save") || d.contains("delete")
+    || d.contains("sort") || d.contains("mirror") || d.contains("import")
+    || c.contains("playlist") || c.contains("queue")
+  {
+    HelpCategory::Library
+  } else if d.contains("play") || d.contains("pause") || d.contains("track")
+    || d.contains("volume") || d.contains("seek") || d.contains("shuffle")
+    || d.contains("repeat") || d.contains("url")
+  {
+    HelpCategory::Playback
+  } else if d.contains("setting") || d.contains("source") || d.contains("quit")
+    || d.contains("help") || d.contains("layout") || d.contains("sidebar")
+    || d.contains("panels")
+  {
+    HelpCategory::System
+  } else {
+    HelpCategory::Navigation
   }
 }
 
@@ -285,25 +320,37 @@ pub fn help_entries_for(strings: &crate::core::i18n::Strings) -> Vec<HelpEntry> 
       Literal("<Esc>"),
       help.context_selected_block,
     ),
-    row("Clear Search Query", Literal("<Ctrl+i>"), help.context_general),
-    row("Home / Return to Library (preserves search)", Literal("<Esc>"), help.context_general),
-    row("Back / Close Panel or Modal", Literal("q"), help.context_general),
-    row("Quit EchoVena Immediately", Literal("<Ctrl+q> | <Ctrl+c>"), help.context_general),
-    row("Live 60 FPS Karaoke Stage", Literal("K"), help.context_general),
-    row("Cycle Karaoke Mode (Orig / Rom / Both)", Literal("T"), help.context_lyrics),
-    row("Cycle Karaoke Alignment (Left / Center / Right)", Literal("K"), help.context_lyrics),
-    row("Nudge Lyrics Timing Offset (-100ms / +100ms)", Literal("[ / ]"), help.context_lyrics),
-    row("Refetch Lyrics via Auto Waterfall", Literal("R"), help.context_lyrics),
-    row("Download Track to Offline Archive (.elrc)", Literal("s"), help.context_general),
-    row("Batch Download Playlist to Offline Archive", Literal("S"), help.context_general),
-    row("Queue Highlighted Track Next (Play Next)", Literal("z"), help.context_selected_block),
-    row("Add Track to End of Queue", Literal("Z"), help.context_selected_block),
-    row("Cycle Search Scope (Music / Album / Artist / Video)", Literal("<Tab> | <Shift+Tab>"), help.context_general),
-    row("Paste URL or Search from Clipboard", Literal("p | <Ctrl+v>"), help.context_general),
-    row("Add Playing Song to Playlist", Literal("W"), help.context_global),
-    row("Add Highlighted Track to Playlist", Literal("w | a"), help.context_add_track),
-    row("Remove Track from Playlist", Literal("D | x | <Delete>"), help.context_playlist_tracks),
-    row("Import YouTube / Spotify Playlist URL", Literal("U | p"), help.context_general),
+    row("Now Playing Dashboard (Live Lyrics & Art)", Literal("T"), help.context_general).category(HelpCategory::Navigation),
+    row("Dedicated Fullscreen Lyrics View", Literal("B"), help.context_lyrics).category(HelpCategory::Lyrics),
+    row("Album Information & Tracklist", Literal("G"), help.context_general).category(HelpCategory::Navigation),
+    row("Fullscreen Album Art", Literal("N"), help.context_general).category(HelpCategory::Navigation),
+    row("Mini Player View", Literal("M"), help.context_general).category(HelpCategory::Navigation),
+    row("Play Queue (Two-section active & upcoming)", Literal("e | E"), help.context_queue).category(HelpCategory::Library),
+    row("Select / Play Highlighted Item", Literal("o | O | <Enter>"), help.context_general).category(HelpCategory::Navigation),
+    row("Open Sort Menu", Literal("'"), help.context_sortable_lists).category(HelpCategory::Library),
+    row("Cycle Grouping Scope in Song List (Title/Artist/Album)", Literal("<Tab>"), help.context_general).category(HelpCategory::Navigation),
+    row("Help Menu (Category Tabs with Tab)", Literal("?"), help.context_general).category(HelpCategory::System),
+    row("Clear Search Query", Literal("<Ctrl+i>"), help.context_general).category(HelpCategory::Navigation),
+    row("Home / Return to Library (preserves search)", Literal("<Esc>"), help.context_general).category(HelpCategory::Navigation),
+    row("Back / Close Panel or Modal", Literal("q"), help.context_general).category(HelpCategory::Navigation),
+    row("Quit EchoVena Immediately", Literal("<Ctrl+q> | <Ctrl+c>"), help.context_general).category(HelpCategory::System),
+    row("Audio Stream & Download Source Selection", Literal("d"), help.context_general).category(HelpCategory::System),
+    row("Cycle Karaoke Mode (Orig / Rom / Both)", Literal("t"), help.context_lyrics).category(HelpCategory::Lyrics),
+    row("Cycle Lyrics Alignment (Left / Center / Right)", Literal("b"), help.context_lyrics).category(HelpCategory::Lyrics),
+    row("Toggle Lyrics Line Spacing (Compact / Spaced)", Literal("p"), help.context_lyrics).category(HelpCategory::Lyrics),
+    row("Nudge Lyrics Timing Offset (-100ms / +100ms)", Literal("[ / ]"), help.context_lyrics).category(HelpCategory::Lyrics),
+    row("Resume Lyrics Auto-Follow", Literal("f | <Esc>"), help.context_lyrics).category(HelpCategory::Lyrics),
+    row("Refetch Lyrics via Auto Waterfall", Literal("<Ctrl+r> | R"), help.context_lyrics).category(HelpCategory::Lyrics),
+    row("Download Track to Offline Archive (.elrc)", Literal("s"), help.context_general).category(HelpCategory::Library),
+    row("Batch Download Playlist to Offline Archive", Literal("S"), help.context_general).category(HelpCategory::Library),
+    row("Queue Highlighted Track Next (Play Next)", Literal("z"), help.context_selected_block).category(HelpCategory::Library),
+    row("Add Track to End of Queue", Literal("Z"), help.context_selected_block).category(HelpCategory::Library),
+    row("Cycle Search Scope (Music / Album / Artist / Video)", Literal("<Tab> | <Shift+Tab>"), help.context_general).category(HelpCategory::Navigation),
+    row("Paste URL or Search from Clipboard", Literal("p | <Ctrl+v>"), help.context_general).category(HelpCategory::Navigation),
+    row("Add Playing Song to Playlist", Literal("W"), help.context_global).category(HelpCategory::Library),
+    row("Add Highlighted Track to Playlist", Literal("w | a"), help.context_add_track).category(HelpCategory::Library),
+    row("Remove Track from Playlist", Literal("D | x | <Delete>"), help.context_playlist_tracks).category(HelpCategory::Library),
+    row("Import YouTube / Spotify Playlist URL", Literal("U | p"), help.context_general).category(HelpCategory::Library),
     row(help.sidebar_narrower, Literal("{"), help.context_layout),
     row(help.sidebar_wider, Literal("}"), help.context_layout),
     row(help.panels_shorter, Literal("("), help.context_layout),
@@ -516,8 +563,10 @@ pub fn help_entries_for(strings: &crate::core::i18n::Strings) -> Vec<HelpEntry> 
 /// an unmet rebindable row stays, marked with the reason.
 pub fn help_rows(app: &App) -> Vec<Vec<String>> {
   let keys = &app.user_config.keys;
+  let active_category = app.view.help_category;
   help_entries_for(app.strings())
     .into_iter()
+    .filter(|entry| active_category == HelpCategory::All || entry.category == active_category)
     .filter_map(|entry| {
       let availability = app.availability(entry.needs);
       let description = if availability.is_available() {

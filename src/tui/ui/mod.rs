@@ -248,11 +248,8 @@ pub fn draw_action_bar(f: &mut Frame<'_>, app: &App, area: Rect) {
     ("N", "Art"),
     ("M", "Mini Player"),
     ("e/E", "Queue"),
-    ("w/W", "Add Playlist"),
-    ("s/S", "Save"),
-    ("'", "Sort"),
+    ("?", "Help"),
     ("q", "Back"),
-    ("Ctrl+q", "Quit"),
   ];
 
   for (i, (key, label)) in items.iter().enumerate() {
@@ -363,10 +360,10 @@ mod tests {
     let (app, buffer) = render(160, 50);
     let areas = compute_main_layout(&app).expect("layout areas");
     let bar_row = row_text(&buffer, areas.action_bar.y);
-    assert!(bar_row.contains("[Space]"), "missing [Space] in action bar: {bar_row}");
-    assert!(bar_row.contains("Play/Pause"), "missing Play/Pause in action bar: {bar_row}");
-    assert!(bar_row.contains("[p]"), "missing [p] in action bar: {bar_row}");
-    assert!(bar_row.contains("[K]"), "missing [K] in action bar: {bar_row}");
+    assert!(bar_row.contains("[/]"), "missing [/] in action bar: {bar_row}");
+    assert!(bar_row.contains("[T]"), "missing [T] in action bar: {bar_row}");
+    assert!(bar_row.contains("[B]"), "missing [B] in action bar: {bar_row}");
+    assert!(bar_row.contains("[?]"), "missing [?] in action bar: {bar_row}");
   }
 }
 
