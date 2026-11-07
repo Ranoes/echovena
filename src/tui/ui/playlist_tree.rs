@@ -14,30 +14,27 @@ pub fn draw_playlist_tree_view(f: &mut Frame<'_>, app: &App, area: Rect) {
     return;
   }
 
-  let [header_area, list_area, footer_area] = area.layout(&Layout::vertical([
+  let [header_area, list_area] = area.layout(&Layout::vertical([
     Constraint::Length(3),
     Constraint::Min(5),
-    Constraint::Length(2),
   ]));
 
   // 1. Header with Categories & Tabs
   let active_tab = app.view.playlist_panel_tab;
   let theme = &app.user_config.theme;
-  let tab_titles = ["1: EchoVena / Local", "2: Spotify (Imported)", "3: YouTube & YTMusic"];
-  let mut tab_spans = Vec::new();
-  tab_spans.push(Span::raw(" Source Category [Tab]: "));
+  let tab_titles = ["EchoVena", "Spotify", "YouTube"];
+  let mut tab_spans = vec![Span::raw(" ")];
   for (idx, title) in tab_titles.iter().enumerate() {
     if idx == active_tab {
       tab_spans.push(Span::styled(
-        format!(" [{title}] "),
+        format!("● [ {title} ]  "),
         Style::default()
-          .fg(theme.background.into())
-          .bg(theme.selected.into())
+          .fg(theme.selected.into())
           .add_modifier(Modifier::BOLD),
       ));
     } else {
       tab_spans.push(Span::styled(
-        format!("  {title}  "),
+        format!("○ {title}   "),
         Style::default().fg(theme.inactive.into()),
       ));
     }
@@ -46,9 +43,9 @@ pub fn draw_playlist_tree_view(f: &mut Frame<'_>, app: &App, area: Rect) {
   let header_block = Block::default()
     .borders(Borders::ALL)
     .border_type(BorderType::Rounded)
-    .border_style(Style::default().fg(theme.selected.into()))
+    .border_style(Style::default().fg(theme.inactive.into()))
     .title(Span::styled(
-      " All Playlists — Tree View ",
+      " Playlist ",
       Style::default().fg(theme.header.into()).add_modifier(Modifier::BOLD),
     ));
   let header_widget = Paragraph::new(Line::from(tab_spans))
@@ -64,7 +61,7 @@ pub fn draw_playlist_tree_view(f: &mut Frame<'_>, app: &App, area: Rect) {
     vec![ListItem::new(Line::from(vec![
       Span::raw("  "),
       Span::styled(
-        "(No playlists found in this category — press 'A' to create or 'U' to import)",
+        "(No playlists found in this category)",
         Style::default().fg(app.user_config.theme.hint.into()),
       ),
     ]))]
@@ -185,7 +182,7 @@ pub fn draw_playlist_tree_view(f: &mut Frame<'_>, app: &App, area: Rect) {
     .border_type(BorderType::Rounded)
     .border_style(Style::default().fg(theme.selected.into()))
     .title(Span::styled(
-      format!(" Playlist Contents ({} items in tree) ", tree.len()),
+      " Playlist Contents ",
       Style::default().fg(theme.header.into()),
     ));
 
@@ -205,30 +202,5 @@ pub fn draw_playlist_tree_view(f: &mut Frame<'_>, app: &App, area: Rect) {
     .style(theme.base_style());
 
   f.render_widget(list_widget, list_area);
-
-  // 3. Footer Action Hints
-  let footer_spans = vec![
-    Span::styled(" [h] ", Style::default().fg(theme.hint.into()).add_modifier(Modifier::BOLD)),
-    Span::raw("Collapse  │"),
-    Span::styled(" [l] ", Style::default().fg(theme.hint.into()).add_modifier(Modifier::BOLD)),
-    Span::raw("Expand  │"),
-    Span::styled(" [Enter] ", Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD)),
-    Span::raw("Play  │"),
-    Span::styled(" [e/E] ", Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD)),
-    Span::raw("Queue (End/Next)  │"),
-    Span::styled(" [s/S] ", Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD)),
-    Span::raw("Save (Track/Album)  │"),
-    Span::styled(" [d/x] ", Style::default().fg(theme.error_border.into()).add_modifier(Modifier::BOLD)),
-    Span::raw("Delete Track  │"),
-    Span::styled(" [X] ", Style::default().fg(theme.error_text.into()).add_modifier(Modifier::BOLD)),
-    Span::raw("Delete Playlist  │"),
-    Span::styled(" [I] ", Style::default().fg(theme.selected.into()).add_modifier(Modifier::BOLD)),
-    Span::raw("Import URL  │"),
-    Span::styled(" [Esc/q] ", Style::default().fg(theme.header.into()).add_modifier(Modifier::BOLD)),
-    Span::raw("Back"),
-  ];
-  let footer_widget = Paragraph::new(Line::from(footer_spans))
-    .style(theme.base_style());
-  f.render_widget(footer_widget, footer_area);
 }
 

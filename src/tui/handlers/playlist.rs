@@ -39,11 +39,11 @@ pub fn get_playlist_tree_items(app: &App) -> Vec<PlaylistTreeItem> {
     // Tab 0: EchoVena / Local Playlists
     0 => {
       items.push(PlaylistTreeItem::ActionItem {
-        label: "+ Add Playlist [Key A]".to_string(),
+        label: "+ Add Playlist".to_string(),
         action_id: 0,
       });
       items.push(PlaylistTreeItem::ActionItem {
-        label: "+ Import URL [Key I]".to_string(),
+        label: "+ Import URL".to_string(),
         action_id: 1,
       });
 
@@ -95,7 +95,7 @@ pub fn get_playlist_tree_items(app: &App) -> Vec<PlaylistTreeItem> {
     // Tab 1: Spotify Playlists
     1 => {
       items.push(PlaylistTreeItem::ActionItem {
-        label: "+ Import Spotify URL [Key I]".to_string(),
+        label: "+ Import Spotify URL".to_string(),
         action_id: 1,
       });
 
@@ -195,7 +195,7 @@ pub fn get_playlist_tree_items(app: &App) -> Vec<PlaylistTreeItem> {
     // Tab 2: YouTube Playlists
     _ => {
       items.push(PlaylistTreeItem::ActionItem {
-        label: "+ Import YouTube URL [Key I]".to_string(),
+        label: "+ Import YouTube URL".to_string(),
         action_id: 1,
       });
 
@@ -326,8 +326,8 @@ pub fn get_playlist_tab_items(app: &App) -> Vec<String> {
     // Tab 0: EchoVena / Local Playlists
     0 => {
       let mut items = vec![
-        "+ Add Playlist [Key A]".to_string(),
-        "+ Import URL [Key I]".to_string(),
+        "+ Add Playlist".to_string(),
+        "+ Import URL".to_string(),
       ];
       let mut found_any = false;
       if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
@@ -340,13 +340,13 @@ pub fn get_playlist_tab_items(app: &App) -> Vec<String> {
         }
       }
       if !found_any {
-        items.push("  (No local playlists yet \u{2014} press 'A' to create)".to_string());
+        items.push("  (No local playlists yet)".to_string());
       }
       items
     }
     // Tab 1: Spotify Playlists
     1 => {
-      let mut items = vec!["+ Import Spotify URL [Key I]".to_string()];
+      let mut items = vec!["+ Import Spotify URL".to_string()];
       let mut found_any = false;
       if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
         if let Ok(playlists) = db.list_imported_playlists() {
@@ -363,13 +363,13 @@ pub fn get_playlist_tab_items(app: &App) -> Vec<String> {
         items.push(format!("\u{25B6} [Spotify] {} ({} tracks)", p.name, count));
       }
       if !found_any {
-        items.push("  (No Spotify playlists imported yet \u{2014} press 'I' to import)".to_string());
+        items.push("  (No Spotify playlists imported yet)".to_string());
       }
       items
     }
     // Tab 2: YouTube Playlists
     _ => {
-      let mut items = vec!["+ Import YouTube URL [Key I]".to_string()];
+      let mut items = vec!["+ Import YouTube URL".to_string()];
       let mut found_any = false;
       for p in app.youtube_playlists() {
         found_any = true;
@@ -385,7 +385,7 @@ pub fn get_playlist_tab_items(app: &App) -> Vec<String> {
         }
       }
       if !found_any {
-        items.push("  (No YouTube playlists yet \u{2014} press 'I' to import)".to_string());
+        items.push("  (No YouTube playlists yet)".to_string());
       }
       items
     }

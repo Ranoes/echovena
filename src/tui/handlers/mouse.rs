@@ -237,15 +237,15 @@ fn handle_playlists_panel_mouse(mouse: MouseEvent, table_area: Rect, app: &mut A
     MouseEventKind::Down(MouseButton::Left) => {
       // 1. Check if click landed on header tabs (row header_area.y + 1)
       if mouse.row == header_area.y.saturating_add(1) && mouse.column >= header_area.x {
-        let tabs_start = header_area.x.saturating_add(25);
+        let tabs_start = header_area.x.saturating_add(1);
         if mouse.column >= tabs_start {
           let col = mouse.column - tabs_start;
-          let clicked_tab = if col < 24 {
-            0 // EchoVena / Local
-          } else if col < 48 {
-            1 // Spotify (Imported)
+          let clicked_tab = if col < 16 {
+            0 // EchoVena
+          } else if col < 31 {
+            1 // Spotify
           } else {
-            2 // YouTube & YTMusic
+            2 // YouTube
           };
           if app.view.playlist_panel_tab != clicked_tab {
             app.view.playlist_panel_tab = clicked_tab;
@@ -432,7 +432,7 @@ fn handle_live_youtube_search_mouse(mouse: MouseEvent, table_area: Rect, app: &m
       {
         let inner_x = scope_area.x.saturating_add(1);
         if mouse.column >= inner_x {
-          let mut cur_x = inner_x + 15; // after " [Tab: Scope]  "
+          let mut cur_x = inner_x + 1; // start of scopes
           for (scope, label) in [
             (crate::sources::youtube_search::types::SearchScope::Music, "MUSIC"),
             (crate::sources::youtube_search::types::SearchScope::Album, "ALBUM"),

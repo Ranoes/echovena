@@ -194,7 +194,7 @@ pub fn draw_live_youtube_search(f: &mut Frame<'_>, app: &App, area: Rect) {
 
   // 1. Scope Filter Bar
   let mut scope_spans = vec![
-    Span::styled(" [Tab: Scope]  ", Style::default().fg(theme.hint.into()).add_modifier(Modifier::BOLD)),
+    Span::raw(" "),
   ];
 
   let scopes = [
@@ -220,13 +220,8 @@ pub fn draw_live_youtube_search(f: &mut Frame<'_>, app: &App, area: Rect) {
 
   if app.live_search_loading {
     scope_spans.push(Span::styled(
-      "  ⟳ [Searching InnerTube...]",
+      "  ⟳ [Searching...]",
       Style::default().fg(theme.hint.into()).add_modifier(Modifier::BOLD),
-    ));
-  } else {
-    scope_spans.push(Span::styled(
-      "  (Zero API Keys)",
-      Style::default().fg(theme.hint.into()),
     ));
   }
 
