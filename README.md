@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.90%2B-orange.svg)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/Version-1.0.0-emerald.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/Version-1.1.0-emerald.svg)](Cargo.toml)
 
 > **Lossless Hi-Res FLAC Terminal Music Streamer, Multi-Platform Playlist Sync & 60 FPS Real-Time Word-by-Word Karaoke TUI**
 
@@ -26,10 +26,11 @@ winget install Ranoes.EchoVena
 choco install echovena
 ```
 
-### Linux & macOS
-```bash
+### Linux & macOS (No Homebrew Required)
+```sh
 curl -fsSL https://raw.githubusercontent.com/Ranoes/echovena/main/install.sh | sh
 ```
+> Prebuilt release archives are provided for **Windows `x86_64`**, **Linux `x86_64`**, and **macOS Apple Silicon (`arm64`)** with SHA-256 verification and bundled audio libraries on macOS. Other architectures can build from source via `cargo install` below.
 
 ### Rust (Cargo)
 ```bash
@@ -54,20 +55,23 @@ cargo install --git https://github.com/Ranoes/echovena.git --locked
 
 | Key | Description |
 |---|---|
-| `U` | **URL Import Modal:** Paste Spotify / YouTube playlist or track URLs to resolve and stream |
-| `K` | **Karaoke Stage:** Toggle the 60 FPS full-screen word-by-word Karaoke Stage View |
-| `[` / `]` | **Lyric Offset:** Adjust synchronized lyric timing offset by **-50ms** / **+50ms** |
-| `R` | **Relay Health Modal:** View latency, success rate, and health cooldown status for audio relays |
-| `S` | **Single Track Archiver:** Save current track as Lossless FLAC + `.elrc` in `~/Music/EchoVena` |
-| `Shift+S` | **Batch Playlist Archiver:** Download all resolved playlist tracks as FLAC + `.elrc` + `.m3u8` |
-| `Ctrl+R` | **Playlist Delta-Sync:** Synchronize changes and re-resolve pending tracks in current playlist |
+| `/` | **Live Search & Autocomplete:** Real-time YouTube / YTMusic search with `Tab` scope filtering (`Music`, `Album`, `Artist`, `Video`) |
+| `h` / `j` / `k` / `l` | **Vim Navigation:** Move across panels, lists, columns, and playlists (`H` / `M` / `L` jump top/mid/bottom) |
+| `p` / `Ctrl+V` | **Safe Clipboard Paste:** Paste URLs, tokens, or search queries inside input modals |
+| `I` | **URL Import Modal:** Paste Spotify or YouTube playlist / track URLs to resolve and import |
+| `O` | **Now Playing & Karaoke Stage:** Open the 60 FPS word-by-word Karaoke & Visualizer dashboard |
+| `B` | **Fullscreen Lyrics:** Toggle dedicated synchronized lyrics view (`[` / `]` adjust `-50ms` / `+50ms` offset) |
+| `s` | **Single Track Archiver:** Save selected/playing track offline with cover art and `.elrc` lyrics |
+| `S` (`Shift+S`) | **Batch Playlist Archiver:** Download full playlist offline with metadata, cover art, `.elrc`, and `.m3u8` |
+| `z` | **Add to Queue:** Append selected track to playback queue |
 | `Space` | Play / Pause playback |
 | `>` / `<` | Next / Previous track |
-| `f` / `b` | Seek forward / backward |
+| `.` / `,` | Seek forward / backward |
 | `+` / `-` | Increase / Decrease volume |
-| `d` | Open Source Picker (LosslessRelay, Spotify, Local, Subsonic, Radio, YouTube, Qobuz) |
-| `/` | Search catalog / library |
-| `q` | Quit EchoVena (preserves session state in `~/.local/state/echovena/session.json`) |
+| `r` / `R` | Cycle repeat mode / Toggle shuffle |
+| `i` | Open Source Picker |
+| `?` | Open context-aware Keybindings Help modal |
+| `q` | Quit EchoVena |
 
 ---
 
