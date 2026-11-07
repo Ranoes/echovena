@@ -555,7 +555,7 @@ impl App {
 
       if !local_tracks.is_empty() {
         // Deduplicate local_tracks by (title, artist), preferring records with duration_ms > 0
-        local_tracks.sort_by(|a, b| b.duration_ms.cmp(&a.duration_ms));
+        local_tracks.sort_by_key(|a| std::cmp::Reverse(a.duration_ms));
         let mut unique_tracks: Vec<crate::core::plugin_api::TrackInfo> = Vec::new();
         let mut seen_keys = std::collections::HashSet::new();
         for t in local_tracks {

@@ -760,6 +760,119 @@ fn save_settings(app: &mut App) -> bool {
   )
 }
 
+fn execute_storage_action(app: &mut App, id: &str) {
+  match id {
+    "storage.clear_audio_cache" => {
+      match crate::core::paths::clear_audio_cache_files() {
+        Ok((count, bytes)) => {
+          let mb = bytes as f64 / (1024.0 * 1024.0);
+          app.set_status_message(format!(
+            "Cleared audio cache: {:.1} MB freed across {} files",
+            mb, count
+          ), 5);
+        }
+        Err(e) => {
+          app.set_error_status_message(format!(
+            "Failed to clear audio cache: {}",
+            e
+          ), 6);
+        }
+      }
+      app.load_settings_for_category();
+    }
+    "storage.clear_lyrics_cache" => {
+      if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+        match db.clear_lyrics_cache() {
+          Ok(count) => {
+            app.view.active_karaoke_timeline = None;
+            app.set_lyrics(crate::core::app::LyricsStatus::NotFound, None, false);
+            app.set_status_message(format!(
+              "Cleared lyrics cache ({} entries purged)",
+              count
+            ), 5);
+          }
+          Err(e) => {
+            app.set_error_status_message(format!(
+              "Failed to clear lyrics cache: {}",
+              e
+            ), 6);
+          }
+        }
+      }
+      app.load_settings_for_category();
+    }
+    "storage.clear_resolution_cache" => {
+      if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+        match db.clear_resolution_cache() {
+          Ok(count) => {
+            app.set_status_message(format!(
+              "Cleared search and resolution cache ({} entries purged)",
+              count
+            ), 5);
+          }
+          Err(e) => {
+            app.set_error_status_message(format!(
+              "Failed to clear resolution cache: {}",
+              e
+            ), 6);
+          }
+        }
+      }
+      app.load_settings_for_category();
+    }
+    "storage.clear_listening_history" => {
+      let _ = crate::infra::history::clear_all_listening_history();
+      app.stats_data = None;
+      app.reload_stats();
+      app.set_status_message("Listening history and playback statistics cleared", 5);
+      app.load_settings_for_category();
+    }
+    "storage.purge_missing_files" => {
+      if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+        match db.purge_missing_files() {
+          Ok(count) => {
+            app.populate_saved_tracks_from_local_and_db();
+            app.set_status_message(format!(
+              "Purged {} dead/missing file records from database",
+              count
+            ), 5);
+          }
+          Err(e) => {
+            app.set_error_status_message(format!(
+              "Failed to purge missing files: {}",
+              e
+            ), 6);
+          }
+        }
+      }
+      app.load_settings_for_category();
+    }
+    "storage.reset_database" => {
+      if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
+        match db.reset_all_data() {
+          Ok(()) => {
+            let _ = crate::core::paths::clear_audio_cache_files();
+            app.view.active_karaoke_timeline = None;
+            app.set_lyrics(crate::core::app::LyricsStatus::NotFound, None, false);
+            app.populate_saved_tracks_from_local_and_db();
+            app.set_status_message(
+              "Library database, playlists, and caches completely reset", 6,
+            );
+          }
+          Err(e) => {
+            app.set_error_status_message(format!(
+              "Failed to reset database: {}",
+              e
+            ), 6);
+          }
+        }
+      }
+      app.load_settings_for_category();
+    }
+    _ => {}
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -1243,119 +1356,5 @@ mod tests {
         .is_some_and(|msg| msg.contains("Cleared search and resolution cache")),
       "expected execution status message after confirming with 'y'"
     );
-  }
-}
-
-
-fn execute_storage_action(app: &mut App, id: &str) {
-  match id {
-    "storage.clear_audio_cache" => {
-      match crate::core::paths::clear_audio_cache_files() {
-        Ok((count, bytes)) => {
-          let mb = bytes as f64 / (1024.0 * 1024.0);
-          app.set_status_message(format!(
-            "Cleared audio cache: {:.1} MB freed across {} files",
-            mb, count
-          ), 5);
-        }
-        Err(e) => {
-          app.set_error_status_message(format!(
-            "Failed to clear audio cache: {}",
-            e
-          ), 6);
-        }
-      }
-      app.load_settings_for_category();
-    }
-    "storage.clear_lyrics_cache" => {
-      if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
-        match db.clear_lyrics_cache() {
-          Ok(count) => {
-            app.view.active_karaoke_timeline = None;
-            app.set_lyrics(crate::core::app::LyricsStatus::NotFound, None, false);
-            app.set_status_message(format!(
-              "Cleared lyrics cache ({} entries purged)",
-              count
-            ), 5);
-          }
-          Err(e) => {
-            app.set_error_status_message(format!(
-              "Failed to clear lyrics cache: {}",
-              e
-            ), 6);
-          }
-        }
-      }
-      app.load_settings_for_category();
-    }
-    "storage.clear_resolution_cache" => {
-      if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
-        match db.clear_resolution_cache() {
-          Ok(count) => {
-            app.set_status_message(format!(
-              "Cleared search and resolution cache ({} entries purged)",
-              count
-            ), 5);
-          }
-          Err(e) => {
-            app.set_error_status_message(format!(
-              "Failed to clear resolution cache: {}",
-              e
-            ), 6);
-          }
-        }
-      }
-      app.load_settings_for_category();
-    }
-    "storage.clear_listening_history" => {
-      let _ = crate::infra::history::clear_all_listening_history();
-      app.stats_data = None;
-      app.reload_stats();
-      app.set_status_message("Listening history and playback statistics cleared", 5);
-      app.load_settings_for_category();
-    }
-    "storage.purge_missing_files" => {
-      if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
-        match db.purge_missing_files() {
-          Ok(count) => {
-            app.populate_saved_tracks_from_local_and_db();
-            app.set_status_message(format!(
-              "Purged {} dead/missing file records from database",
-              count
-            ), 5);
-          }
-          Err(e) => {
-            app.set_error_status_message(format!(
-              "Failed to purge missing files: {}",
-              e
-            ), 6);
-          }
-        }
-      }
-      app.load_settings_for_category();
-    }
-    "storage.reset_database" => {
-      if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {
-        match db.reset_all_data() {
-          Ok(()) => {
-            let _ = crate::core::paths::clear_audio_cache_files();
-            app.view.active_karaoke_timeline = None;
-            app.set_lyrics(crate::core::app::LyricsStatus::NotFound, None, false);
-            app.populate_saved_tracks_from_local_and_db();
-            app.set_status_message(
-              "Library database, playlists, and caches completely reset", 6,
-            );
-          }
-          Err(e) => {
-            app.set_error_status_message(format!(
-              "Failed to reset database: {}",
-              e
-            ), 6);
-          }
-        }
-      }
-      app.load_settings_for_category();
-    }
-    _ => {}
   }
 }

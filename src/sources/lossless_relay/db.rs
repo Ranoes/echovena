@@ -88,7 +88,7 @@ impl Database {
     pub fn open_default() -> Result<Self> {
         #[cfg(test)]
         {
-            return TEST_DEFAULT_DB.with(|slot| {
+            TEST_DEFAULT_DB.with(|slot| {
                 let mut borrow = slot.borrow_mut();
                 if let Some(ref db) = *borrow {
                     Ok(db.clone())
@@ -97,7 +97,7 @@ impl Database {
                     *borrow = Some(db.clone());
                     Ok(db)
                 }
-            });
+            })
         }
         #[cfg(not(test))]
         {

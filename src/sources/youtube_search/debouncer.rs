@@ -149,7 +149,7 @@ impl DebounceWorker {
                     _ = tokio::time::sleep(self.debounce_duration) => {
                         // Debounce period elapsed! Check if request is still current
                         let latest_req = self.rx_query.borrow().clone();
-                        let is_current = latest_req.as_ref().map_or(false, |r| r.id == req.id);
+                        let is_current = latest_req.as_ref().is_some_and(|r| r.id == req.id);
 
                         if is_current {
                             self.active_request_id.store(req.id, Ordering::SeqCst);

@@ -289,7 +289,7 @@ pub fn get_playlist_tree_items(app: &App) -> Vec<PlaylistTreeItem> {
                         track_id: t.video_id.clone(),
                         title: t.title.clone(),
                         artist: t.channel.clone(),
-                        duration_ms: t.duration_ms as u64,
+                        duration_ms: t.duration_ms,
                         position: idx,
                         uri: Some(format!("youtube:video:{}", t.video_id)),
                         is_last: idx == count.saturating_sub(1),
@@ -1112,7 +1112,7 @@ pub(super) fn activate_selected(app: &mut App) {
           app.view.expanded_playlists.insert(id.clone());
         }
       }
-      PlaylistTreeItem::TrackLeaf { playlist_id, position, title, uri, track_id: _, .. } => {
+      PlaylistTreeItem::TrackLeaf { playlist_id, position, title, uri, .. } => {
         // Play selected track from playlist and queue all upcoming tracks
         let mut uris = Vec::new();
         if let Ok(db) = crate::sources::lossless_relay::db::Database::open_default() {

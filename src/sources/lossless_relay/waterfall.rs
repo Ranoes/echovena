@@ -163,7 +163,7 @@ impl LosslessWaterfall {
                         let playback = provider
                             .playback_url
                             .as_deref()
-                            .or_else(|| provider.catalog_url.as_deref())
+                            .or(provider.catalog_url.as_deref())
                             .unwrap_or("http://127.0.0.1:8000");
                         let client = HifiClient::new(playback, &provider.id, self.registry.waterfall_timeout_ms);
 

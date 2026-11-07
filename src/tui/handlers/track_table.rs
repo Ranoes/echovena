@@ -945,7 +945,7 @@ mod tests {
       false,
     );
     app.view.track_table_index = 1;
-    app.track_table.tracks = page.items.iter().cloned().collect();
+    app.track_table.tracks = page.items.to_vec();
     app.library_mut().saved_tracks.upsert_page_by_offset(page);
     app.library_mut().saved_tracks.index = 0;
 
@@ -1245,7 +1245,7 @@ mod tests {
       false,
     );
     app.view.track_table_index = 1;
-    app.track_table.tracks = page.items.iter().cloned().collect();
+    app.track_table.tracks = page.items.to_vec();
     app.library_mut().saved_tracks.upsert_page_by_offset(page);
     app.library_mut().saved_tracks.index = 0;
 
@@ -1280,7 +1280,7 @@ mod tests {
       true,
     );
     app.view.track_table_index = 1;
-    app.track_table.tracks = page.items.iter().cloned().collect();
+    app.track_table.tracks = page.items.to_vec();
     app.library_mut().saved_tracks.upsert_page_by_offset(page);
     app.library_mut().saved_tracks.index = 0;
 

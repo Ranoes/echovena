@@ -107,17 +107,14 @@ pub enum SyncType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Default)]
 pub enum VocalRole {
+    #[default]
     Lead1,      // v1 - Left-aligned, Cyan
     Lead2,      // v2 - Right-aligned, Magenta
     Background, // x-bg - Dimmed italics below line
 }
 
-impl Default for VocalRole {
-    fn default() -> Self {
-        VocalRole::Lead1
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KaraokeWord {
@@ -289,6 +286,7 @@ impl LyricWaterfall {
 
     /// Resolves lyrics for a track using SQLite cache and priority waterfall:
     /// Paxsenix (TTML/RichSync) -> Spotify (Color Lyrics/Bypass) -> LRCLIB (.elrc) -> NetEase (.yrc)
+    #[allow(clippy::too_many_arguments)]
     pub async fn resolve_lyrics(
         &self,
         db: &crate::sources::lossless_relay::db::Database,

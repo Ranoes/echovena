@@ -35,7 +35,6 @@ fn handle_name_stage(key: Key, app: &mut App) {
         }
         app.set_status_message(format!("Created local playlist '{}'", name.trim()), 4);
         close_form(app);
-        return;
       }
     }
     Key::Esc => {

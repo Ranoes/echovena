@@ -10,7 +10,7 @@ use ratatui::{
 };
 
 /// Computes character-slice counts for sub-word progress highlighting
-pub fn compute_sub_word_slices<'a>(word: &'a str, progress: f64) -> (&'a str, &'a str) {
+pub fn compute_sub_word_slices(word: &str, progress: f64) -> (&str, &str) {
     if progress <= 0.0 {
         return ("", word);
     }

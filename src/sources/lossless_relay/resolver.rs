@@ -442,11 +442,10 @@ impl Resolver {
                                                     let t_sim = jaro_winkler_similarity(title, cand_title);
                                                     let a_sim = jaro_winkler_similarity(artist, cand_artist);
                                                     let avg_sim = (t_sim + a_sim) / 2.0;
-                                                    if avg_sim >= 0.85 {
-                                                        if best_qobuz.as_ref().map_or(true, |(_, s)| avg_sim > *s) {
+                                                    if avg_sim >= 0.85
+                                                        && best_qobuz.as_ref().is_none_or(|(_, s)| avg_sim > *s) {
                                                             best_qobuz = Some((id, avg_sim));
                                                         }
-                                                    }
                                                 }
                                             }
                                         }
@@ -483,11 +482,10 @@ impl Resolver {
                                                     let t_sim = jaro_winkler_similarity(title, cand_title);
                                                     let a_sim = jaro_winkler_similarity(artist, cand_artist);
                                                     let avg_sim = (t_sim + a_sim) / 2.0;
-                                                    if avg_sim >= 0.85 {
-                                                        if best_tidal.as_ref().map_or(true, |(_, s)| avg_sim > *s) {
+                                                    if avg_sim >= 0.85
+                                                        && best_tidal.as_ref().is_none_or(|(_, s)| avg_sim > *s) {
                                                             best_tidal = Some((id, avg_sim));
                                                         }
-                                                    }
                                                 }
                                             }
                                         }

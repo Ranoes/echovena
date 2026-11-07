@@ -218,12 +218,13 @@ pub fn clean_youtube_title(raw_title: &str, uploader: Option<&str>) -> (String, 
 
     // 6. Check for separators: " - ", " – ", " — ", " : ", "／", " / "
     let separators = [" - ", " – ", " — ", " : ", "／", " / "];
+    let badge_re = Regex::new(r#"(?i)\s*["']?\s*(official\s*video|mv|hd|audio)\s*["']?$"#).ok();
     for sep in &separators {
         if let Some((left, right)) = title.split_once(sep) {
             let left_trimmed = left.trim().trim_matches(|c: char| c == '"' || c == '\'' || c == '(' || c == ')' || c == '[' || c == ']' || c == '【' || c == '】' || c == '「' || c == '」' || c == '『' || c == '』').trim().to_string();
             let mut right_trimmed = right.trim().trim_matches(|c: char| c == '"' || c == '\'' || c == '(' || c == ')' || c == '[' || c == ']' || c == '【' || c == '】' || c == '「' || c == '」' || c == '『' || c == '』').trim().to_string();
 
-            if let Ok(re) = Regex::new(r#"(?i)\s*["']?\s*(official\s*video|mv|hd|audio)\s*["']?$"#) {
+            if let Some(ref re) = badge_re {
                 let cleaned = re.replace(&right_trimmed, "").trim().to_string();
                 if !cleaned.is_empty() {
                     right_trimmed = cleaned;
@@ -519,7 +520,7 @@ impl YouTubeImporter {
 
                 let flex_cols = renderer["flexColumns"].as_array();
                 let raw_title = flex_cols
-                    .and_then(|cols| cols.get(0))
+                    .and_then(|cols| cols.first())
                     .and_then(|col| {
                         col["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"][0]["text"]
                             .as_str()
@@ -576,7 +577,7 @@ impl YouTubeImporter {
                     .as_array()
                     .and_then(|arr| arr.last())
                     .and_then(|t| t["url"].as_str())
-                    .map(|s| crate::sources::lossless_relay::archiver::upgrade_cover_art_url_to_hd(s));
+                    .map(crate::sources::lossless_relay::archiver::upgrade_cover_art_url_to_hd);
 
                 tracks.push(PlaylistTrack {
                     playlist_id: canonical_id.clone(),
@@ -955,7 +956,7 @@ impl YouTubeImporter {
                                     .as_array()
                                     .and_then(|arr| arr.last())
                                     .and_then(|t| t["url"].as_str())
-                                    .map(|s| crate::sources::lossless_relay::archiver::upgrade_cover_art_url_to_hd(s));
+                                    .map(crate::sources::lossless_relay::archiver::upgrade_cover_art_url_to_hd);
 
                                 top_songs.push(TrackInfo {
                                     uri: Some(uri.clone()),
@@ -1113,7 +1114,7 @@ impl YouTubeImporter {
                     .as_array()
                     .and_then(|arr| arr.last())
                     .and_then(|t| t["url"].as_str())
-                    .map(|s| crate::sources::lossless_relay::archiver::upgrade_cover_art_url_to_hd(s));
+                    .map(crate::sources::lossless_relay::archiver::upgrade_cover_art_url_to_hd);
 
                 tracks.push(PlaylistTrack {
                     playlist_id: canonical_id.clone(),
@@ -1226,7 +1227,7 @@ impl YouTubeImporter {
                     .as_array()
                     .and_then(|arr| arr.last())
                     .and_then(|t| t["url"].as_str())
-                    .map(|s| crate::sources::lossless_relay::archiver::upgrade_cover_art_url_to_hd(s));
+                    .map(crate::sources::lossless_relay::archiver::upgrade_cover_art_url_to_hd);
 
                 tracks.push(PlaylistTrack {
                     playlist_id: String::new(), // will set below
@@ -1388,7 +1389,7 @@ impl YouTubeImporter {
                     .as_array()
                     .and_then(|arr| arr.last())
                     .and_then(|t| t["url"].as_str())
-                    .map(|s| crate::sources::lossless_relay::archiver::upgrade_cover_art_url_to_hd(s));
+                    .map(crate::sources::lossless_relay::archiver::upgrade_cover_art_url_to_hd);
 
                 let album_name = r["longBylineText"]["runs"].as_array().and_then(|runs| {
                     if runs.len() >= 3 {
@@ -1423,7 +1424,7 @@ impl YouTubeImporter {
 }
 
 /// Helper function to find playlist panel contents in YouTube Music JSON responses
-fn find_playlist_panel_contents<'a>(val: &'a Value) -> Option<&'a Vec<Value>> {
+fn find_playlist_panel_contents(val: &Value) -> Option<&Vec<Value>> {
     if let Some(arr) = val["contents"]["singleColumnMusicWatchNextResultsRenderer"]["tabbedRenderer"]["watchNextTabbedResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["musicQueueRenderer"]["content"]["playlistPanelRenderer"]["contents"].as_array() {
         return Some(arr);
     }
@@ -1433,7 +1434,7 @@ fn find_playlist_panel_contents<'a>(val: &'a Value) -> Option<&'a Vec<Value>> {
     find_playlist_panel_recursive(val)
 }
 
-fn find_playlist_panel_recursive<'a>(val: &'a Value) -> Option<&'a Vec<Value>> {
+fn find_playlist_panel_recursive(val: &Value) -> Option<&Vec<Value>> {
     if let Some(obj) = val.as_object() {
         if let Some(panel) = obj.get("playlistPanelRenderer") {
             if let Some(contents) = panel.get("contents").and_then(|c| c.as_array()) {

@@ -198,7 +198,7 @@ pub fn draw_action_bar(f: &mut Frame<'_>, app: &App, area: Rect) {
   let is_importing = app.view.url_import_in_progress;
   let is_searching = app.live_search_loading;
   #[cfg(feature = "youtube")]
-  let is_advancing = app.youtube_playback.as_ref().map_or(false, |yt| yt.advancing);
+  let is_advancing = app.youtube_playback.as_ref().is_some_and(|yt| yt.advancing);
   #[cfg(not(feature = "youtube"))]
   let is_advancing = false;
 
@@ -260,9 +260,7 @@ pub fn draw_action_bar(f: &mut Frame<'_>, app: &App, area: Rect) {
   ];
 
   for (i, (key, label)) in items.iter().enumerate() {
-    if !has_status && i > 0 {
-      spans.push(Span::styled(" │ ", sep_style));
-    } else if has_status && i > 0 {
+    if i > 0 {
       spans.push(Span::styled(" │ ", sep_style));
     }
     spans.push(Span::styled(format!("[{key}] "), key_style));

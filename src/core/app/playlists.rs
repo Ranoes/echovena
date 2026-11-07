@@ -423,7 +423,7 @@ impl App {
           artist_refs: Vec::new(),
           is_playable: true,
           is_local: false,
-          track_number: track.track_number as u32,
+          track_number: track.track_number,
           explicit: track.explicit,
           image_url: track.album.images.first().map(|img| img.url.clone()),
           release_date: None,
@@ -720,6 +720,12 @@ impl App {
   }
 }
 
+pub fn playlist_track_info_matches_terms(track: &TrackInfo, terms: &[String]) -> bool {
+  let haystack =
+    format!("{} {} {}", track.name, track.album, track.artists.join(" "),).to_lowercase();
+  terms.iter().all(|term| haystack.contains(term))
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -989,10 +995,4 @@ mod tests {
     assert!(app.try_sort_playlist_tracks_from_cached_pages(&playlist_id));
     assert_eq!(app.track_table.tracks.len(), 2);
   }
-}
-
-pub fn playlist_track_info_matches_terms(track: &TrackInfo, terms: &[String]) -> bool {
-  let haystack =
-    format!("{} {} {}", track.name, track.album, track.artists.join(" "),).to_lowercase();
-  terms.iter().all(|term| haystack.contains(term))
 }

@@ -6,6 +6,9 @@
 //! turns any import of it from core/infra/cli into a compile error, which is
 //! what keeps a second frontend from re-coupling to this one.
 
+#![allow(clippy::field_reassign_with_default)]
+#![allow(clippy::items_after_test_module)]
+
 mod cli;
 pub mod config;
 pub mod lyrics;

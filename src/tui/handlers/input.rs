@@ -175,15 +175,17 @@ pub fn handler(key: Key, app: &mut App) {
           if !app.live_search_items.is_empty() {
             let tracks: Vec<TrackInfo> = app.live_search_items.iter().map(|it| it.to_track_info()).collect();
             let total = tracks.len() as u32;
-            let mut res = crate::core::app::SearchResult::default();
-            res.tracks = Some(crate::core::pagination::Paged {
-              items: tracks,
-              limit: total,
-              total,
-              offset: 0,
-              next: None,
-              previous: None,
-            });
+            let res = crate::core::app::SearchResult {
+              tracks: Some(crate::core::pagination::Paged {
+                items: tracks,
+                limit: total,
+                total,
+                offset: 0,
+                next: None,
+                previous: None,
+              }),
+              ..Default::default()
+            };
             app.set_search_results(res);
             let idx = app.live_search_selected_index.min(app.live_search_items.len().saturating_sub(1));
             app.view.search_selected_tracks_index = Some(idx);

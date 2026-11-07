@@ -608,11 +608,10 @@ pub fn parse_yt_web_search_response(json: &Value, default_scope: SearchScope) ->
                 if let Some(badge_arr) = video["badges"].as_array() {
                     for b in badge_arr {
                         if let Some(label) = b["metadataBadgeRenderer"]["label"].as_str() {
-                            if label.eq_ignore_ascii_case("official") {
-                                if !badges.contains(&SearchBadge::Official) {
+                            if label.eq_ignore_ascii_case("official")
+                                && !badges.contains(&SearchBadge::Official) {
                                     badges.push(SearchBadge::Official);
                                 }
-                            }
                         }
                     }
                 }
@@ -698,11 +697,10 @@ fn extract_list_item_badges(renderer: &Value, badges: &mut Vec<SearchBadge>) {
                 .as_str()
                 .unwrap_or("");
 
-            if label.eq_ignore_ascii_case("explicit") || icon.contains("EXPLICIT") {
-                if !badges.contains(&SearchBadge::Explicit) {
+            if (label.eq_ignore_ascii_case("explicit") || icon.contains("EXPLICIT"))
+                && !badges.contains(&SearchBadge::Explicit) {
                     badges.push(SearchBadge::Explicit);
                 }
-            }
         }
     }
 }
@@ -713,11 +711,10 @@ fn extract_card_badges(card: &Value, badges: &mut Vec<SearchBadge>) {
             let label = b["musicInlineBadgeRenderer"]["accessibilityData"]["accessibilityData"]["label"]
                 .as_str()
                 .unwrap_or("");
-            if label.eq_ignore_ascii_case("explicit") {
-                if !badges.contains(&SearchBadge::Explicit) {
+            if label.eq_ignore_ascii_case("explicit")
+                && !badges.contains(&SearchBadge::Explicit) {
                     badges.push(SearchBadge::Explicit);
                 }
-            }
         }
     }
 }

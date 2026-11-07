@@ -59,6 +59,7 @@ pub fn parse_apple_music_ttml(xml: &str, provider_name: &str) -> Result<KaraokeT
     .map_err(|e| anyhow!("regex error: {}", e))?;
 
     let mut lines = Vec::new();
+    let tag_regex = Regex::new(r"<[^>]*>").unwrap();
 
     for p_cap in p_regex.captures_iter(xml) {
         let p_begin = parse_ttml_timestamp(&p_cap[1]);
@@ -88,7 +89,6 @@ pub fn parse_apple_music_ttml(xml: &str, provider_name: &str) -> Result<KaraokeT
 
         // If no spans, strip inner xml tags and use full line text
         if words.is_empty() {
-            let tag_regex = Regex::new(r"<[^>]*>").unwrap();
             line_text = tag_regex.replace_all(p_content, "").trim().to_string();
             line_text = decode_html_entities(&line_text);
             words.push(KaraokeWord::new(&line_text, p_begin, p_end));

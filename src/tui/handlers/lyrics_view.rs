@@ -99,9 +99,9 @@ pub(super) fn scroll_by(app: &mut App, delta: i64) {
       let offset_ms = app.view.lyrics_view.timing_offset_ms;
       #[cfg(feature = "youtube")]
       let current_time_ms = if let Some(yt) = app.youtube_playback.as_ref() {
-        (yt.player.position().as_millis() as i64) + (offset_ms as i64)
+        (yt.player.position().as_millis() as i64) + offset_ms
       } else {
-        (app.song_progress_ms as i64) + (offset_ms as i64)
+        (app.song_progress_ms as i64) + offset_ms
       };
       #[cfg(not(feature = "youtube"))]
       let current_time_ms = (app.song_progress_ms as i64) + (offset_ms as i64);

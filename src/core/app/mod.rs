@@ -719,7 +719,7 @@ impl App {
   pub fn get_clipboard_text(&mut self) -> Option<String> {
     #[cfg(test)]
     {
-      return None;
+      None
     }
     #[cfg(all(not(test), not(target_os = "android")))]
     {

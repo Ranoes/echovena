@@ -48,17 +48,16 @@ pub fn upgrade_cover_art_url_to_hd(url: &str) -> String {
     }
 
     // 2. YouTube static video thumbnails (i.ytimg.com)
-    if url.contains("i.ytimg.com") {
-        if url.contains("hqdefault.jpg")
+    if url.contains("i.ytimg.com")
+        && (url.contains("hqdefault.jpg")
             || url.contains("mqdefault.jpg")
             || url.contains("sddefault.jpg")
-            || url.contains("default.jpg")
+            || url.contains("default.jpg"))
         {
             if let Ok(re_yt) = regex::Regex::new(r"/(hqdefault|mqdefault|sddefault|default)\.jpg") {
                 return re_yt.replace(url, "/maxresdefault.jpg").to_string();
             }
         }
-    }
 
     url.to_string()
 }
@@ -371,10 +370,8 @@ pub async fn resolve_and_archive_track_with_source(
             // Fallback to local audio cache or yt-dlp Opus
             let video_id = if let Some(vid) = track.source_track_id.strip_prefix("yt:video:") {
                 Some(vid)
-            } else if let Some(vid) = track.source_track_id.strip_prefix("youtube:") {
-                Some(vid)
             } else {
-                None
+                track.source_track_id.strip_prefix("youtube:")
             };
 
             #[cfg(feature = "youtube")]
@@ -408,7 +405,7 @@ pub async fn resolve_and_archive_track_with_source(
                 cmd.creation_flags(crate::infra::youtube::CREATE_NO_WINDOW);
                 #[cfg(all(windows, not(feature = "youtube")))]
                 cmd.creation_flags(0x0800_0000);
-                cmd.args(&[
+                cmd.args([
                     "-f",
                     "251/140/bestaudio",
                     "-x",
@@ -671,7 +668,7 @@ mod tests {
             isrc: Some("AUAP07100030".to_string()),
             cover_art_url: None,
         };
-        db.replace_playlist_tracks("pl_test", &[track.clone()]).unwrap();
+        db.replace_playlist_tracks("pl_test", std::slice::from_ref(&track)).unwrap();
 
         let archive_root = temp_dir.path().join("EchoVenaMusic");
         let flac_path = archive_single_track_to(

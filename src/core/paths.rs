@@ -51,7 +51,7 @@ pub fn audio_cache_dir() -> Option<PathBuf> {
 pub fn clear_audio_cache_files() -> std::io::Result<(usize, u64)> {
   #[cfg(test)]
   {
-    return Ok((0, 0));
+    Ok((0, 0))
   }
   #[cfg(not(test))]
   {

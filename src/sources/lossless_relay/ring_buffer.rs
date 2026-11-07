@@ -91,8 +91,8 @@ pub fn parse_flac_streaminfo(bytes: &[u8]) -> Option<FlacStreamInfo> {
     let sample_rate = ((b[10] as u32) << 12)
         | ((b[11] as u32) << 4)
         | (((b[12] as u32) >> 4) & 0x0F);
-    let channels = (((b[12] >> 1) & 0x07) + 1) as u8;
-    let bit_depth = ((((b[12] & 0x01) << 4) | ((b[13] >> 4) & 0x0F)) + 1) as u8;
+    let channels = ((b[12] >> 1) & 0x07) + 1;
+    let bit_depth = (((b[12] & 0x01) << 4) | ((b[13] >> 4) & 0x0F)) + 1;
 
     let total_samples = (((b[13] as u64) & 0x0F) << 32)
         | ((b[14] as u64) << 24)
@@ -245,7 +245,7 @@ mod tests {
         payload[10] = ((sample_rate >> 12) & 0xFF) as u8;
         payload[11] = ((sample_rate >> 4) & 0xFF) as u8;
         payload[12] = (((sample_rate & 0x0F) << 4) | ((ch_val as u32) << 1) | ((bd_val as u32) >> 4)) as u8;
-        payload[13] = (((bd_val & 0x0F) << 4) | 0x00) as u8; // total samples high 4 bits = 0
+        payload[13] = (bd_val & 0x0F) << 4; // total samples high 4 bits = 0
         // total samples remaining 32 bits: 96000 * 180 = 17,280,000 samples
         let total_samples: u64 = (sample_rate as u64) * 180;
         payload[14] = ((total_samples >> 24) & 0xFF) as u8;

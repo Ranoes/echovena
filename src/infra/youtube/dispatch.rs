@@ -588,8 +588,7 @@ fn find_video_row(app: &App, video_ref: &str) -> Option<TrackInfo> {
           });
         }
       }
-      if let Some(vid) = clean_id {
-        Some(TrackInfo {
+      clean_id.map(|vid| TrackInfo {
           id: Some(vid.clone()),
           uri: Some(format!("youtube:video:{}", vid)),
           name: video_ref.to_string(),
@@ -606,9 +605,6 @@ fn find_video_row(app: &App, video_ref: &str) -> Option<TrackInfo> {
           release_date: None,
           generated_name: None,
         })
-      } else {
-        None
-      }
     })
 }
 
@@ -1122,7 +1118,7 @@ async fn start_youtube_queue(app: &Arc<Mutex<App>>, uris: &[String], start_idx: 
     let all_downloaded = db.list_downloaded_tracks().unwrap_or_default();
     for track in tracks.iter_mut() {
       if track.artists.is_empty() || track.name.starts_with("yt:video:") || track.name.starts_with("youtube:") {
-        if let Some(u) = track.uri.as_deref().or_else(|| track.id.as_deref()) {
+        if let Some(u) = track.uri.as_deref().or(track.id.as_deref()) {
           let vid = super::extract_youtube_video_id(u).unwrap_or_else(|| u.to_string());
           if let Ok(Some(pt)) = db.find_playlist_track_by_source_id(u)
             .or_else(|_| db.find_playlist_track_by_source_id(&vid))
@@ -1631,14 +1627,13 @@ pub(crate) fn spawn_eager_queue_prebuffer(app: Arc<Mutex<App>>) {
         }
       }
 
-      if super::cached_audio_path(&vid).is_none() {
-        if let Ok(_) = source.prefetch_to_cache(&vid).await {
+      if super::cached_audio_path(&vid).is_none()
+        && source.prefetch_to_cache(&vid).await.is_ok() {
           let mut guard = app.lock().await;
           if let Some(ref mut s) = guard.youtube_playback {
             s.prebuffered_id = Some(vid);
           }
         }
-      }
     }
   });
 }

@@ -146,13 +146,13 @@ impl QobuzClient {
             _ => "MP3_320".to_string(),
         };
 
-        let bit_depth = body.bit_depth.or_else(|| match quality_id {
+        let bit_depth = body.bit_depth.or(match quality_id {
             27 | 7 => Some(24),
             6 => Some(16),
             _ => None,
         });
 
-        let sample_rate = body.sample_rate.or_else(|| match quality_id {
+        let sample_rate = body.sample_rate.or(match quality_id {
             27 => Some(192.0),
             7 => Some(96.0),
             6 => Some(44.1),
