@@ -3,22 +3,77 @@ name: Release
 on:
   push:
     tags:
-      - "v*.*.*"
+      - 'v[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and upload artifacts only (do not publish GitHub Release or Chocolatey)"
+        type: boolean
+        default: true
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
 jobs:
+  verify:
+    name: Verify Tag & Test Suite (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify tag matches Cargo.toml version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          TAG_VER="${GITHUB_REF_NAME#v}"
+          CARGO_VER="$(awk -F'"' '/^version = / {print $2; exit}' Cargo.toml)"
+          echo "Tag version: $TAG_VER | Cargo.toml version: $CARGO_VER"
+          if [ "$TAG_VER" != "$CARGO_VER" ]; then
+            echo "::error::Tag version ($TAG_VER) does not match Cargo.toml version ($CARGO_VER)"
+            exit 1
+          fi
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+          components: clippy
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libasound2-dev libssl-dev libdbus-1-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "verify-linux"
+
+      - name: Cargo Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Cargo Unit Tests
+        run: cargo test --lib --locked
+
   build-binaries:
     name: Build (${{ matrix.name }})
+    needs: verify
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           - name: windows-x86_64
@@ -27,12 +82,12 @@ jobs:
             asset_name: echovena-windows-x86_64.zip
             binary_name: echovena.exe
           - name: linux-x86_64
-            os: ubuntu-latest
+            os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             asset_name: echovena-linux-x86_64.tar.gz
             binary_name: echovena
           - name: macos-aarch64
-            os: macos-latest
+            os: macos-15
             target: aarch64-apple-darwin
             asset_name: echovena-macos-aarch64.tar.gz
             binary_name: echovena
@@ -41,40 +96,144 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.99.1"
           targets: ${{ matrix.target }}
 
       - name: Install Linux dependencies
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.name == 'linux-x86_64'
         run: |
           sudo apt-get update
-          sudo apt-get install -y -qq pkg-config libasound2-dev libssl-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libasound2-dev libssl-dev libdbus-1-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
 
-      - name: Install macOS dependencies
-        if: startsWith(matrix.os, 'macos')
+      - name: Install macOS build-time dependencies
+        if: matrix.name == 'macos-aarch64'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
         run: |
-          brew install openssl@3 portaudio
+          brew install pkg-config portaudio
 
-      - name: Build release binary
-        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "release-${{ matrix.target }}"
 
-      - name: Package Windows ZIP
-        if: matrix.os == 'windows-latest'
+      - name: Build release binary (Windows static CRT)
+        if: matrix.name == 'windows-x86_64'
+        shell: pwsh
+        env:
+          RUSTFLAGS: "-C target-feature=+crt-static"
+        run: |
+          cargo build --release --locked --bin echovena --target ${{ matrix.target }}
+
+      - name: Build release binary (Linux)
+        if: matrix.name == 'linux-x86_64'
+        run: |
+          cargo build --release --locked --bin echovena --target ${{ matrix.target }}
+
+      - name: Build release binary (macOS)
+        if: matrix.name == 'macos-aarch64'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
+        run: |
+          cargo build --release --locked --bin echovena --target ${{ matrix.target }}
+
+      - name: Smoke test & Package Windows ZIP
+        if: matrix.name == 'windows-x86_64'
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           $binPath = "target/${{ matrix.target }}/release/${{ matrix.binary_name }}"
+          $verOut = & $binPath --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "echovena.exe --version failed with exit code $LASTEXITCODE"
+          }
+          Write-Host "Smoke check passed: $verOut"
+          $cargoVer = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          if ($verOut -notmatch [regex]::Escape($cargoVer)) {
+            throw "Version output '$verOut' does not contain Cargo.toml version '$cargoVer'"
+          }
           Compress-Archive -Path $binPath, README.md, LICENSE -DestinationPath ${{ matrix.asset_name }} -Force
 
-      - name: Package Unix Tarball
-        if: matrix.os != 'windows-latest'
+      - name: Smoke test & Package Linux Tarball
+        if: matrix.name == 'linux-x86_64'
         run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/${{ matrix.binary_name }}"
+          echo "Checking shared library links via ldd:"
+          ldd_out="$(ldd "$bin")"
+          echo "$ldd_out"
+          if echo "$ldd_out" | grep -q "not found"; then
+            echo "::error::Missing shared library in Linux release binary"
+            exit 1
+          fi
+          ver_out="$("$bin" --version)"
+          echo "Smoke check passed: $ver_out"
+          cargo_ver="$(awk -F'"' '/^version = / {print $2; exit}' Cargo.toml)"
+          case "$ver_out" in
+            *"$cargo_ver"*) ;;
+            *) echo "::error::Version output '$ver_out' missing '$cargo_ver'"; exit 1 ;;
+          esac
           staging="staging_${{ matrix.name }}"
           mkdir -p "$staging"
-          cp "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" "$staging/"
-          cp README.md LICENSE "$staging/"
+          cp "$bin" README.md LICENSE "$staging/"
+          chmod 0755 "$staging/${{ matrix.binary_name }}"
           tar -czvf "${{ matrix.asset_name }}" -C "$staging" "${{ matrix.binary_name }}" README.md LICENSE
+          rm -rf "$staging"
+
+      - name: Bundle dylib, Smoke test & Package macOS Tarball
+        if: matrix.name == 'macos-aarch64'
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/${{ matrix.binary_name }}"
+          staging="staging_${{ matrix.name }}"
+          mkdir -p "$staging"
+          cp "$bin" README.md LICENSE "$staging/"
+          chmod 0755 "$staging/${{ matrix.binary_name }}"
+
+          PA="$(otool -L "$staging/${{ matrix.binary_name }}" | awk '/portaudio/{print $1; exit}')"
+          if [ -n "$PA" ]; then
+            echo "Bundling PortAudio dylib from $PA into @executable_path/libportaudio.2.dylib"
+            cp -L "$PA" "$staging/libportaudio.2.dylib"
+            chmod 0755 "$staging/libportaudio.2.dylib"
+            install_name_tool -id "@executable_path/libportaudio.2.dylib" "$staging/libportaudio.2.dylib"
+            install_name_tool -change "$PA" "@executable_path/libportaudio.2.dylib" "$staging/${{ matrix.binary_name }}"
+            codesign --force -s - "$staging/libportaudio.2.dylib"
+            codesign --force -s - "$staging/${{ matrix.binary_name }}"
+
+            echo "Verifying bundled libportaudio.2.dylib links:"
+            otool -L "$staging/libportaudio.2.dylib"
+            if otool -L "$staging/libportaudio.2.dylib" | tail -n +2 | grep -vE '^[[:space:]]*(/usr/lib/|/System/|@executable_path/)'; then
+              echo "::error::libportaudio.2.dylib links non-system libraries!"
+              exit 1
+            fi
+          fi
+
+          echo "Verifying echovena macOS Mach-O links (zero Homebrew runtime dependency):"
+          otool -L "$staging/${{ matrix.binary_name }}"
+          if otool -L "$staging/${{ matrix.binary_name }}" | tail -n +2 | grep -vE '^[[:space:]]*(/usr/lib/|/System/|@executable_path/)'; then
+            echo "::error::echovena links external/Homebrew libraries!"
+            exit 1
+          fi
+
+          ver_out="$("$staging/${{ matrix.binary_name }}" --version)"
+          echo "Smoke check passed: $ver_out"
+          cargo_ver="$(awk -F'"' '/^version = / {print $2; exit}' Cargo.toml)"
+          case "$ver_out" in
+            *"$cargo_ver"*) ;;
+            *) echo "::error::Version output '$ver_out' missing '$cargo_ver'"; exit 1 ;;
+          esac
+
+          if [ -f "$staging/libportaudio.2.dylib" ]; then
+            tar -czvf "${{ matrix.asset_name }}" -C "$staging" "${{ matrix.binary_name }}" libportaudio.2.dylib README.md LICENSE
+          else
+            tar -czvf "${{ matrix.asset_name }}" -C "$staging" "${{ matrix.binary_name }}" README.md LICENSE
+          fi
           rm -rf "$staging"
 
       - name: Upload Build Artifact
@@ -87,7 +246,9 @@ jobs:
   publish-github-release:
     name: Publish GitHub Release
     needs: build-binaries
-    runs-on: ubuntu-latest
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v') && inputs.dry_run == false)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -98,24 +259,35 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Generate Checksums
+      - name: Generate and verify SHA-256 checksums
         working-directory: artifacts
         run: |
-          sha256sum echovena-* > SHA256SUMS.txt
+          set -euo pipefail
+          ls -lh
+          sha256sum \
+            echovena-windows-x86_64.zip \
+            echovena-linux-x86_64.tar.gz \
+            echovena-macos-aarch64.tar.gz > SHA256SUMS.txt
           cat SHA256SUMS.txt
+          sha256sum -c SHA256SUMS.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/echovena-*
+            artifacts/echovena-windows-x86_64.zip
+            artifacts/echovena-linux-x86_64.tar.gz
+            artifacts/echovena-macos-aarch64.tar.gz
             artifacts/SHA256SUMS.txt
           generate_release_notes: true
+          fail_on_unmatched_files: true
 
   publish-chocolatey:
     name: Publish Chocolatey Package
     needs: publish-github-release
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v') && inputs.dry_run == false)
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -126,40 +298,59 @@ jobs:
           name: echovena-windows-x86_64.zip
           path: .
 
-      - name: Prepare Chocolatey Manifests
+      - name: Prepare & Smoke-Test Chocolatey Package
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           $version = "${{ github.ref_name }}".TrimStart('v')
-          if (-not $version -or $version -eq 'main') { $version = "1.0.0" }
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Ref '${{ github.ref_name }}' is not a valid release version tag."
+          }
           $hash = (Get-FileHash -Algorithm SHA256 echovena-windows-x86_64.zip).Hash
-
-          Write-Host "Updating Chocolatey manifests for version: $version with hash: $hash"
+          Write-Host "Updating Chocolatey manifests for version: $version with SHA256: $hash"
 
           $nuspecPath = "packaging/chocolatey/echovena.nuspec"
           $nuspecContent = Get-Content $nuspecPath -Raw
           $nuspecContent = $nuspecContent -replace '<version>.*?</version>', "<version>$version</version>"
-          Set-Content -Path $nuspecPath -Value $nuspecContent
+          $nuspecContent = $nuspecContent -replace 'releases/tag/v[0-9]+\.[0-9]+\.[0-9]+', "releases/tag/v$version"
+          Set-Content -Path $nuspecPath -Value $nuspecContent -Encoding UTF8
 
           $installPs1Path = "packaging/chocolatey/tools/chocolateyinstall.ps1"
           $installContent = Get-Content $installPs1Path -Raw
           $installContent = $installContent -replace '\$version\s*=\s*".*?"', "`$version = `"$version`""
           $installContent = $installContent -replace '\$checksum\s*=\s*".*?"', "`$checksum = `"$hash`""
-          Set-Content -Path $installPs1Path -Value $installContent
+          Set-Content -Path $installPs1Path -Value $installContent -Encoding UTF8
 
-      - name: Pack and Push Chocolatey Package
+          choco pack packaging/chocolatey/echovena.nuspec --outputdirectory packaging/chocolatey
+          if ($LASTEXITCODE -ne 0) { throw "choco pack failed." }
+
+          Write-Host "Running local Chocolatey install/uninstall smoke test..."
+          $pkgDir = (Resolve-Path "packaging/chocolatey").Path
+          choco install echovena --version $version --source "$pkgDir" -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "Local choco install smoke test failed." }
+
+          $verCheck = echovena --version
+          if ($LASTEXITCODE -ne 0) { throw "Shimmed echovena --version failed." }
+          Write-Host "Shimmed binary verified: $verCheck"
+
+          choco uninstall echovena -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "Local choco uninstall smoke test failed." }
+
+      - name: Push Chocolatey Package
         env:
           CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           if (-not $env:CHOCOLATEY_API_KEY) {
             Write-Host "CHOCOLATEY_API_KEY is not configured; skipping Chocolatey push."
             exit 0
           }
-          choco pack packaging/chocolatey/echovena.nuspec --outputdirectory packaging/chocolatey
           $nupkg = Get-ChildItem -Path packaging/chocolatey/*.nupkg | Select-Object -First 1
           if ($nupkg) {
             Write-Host "Pushing $($nupkg.FullName) to Chocolatey Community Repository..."
             choco push $nupkg.FullName --source https://push.chocolatey.org/ --api-key $env:CHOCOLATEY_API_KEY
+            if ($LASTEXITCODE -ne 0) { throw "choco push failed with exit code $LASTEXITCODE" }
           } else {
             throw "No .nupkg file found to publish."
           }
