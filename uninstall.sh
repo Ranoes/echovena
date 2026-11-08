@@ -146,3 +146,4 @@ else
 fi
 
 printf '\n%s\n' "${GREEN}EchoVena uninstallation complete.${RESET}" >&2
+

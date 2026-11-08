@@ -39,6 +39,34 @@ cargo install --git https://github.com/Ranoes/echovena.git --locked
 
 ---
 
+## Uninstallation
+
+### Windows (PowerShell)
+```powershell
+irm https://raw.githubusercontent.com/Ranoes/echovena/main/uninstall.ps1 | iex
+```
+> _To completely purge user configs, database, and cache, append `-PurgeData` (or `-PurgeMusic` to remove `~/Music/EchoVena`)._
+
+### Linux & macOS
+```sh
+curl -fsSL https://raw.githubusercontent.com/Ranoes/echovena/main/uninstall.sh | sh
+```
+> _To completely purge user configs, database, and cache, pass `--purge-data` (or `--purge-music` to remove `~/Music/EchoVena`)._
+
+### Package Managers & Cargo
+```powershell
+# Winget
+winget uninstall Ranoes.EchoVena
+
+# Chocolatey
+choco uninstall echovena -y
+
+# Cargo
+cargo uninstall echovena
+```
+
+---
+
 ## Key Features
 
 - **Bit-Perfect Lossless Relay Waterfall:** Streams studio-quality audio through an automated priority waterfall: **Qobuz (24-bit / 192 kHz)** $\to$ **Tidal Hi-Res (`hifi-api`)** $\to$ **Tidal Lossy (16-bit / 44.1 kHz)** $\to$ **YouTube Opus (`yt-dlp`)**. All `hifi-api` requests enforce a global single-in-flight `Semaphore(1)` lock and handle HTTP 202 queue polling.
